@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use mengxi_format::dpx;
+use mengxi_format::exr as exr_format;
 
 /// A registered project in the database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,7 @@ pub struct ProjectFile {
     pub transfer: Option<String>,
     pub colorimetric: Option<String>,
     pub descriptor: Option<String>,
+    pub compression: Option<String>,
     pub created_at: i64,
 }
 
@@ -66,7 +68,7 @@ impl std::fmt::Display for ImportError {
             ImportError::CorruptFile { filename, reason } => {
                 write!(
                     f,
-                    "IMPORT_CORRUPT_FILE — Failed to decode {}: {}",
+                    "IMPORT_CORRUPT_FILE -- Failed to decode {}: {}",
                     filename, reason
                 )
             }
@@ -165,7 +167,7 @@ pub fn register_project(
         let file_path = path.join(filename);
 
         // Extract DPX metadata
-        let (width, height, bit_depth, transfer, colorimetric, descriptor) = if format == "dpx" {
+        let (width, height, bit_depth, transfer, colorimetric, descriptor, compression) = if format == "dpx" {
             match dpx::parse_dpx_header(&file_path) {
                 Ok(header) => {
                     let t = dpx::transfer_to_string(header.transfer).to_string();
@@ -180,6 +182,36 @@ pub fn register_project(
                         Some(t),
                         Some(dpx::colorimetric_to_string(header.colorimetric).to_string()),
                         Some(d),
+                        None,
+                    )
+                }
+                Err(e) => {
+                    breakdown.skipped_count += 1;
+                    breakdown.skipped_files.push(filename.clone());
+                    eprintln!("Error: {}", ImportError::CorruptFile {
+                        filename: filename.clone(),
+                        reason: e.to_string(),
+                    });
+                    continue;
+                }
+            }
+        } else if format == "exr" {
+            match exr_format::parse_exr_header(&file_path) {
+                Ok(header) => {
+                    let pt = exr_format::pixel_type_to_string(&header.pixel_type);
+                    let comp_str = exr_format::compression_to_db_string(&header.compression);
+                    let desc = exr_format::channels_to_descriptor(&header.channels);
+                    let variant_key = format!("{} {}", pt, header.compression.to_display());
+                    *variant_counts.entry(variant_key).or_insert(0) += 1;
+
+                    (
+                        Some(header.width as i64),
+                        Some(header.height as i64),
+                        Some(exr_format::pixel_type_to_bit_depth(&header.pixel_type) as i64),
+                        Some("linear".to_string()),
+                        None,
+                        Some(desc),
+                        Some(comp_str.to_string()),
                     )
                 }
                 Err(e) => {
@@ -193,12 +225,12 @@ pub fn register_project(
                 }
             }
         } else {
-            (None, None, None, None, None, None)
+            (None, None, None, None, None, None, None)
         };
 
         conn.execute(
-            "INSERT INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor],
+            "INSERT INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression],
         )
         .map_err(|e| ImportError::DbError(e.to_string()))?;
     }
@@ -279,6 +311,7 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>, ImportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mengxi_format::dpx::DpxEndian;
     use rusqlite::Connection;
     use tempfile::TempDir;
 
@@ -309,6 +342,7 @@ mod tests {
                 transfer    TEXT,
                 colorimetric TEXT,
                 descriptor  TEXT,
+                compression TEXT,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )
@@ -472,18 +506,128 @@ mod tests {
         // Create one 16-bit DPX file
         let p16 = film_dir.join("shot16.dpx");
         dpx::create_synthetic_dpx(&p16, 4096, 2160, 16, 2, DpxEndian::Big).unwrap();
-        // Create one EXR file (empty)
-        fs::write(film_dir.join("ref.exr"), "").unwrap();
+        // Create one valid EXR file
+        let exr_path = film_dir.join("ref.exr");
+        exr_format::create_synthetic_exr(&exr_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
         let (project, breakdown) = register_project(&conn, "mixed_test", &film_dir).unwrap();
 
         assert_eq!(project.dpx_count, 3);
         assert_eq!(project.exr_count, 1);
-        assert_eq!(breakdown.variants.len(), 2);
+        assert_eq!(breakdown.skipped_count, 0);
+        // DPX variants + EXR variant
+        assert!(breakdown.variants.len() >= 2);
 
         let all_variants = breakdown.variants.join(", ");
         assert!(all_variants.contains("2x 10-bit"));
         assert!(all_variants.contains("1x 16-bit"));
+        assert!(all_variants.contains("half-float NONE"));
+    }
+
+    #[test]
+    fn test_register_with_exr_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a valid EXR file
+        let exr_path = film_dir.join("shot001.exr");
+        exr_format::create_synthetic_exr(&exr_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "exr_meta_test", &film_dir).unwrap();
+
+        assert_eq!(project.exr_count, 1);
+        assert_eq!(breakdown.variants.len(), 1);
+        assert!(breakdown.variants[0].contains("half-float"));
+        assert!(breakdown.variants[0].contains("NONE"));
+        assert_eq!(breakdown.skipped_count, 0);
+    }
+
+    #[test]
+    fn test_register_skips_corrupt_exr() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a valid EXR
+        let valid_path = film_dir.join("valid.exr");
+        exr_format::create_synthetic_exr(&valid_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
+
+        // Create a corrupt EXR (garbage bytes)
+        let corrupt_path = film_dir.join("corrupt.exr");
+        fs::write(&corrupt_path, vec![0xAB; 2048]).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "corrupt_exr_test", &film_dir).unwrap();
+
+        assert_eq!(project.exr_count, 2); // Both files are .exr
+        assert_eq!(breakdown.skipped_count, 1);
+        assert_eq!(breakdown.skipped_files.len(), 1);
+        assert_eq!(breakdown.skipped_files[0], "corrupt.exr");
+        assert_eq!(breakdown.variants.len(), 1);
+        assert!(breakdown.variants[0].contains("half-float NONE"));
+    }
+
+    #[test]
+    fn test_register_with_exr_compression_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create 3 uncompressed EXR files
+        for i in 0..3 {
+            let p = film_dir.join(format!("shot{}.exr", i));
+            exr_format::create_synthetic_exr(&p, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
+        }
+        // Create 2 PIZ-compressed EXR files
+        for i in 0..2 {
+            let p = film_dir.join(format!("comp{}.exr", i));
+            exr_format::create_synthetic_exr(&p, 1920, 1080, exr::image::Encoding::SMALL_FAST_LOSSLESS).unwrap();
+        }
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "exr_compress_test", &film_dir).unwrap();
+
+        assert_eq!(project.exr_count, 5);
+        assert_eq!(breakdown.skipped_count, 0);
+        assert_eq!(breakdown.variants.len(), 2);
+
+        let all_variants = breakdown.variants.join(", ");
+        assert!(all_variants.contains("3x half-float NONE"));
+        assert!(all_variants.contains("2x half-float PIZ"));
+    }
+
+    #[test]
+    fn test_register_with_mixed_dpx_and_exr() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create 2 DPX files
+        for i in 0..2 {
+            let p = film_dir.join(format!("shot{}.dpx", i));
+            dpx::create_synthetic_dpx(&p, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
+        }
+        // Create 3 EXR files with different compression
+        exr_format::create_synthetic_exr(&film_dir.join("a.exr"), 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
+        exr_format::create_synthetic_exr(&film_dir.join("b.exr"), 1920, 1080, exr::image::Encoding::FAST_LOSSLESS).unwrap();
+        exr_format::create_synthetic_exr(&film_dir.join("c.exr"), 1920, 1080, exr::image::Encoding::SMALL_FAST_LOSSLESS).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "mixed_dpx_exr", &film_dir).unwrap();
+
+        assert_eq!(project.dpx_count, 2);
+        assert_eq!(project.exr_count, 3);
+        assert_eq!(breakdown.skipped_count, 0);
+        // Should have 3 EXR variants + 1 DPX variant
+        assert!(breakdown.variants.len() >= 3);
+
+        let all_variants = breakdown.variants.join(", ");
+        assert!(all_variants.contains("10-bit linear"));
+        assert!(all_variants.contains("half-float NONE"));
+        assert!(all_variants.contains("half-float RLE"));
+        assert!(all_variants.contains("half-float PIZ"));
     }
 }

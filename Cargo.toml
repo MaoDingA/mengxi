@@ -10,3 +10,4 @@ toml = "0.8"
 rusqlite = { version = "0.38", features = ["bundled"] }
 dirs = "6"
 byteorder = "1"
+exr = "1.74"

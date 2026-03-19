@@ -215,12 +215,14 @@ mod tests {
             .unwrap()
             .join("migrations");
         let migrations = discover_migrations_from_dir(&project_root).unwrap();
-        assert_eq!(migrations.len(), 3);
+        assert_eq!(migrations.len(), 4);
         assert_eq!(migrations[0].0, 1); // 001_create_projects.sql
         assert_eq!(migrations[1].0, 2); // 002_create_files.sql
         assert_eq!(migrations[2].0, 3); // 003_add_file_metadata.sql
+        assert_eq!(migrations[3].0, 4); // 004_add_file_compression.sql
         assert!(migrations[0].1.contains("CREATE TABLE IF NOT EXISTS projects"));
         assert!(migrations[1].1.contains("CREATE TABLE IF NOT EXISTS files"));
         assert!(migrations[2].1.contains("ALTER TABLE files ADD COLUMN"));
+        assert!(migrations[3].1.contains("compression"));
     }
 }

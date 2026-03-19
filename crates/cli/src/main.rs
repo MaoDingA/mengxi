@@ -154,10 +154,33 @@ fn main() {
             match db::open_db() {
                 Ok(conn) => match project::register_project(&conn, &project_name, &path) {
                     Ok((proj, breakdown)) => {
-                        let variant_detail = if breakdown.variants.is_empty() {
-                            format!("{} DPX files", proj.dpx_count)
+                        let dpx_detail = if breakdown.variants.iter().any(|v| v.contains("-bit")) || proj.dpx_count == 0 {
+                            if proj.dpx_count == 0 {
+                                format!("{} DPX files", proj.dpx_count)
+                            } else {
+                                let dpx_variants: Vec<&str> = breakdown.variants.iter()
+                                    .filter(|v| v.contains("-bit"))
+                                    .map(|s| s.as_str())
+                                    .collect();
+                                if dpx_variants.is_empty() {
+                                    format!("{} DPX files", proj.dpx_count)
+                                } else {
+                                    format!("{} DPX files ({})", proj.dpx_count, dpx_variants.join(", "))
+                                }
+                            }
                         } else {
-                            format!("{} DPX files ({})", proj.dpx_count, breakdown.variants.join(", "))
+                            format!("{} DPX files", proj.dpx_count)
+                        };
+                        let exr_detail = {
+                            let exr_variants: Vec<&str> = breakdown.variants.iter()
+                                .filter(|v| v.contains("half-float") || v.contains("float") || v.contains("uint"))
+                                .map(|s| s.as_str())
+                                .collect();
+                            if exr_variants.is_empty() {
+                                format!("{} EXR files", proj.exr_count)
+                            } else {
+                                format!("{} EXR files ({})", proj.exr_count, exr_variants.join(", "))
+                            }
                         };
                         let skipped_detail = if breakdown.skipped_count > 0 {
                             format!(" ({} skipped)", breakdown.skipped_count)
@@ -176,8 +199,8 @@ fn main() {
                              +----------+------------------------------+",
                             proj.name,
                             proj.path,
-                            variant_detail,
-                            format!("{} EXR files", proj.exr_count),
+                            dpx_detail,
+                            exr_detail,
                             format!("{} MOV files{}", proj.mov_count, skipped_detail),
                         );
                     }
