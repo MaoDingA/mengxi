@@ -1,0 +1,8 @@
+docs/
+{output_folder}/
+_bmad/
+_bmad-output/
+.*
+
+# Allow .gitignore itself
+!.gitignore
