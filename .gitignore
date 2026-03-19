@@ -6,3 +6,6 @@ _bmad-output/
 
 # Allow .gitignore itself
 !.gitignore
+
+# Rust build artifacts
+target/
