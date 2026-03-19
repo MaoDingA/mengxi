@@ -153,22 +153,32 @@ fn main() {
             let path = Path::new(&project_path);
             match db::open_db() {
                 Ok(conn) => match project::register_project(&conn, &project_name, &path) {
-                    Ok(proj) => {
+                    Ok((proj, breakdown)) => {
+                        let variant_detail = if breakdown.variants.is_empty() {
+                            format!("{} DPX files", proj.dpx_count)
+                        } else {
+                            format!("{} DPX files ({})", proj.dpx_count, breakdown.variants.join(", "))
+                        };
+                        let skipped_detail = if breakdown.skipped_count > 0 {
+                            format!(" ({} skipped)", breakdown.skipped_count)
+                        } else {
+                            String::new()
+                        };
                         println!(
                             "+----------+------------------------------+\n\
                              | Field    | Value                        |\n\
                              +----------+------------------------------+\n\
                              | Name     | {:<28} |\n\
                              | Path     | {:<28} |\n\
-                             | DPX      | {:<28} |\n\
+                             | DPX      | {:<28}|\n\
                              | EXR      | {:<28} |\n\
                              | MOV      | {:<28} |\n\
                              +----------+------------------------------+",
                             proj.name,
                             proj.path,
-                            format!("{} DPX files", proj.dpx_count),
+                            variant_detail,
                             format!("{} EXR files", proj.exr_count),
-                            format!("{} MOV files", proj.mov_count),
+                            format!("{} MOV files{}", proj.mov_count, skipped_detail),
                         );
                     }
                     Err(project::ImportError::PathNotFound(msg)) => {
@@ -181,6 +191,10 @@ fn main() {
                     }
                     Err(project::ImportError::DbError(msg)) => {
                         eprintln!("Error: IMPORT_DB_ERROR — {msg}");
+                        process::exit(1);
+                    }
+                    Err(project::ImportError::CorruptFile { filename, reason }) => {
+                        eprintln!("Error: IMPORT_CORRUPT_FILE -- Failed to decode {}: {}", filename, reason);
                         process::exit(1);
                     }
                 },

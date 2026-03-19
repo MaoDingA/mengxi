@@ -1,7 +1,10 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+use mengxi_format::dpx;
 
 /// A registered project in the database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +25,21 @@ pub struct ProjectFile {
     pub project_id: i64,
     pub filename: String,
     pub format: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub bit_depth: Option<i64>,
+    pub transfer: Option<String>,
+    pub colorimetric: Option<String>,
+    pub descriptor: Option<String>,
     pub created_at: i64,
+}
+
+/// Per-variant breakdown for import summary.
+#[derive(Debug, Clone, Default)]
+pub struct VariantBreakdown {
+    pub variants: Vec<String>, // e.g., "5x 10-bit linear", "3x 16-bit linear"
+    pub skipped_count: usize,
+    pub skipped_files: Vec<String>,
 }
 
 /// Error types for import operations.
@@ -31,6 +48,7 @@ pub enum ImportError {
     PathNotFound(String),
     DuplicateName(String),
     DbError(String),
+    CorruptFile { filename: String, reason: String },
 }
 
 impl std::fmt::Display for ImportError {
@@ -44,6 +62,13 @@ impl std::fmt::Display for ImportError {
             }
             ImportError::DbError(msg) => {
                 write!(f, "DB_ERROR — {}", msg)
+            }
+            ImportError::CorruptFile { filename, reason } => {
+                write!(
+                    f,
+                    "IMPORT_CORRUPT_FILE — Failed to decode {}: {}",
+                    filename, reason
+                )
             }
         }
     }
@@ -97,12 +122,13 @@ pub fn scan_project_files(
     Ok(files)
 }
 
-/// Register a project: scan files, check for duplicates, insert into DB.
+/// Register a project: scan files, decode DPX headers, check for duplicates, insert into DB.
+/// Returns the project record and a variant breakdown for display.
 pub fn register_project(
     conn: &Connection,
     name: &str,
     path: &Path,
-) -> Result<Project, ImportError> {
+) -> Result<(Project, VariantBreakdown), ImportError> {
     // Check for duplicate name
     let exists: bool = conn
         .query_row(
@@ -131,24 +157,71 @@ pub fn register_project(
 
     let project_id = conn.last_insert_rowid();
 
-    // Insert file records
+    // Insert file records with DPX metadata extraction
+    let mut variant_counts: HashMap<String, usize> = HashMap::new();
+    let mut breakdown = VariantBreakdown::default();
+
     for (filename, format) in &files {
+        let file_path = path.join(filename);
+
+        // Extract DPX metadata
+        let (width, height, bit_depth, transfer, colorimetric, descriptor) = if format == "dpx" {
+            match dpx::parse_dpx_header(&file_path) {
+                Ok(header) => {
+                    let t = dpx::transfer_to_string(header.transfer).to_string();
+                    let d = dpx::descriptor_to_string(header.descriptor).to_string();
+                    let variant_key = format!("{}-bit {}", header.bit_depth, t);
+                    *variant_counts.entry(variant_key).or_insert(0) += 1;
+
+                    (
+                        Some(header.width as i64),
+                        Some(header.height as i64),
+                        Some(header.bit_depth as i64),
+                        Some(t),
+                        Some(dpx::colorimetric_to_string(header.colorimetric).to_string()),
+                        Some(d),
+                    )
+                }
+                Err(e) => {
+                    breakdown.skipped_count += 1;
+                    breakdown.skipped_files.push(filename.clone());
+                    eprintln!("Error: {}", ImportError::CorruptFile {
+                        filename: filename.clone(),
+                        reason: e.to_string(),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            (None, None, None, None, None, None)
+        };
+
         conn.execute(
-            "INSERT INTO files (project_id, filename, format) VALUES (?1, ?2, ?3)",
-            params![project_id, filename, format],
+            "INSERT INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor],
         )
         .map_err(|e| ImportError::DbError(e.to_string()))?;
     }
 
-    Ok(Project {
-        id: project_id,
-        name: name.to_string(),
-        path: path.to_string_lossy().to_string(),
-        dpx_count,
-        exr_count,
-        mov_count,
-        created_at: 0, // Will be populated by query if needed
-    })
+    // Build variant breakdown string
+    let mut sorted_variants: Vec<_> = variant_counts.into_iter().collect();
+    sorted_variants.sort_by(|a, b| b.1.cmp(&a.1));
+    for (variant, count) in sorted_variants {
+        breakdown.variants.push(format!("{}x {}", count, variant));
+    }
+
+    Ok((
+        Project {
+            id: project_id,
+            name: name.to_string(),
+            path: path.to_string_lossy().to_string(),
+            dpx_count,
+            exr_count,
+            mov_count,
+            created_at: 0,
+        },
+        breakdown,
+    ))
 }
 
 /// Retrieve a project by name.
@@ -230,6 +303,12 @@ mod tests {
                 project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 filename    TEXT NOT NULL,
                 format      TEXT NOT NULL CHECK(format IN ('dpx', 'exr', 'mov')),
+                width       INTEGER,
+                height      INTEGER,
+                bit_depth   INTEGER,
+                transfer    TEXT,
+                colorimetric TEXT,
+                descriptor  TEXT,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )
@@ -254,7 +333,7 @@ mod tests {
         create_test_files(&film_dir, &["shot001.dpx", "shot002.dpx", "ref.exr"]);
 
         let (_db_dir, conn) = setup_test_db();
-        let project = register_project(&conn, "my_film", &film_dir).unwrap();
+        let (project, _breakdown) = register_project(&conn, "my_film", &film_dir).unwrap();
 
         assert_eq!(project.name, "my_film");
         assert_eq!(project.dpx_count, 2);
@@ -306,7 +385,7 @@ mod tests {
         );
 
         let files = scan_project_files(&film_dir).unwrap();
-        assert_eq!(files.len(), 7); // Excludes .txt
+        assert_eq!(files.len(), 7);
         assert_eq!(files.iter().filter(|(_, f)| f == "dpx").count(), 3);
         assert_eq!(files.iter().filter(|(_, f)| f == "exr").count(), 2);
         assert_eq!(files.iter().filter(|(_, f)| f == "mov").count(), 2);
@@ -330,5 +409,81 @@ mod tests {
         let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"film_a"));
         assert!(names.contains(&"film_b"));
+    }
+
+    #[test]
+    fn test_register_with_dpx_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a valid synthetic DPX file
+        let dpx_path = film_dir.join("shot001.dpx");
+        dpx::create_synthetic_dpx(&dpx_path, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "meta_test", &film_dir).unwrap();
+
+        assert_eq!(project.dpx_count, 1);
+        assert_eq!(breakdown.variants.len(), 1);
+        assert!(breakdown.variants[0].contains("10-bit"));
+        assert!(breakdown.variants[0].contains("linear"));
+        assert_eq!(breakdown.skipped_count, 0);
+    }
+
+    #[test]
+    fn test_register_skips_corrupt_dpx() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a valid DPX
+        let valid_path = film_dir.join("valid.dpx");
+        dpx::create_synthetic_dpx(&valid_path, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
+
+        // Create a corrupt DPX (invalid magic, 2048 bytes)
+        let corrupt_path = film_dir.join("corrupt.dpx");
+        let mut data = vec![0u8; 2048];
+        data[0] = b'B'; data[1] = b'A'; data[2] = b'D'; data[3] = b'!';
+        fs::write(&corrupt_path, &data).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "corrupt_test", &film_dir).unwrap();
+
+        assert_eq!(project.dpx_count, 2); // Both files are .dpx
+        assert_eq!(breakdown.skipped_count, 1);
+        assert_eq!(breakdown.skipped_files.len(), 1);
+        assert_eq!(breakdown.skipped_files[0], "corrupt.dpx");
+        assert_eq!(breakdown.variants.len(), 1);
+        assert!(breakdown.variants[0].contains("10-bit"));
+    }
+
+    #[test]
+    fn test_register_with_mixed_bit_depths() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create two 10-bit DPX files
+        for i in 0..2 {
+            let p = film_dir.join(format!("shot{}.dpx", i));
+            dpx::create_synthetic_dpx(&p, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
+        }
+        // Create one 16-bit DPX file
+        let p16 = film_dir.join("shot16.dpx");
+        dpx::create_synthetic_dpx(&p16, 4096, 2160, 16, 2, DpxEndian::Big).unwrap();
+        // Create one EXR file (empty)
+        fs::write(film_dir.join("ref.exr"), "").unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "mixed_test", &film_dir).unwrap();
+
+        assert_eq!(project.dpx_count, 3);
+        assert_eq!(project.exr_count, 1);
+        assert_eq!(breakdown.variants.len(), 2);
+
+        let all_variants = breakdown.variants.join(", ");
+        assert!(all_variants.contains("2x 10-bit"));
+        assert!(all_variants.contains("1x 16-bit"));
     }
 }
