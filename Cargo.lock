@@ -358,6 +358,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dirs",
+ "mengxi-core",
  "serde",
  "tempfile",
  "toml",
@@ -367,9 +368,11 @@ dependencies = [
 name = "mengxi-core"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

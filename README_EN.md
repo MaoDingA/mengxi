@@ -347,4 +347,4 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Author
 
-**Mao Ding (毛丁)** — Colorist with deep domain expertise on major Chinese productions including *The Wandering Earth 2*, *Lost in the Stars*, and *Love Game in Eastern Fantasy*.
+**Mao Ding (毛丁)**

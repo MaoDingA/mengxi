@@ -1,7 +1,11 @@
 mod config;
 
 use clap::{Parser, Subcommand};
+use std::path::Path;
 use std::process;
+
+use mengxi_core::db;
+use mengxi_core::project;
 
 /// Mengxi — CLI-based color pipeline management platform
 #[derive(Parser)]
@@ -130,9 +134,61 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Import { .. }) => {
-            eprintln!("Error: 'import' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::Import { project, name, format: _ }) => {
+            let project_path = match project {
+                Some(p) => p,
+                None => {
+                    eprintln!("Error: IMPORT_MISSING_ARG — --project <path> is required");
+                    process::exit(1);
+                }
+            };
+            let project_name = match name {
+                Some(n) => n,
+                None => {
+                    eprintln!("Error: IMPORT_MISSING_ARG --name <string> is required");
+                    process::exit(1);
+                }
+            };
+
+            let path = Path::new(&project_path);
+            match db::open_db() {
+                Ok(conn) => match project::register_project(&conn, &project_name, &path) {
+                    Ok(proj) => {
+                        println!(
+                            "+----------+------------------------------+\n\
+                             | Field    | Value                        |\n\
+                             +----------+------------------------------+\n\
+                             | Name     | {:<28} |\n\
+                             | Path     | {:<28} |\n\
+                             | DPX      | {:<28} |\n\
+                             | EXR      | {:<28} |\n\
+                             | MOV      | {:<28} |\n\
+                             +----------+------------------------------+",
+                            proj.name,
+                            proj.path,
+                            format!("{} DPX files", proj.dpx_count),
+                            format!("{} EXR files", proj.exr_count),
+                            format!("{} MOV files", proj.mov_count),
+                        );
+                    }
+                    Err(project::ImportError::PathNotFound(msg)) => {
+                        eprintln!("Error: {msg}");
+                        process::exit(1);
+                    }
+                    Err(project::ImportError::DuplicateName(msg)) => {
+                        eprintln!("Error: {msg}");
+                        process::exit(1);
+                    }
+                    Err(project::ImportError::DbError(msg)) => {
+                        eprintln!("Error: IMPORT_DB_ERROR — {msg}");
+                        process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error: IMPORT_DB_INIT_FAILED — {e}");
+                    process::exit(1);
+                }
+            }
         }
         Some(Commands::Search { .. }) => {
             eprintln!("Error: 'search' command is not yet implemented");
