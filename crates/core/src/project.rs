@@ -49,6 +49,7 @@ pub struct VariantBreakdown {
     pub skipped_count: usize,
     pub skipped_files: Vec<String>,
     pub fingerprint_count: usize,
+    pub resumed_count: usize,
 }
 
 /// Error types for import operations.
@@ -133,45 +134,80 @@ pub fn scan_project_files(
 
 /// Register a project: scan files, decode DPX headers, check for duplicates, insert into DB.
 /// Returns the project record and a variant breakdown for display.
+/// If project already exists, resumes import (skips already-processed files).
 pub fn register_project(
     conn: &Connection,
     name: &str,
     path: &Path,
+    mut on_progress: impl FnMut(usize, usize, &str),
 ) -> Result<(Project, VariantBreakdown), ImportError> {
-    // Check for duplicate name
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM projects WHERE name = ?1)",
-            [name],
-            |row| row.get(0),
-        )
-        .map_err(|e| ImportError::DbError(e.to_string()))?;
+    // Check for existing project (resume support)
+    let (project_id, is_new) = match conn.query_row(
+        "SELECT id FROM projects WHERE name = ?1",
+        [name],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(id) => (id, false),
+        Err(rusqlite::Error::QueryReturnedNoRows) => (0, true),
+        Err(e) => return Err(ImportError::DbError(e.to_string())),
+    };
 
-    if exists {
-        return Err(ImportError::DuplicateName(name.to_string()));
-    }
-
-    // Scan files
+    // Scan files first to get counts
     let files = scan_project_files(path)?;
     let dpx_count = files.iter().filter(|(_, f)| f == "dpx").count() as i64;
     let exr_count = files.iter().filter(|(_, f)| f == "exr").count() as i64;
     let mov_count = files.iter().filter(|(_, f)| f == "mov").count() as i64;
 
-    // Insert project record
+    if is_new {
+        // Insert project record
+        conn.execute(
+            "INSERT INTO projects (name, path, dpx_count, exr_count, mov_count) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, path.to_string_lossy(), dpx_count, exr_count, mov_count],
+        )
+        .map_err(|e| ImportError::DbError(e.to_string()))?;
+    }
+
+    // Get project_id (either from existing or just-inserted)
+    let project_id = if is_new {
+        conn.last_insert_rowid()
+    } else {
+        project_id
+    };
+
+    // Query already-imported filenames for resume support
+    let existing_files: Vec<String> = if !is_new {
+        let mut stmt = conn.prepare(
+            "SELECT filename FROM files WHERE project_id = ?1",
+        ).map_err(|e| ImportError::DbError(e.to_string()))?;
+        let result: Vec<String> = stmt.query_map([project_id], |row| row.get::<_, String>(0))
+            .map_err(|e| ImportError::DbError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ImportError::DbError(e.to_string()))?;
+        result
+    } else {
+        Vec::new()
+    };
+
+    // Update project counts to reflect total files
     conn.execute(
-        "INSERT INTO projects (name, path, dpx_count, exr_count, mov_count) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![name, path.to_string_lossy(), dpx_count, exr_count, mov_count],
+        "UPDATE projects SET dpx_count = ?1, exr_count = ?2, mov_count = ?3 WHERE id = ?4",
+        params![dpx_count, exr_count, mov_count, project_id],
     )
     .map_err(|e| ImportError::DbError(e.to_string()))?;
-
-    let project_id = conn.last_insert_rowid();
 
     // Insert file records with DPX metadata extraction
     let mut variant_counts: HashMap<String, usize> = HashMap::new();
     let mut breakdown = VariantBreakdown::default();
 
     for (filename, format) in &files {
+        // Skip already-imported files (resume support)
+        if existing_files.contains(filename) {
+            breakdown.resumed_count += 1;
+            continue;
+        }
+
         let file_path = path.join(filename);
+        on_progress(breakdown.resumed_count + breakdown.skipped_count + 1, files.len(), filename);
 
         // Extract format-specific metadata
         let (width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count) = if format == "dpx" {
@@ -352,18 +388,22 @@ pub fn register_project(
         breakdown.variants.push(format!("{}x {}", count, variant));
     }
 
-    Ok((
-        Project {
-            id: project_id,
-            name: name.to_string(),
-            path: path.to_string_lossy().to_string(),
-            dpx_count,
-            exr_count,
-            mov_count,
-            created_at: 0,
-        },
-        breakdown,
-    ))
+    // Load project record from DB for accurate created_at
+    let project = conn.query_row(
+        "SELECT id, name, path, dpx_count, exr_count, mov_count, created_at FROM projects WHERE id = ?1",
+        [project_id],
+        |row| Ok(Project {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            path: row.get(2)?,
+            dpx_count: row.get(3)?,
+            exr_count: row.get(4)?,
+            mov_count: row.get(5)?,
+            created_at: row.get(6)?,
+        }),
+    ).map_err(|e| ImportError::DbError(e.to_string()))?;
+
+    Ok((project, breakdown))
 }
 
 /// Map DPX transfer characteristic string to a color space tag for fingerprint extraction.
@@ -502,7 +542,7 @@ mod tests {
         create_test_files(&film_dir, &["shot001.dpx", "shot002.dpx", "ref.exr"]);
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, _breakdown) = register_project(&conn, "my_film", &film_dir).unwrap();
+        let (project, _breakdown) = register_project(&conn, "my_film", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.name, "my_film");
         assert_eq!(project.dpx_count, 2);
@@ -512,26 +552,26 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_project_name_error() {
+    fn test_duplicate_project_name_resumes() {
         let dir = tempfile::tempdir().unwrap();
         let film_dir = dir.path().join("film_project");
-        create_test_files(&film_dir, &["shot.dpx"]);
+        fs::create_dir_all(&film_dir).unwrap();
+        dpx::create_synthetic_dpx(&film_dir.join("shot.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        register_project(&conn, "my_film", &film_dir).unwrap();
-        let result = register_project(&conn, "my_film", &film_dir);
+        let (project1, _breakdown1) = register_project(&conn, "my_film", &film_dir, |_, _, _| {}).unwrap();
+        assert_eq!(project1.name, "my_film");
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ImportError::DuplicateName(name) => assert_eq!(name, "my_film"),
-            other => panic!("Expected DuplicateName, got: {:?}", other),
-        }
+        // Re-import should resume, not error
+        let (project2, breakdown2) = register_project(&conn, "my_film", &film_dir, |_, _, _| {}).unwrap();
+        assert_eq!(project2.id, project1.id); // Same project record
+        assert_eq!(breakdown2.resumed_count, 1); // Skipped already-imported file
     }
 
     #[test]
     fn test_nonexistent_path_error() {
         let (_db_dir, conn) = setup_test_db();
-        let result = register_project(&conn, "test", Path::new("/nonexistent/path"));
+        let result = register_project(&conn, "test", Path::new("/nonexistent/path"), |_, _, _| {});
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -567,11 +607,11 @@ mod tests {
         create_test_files(&film_dir, &["shot.dpx"]);
 
         let (_db_dir, conn) = setup_test_db();
-        register_project(&conn, "film_a", &film_dir).unwrap();
+        register_project(&conn, "film_a", &film_dir, |_, _, _| {}).unwrap();
 
         let film_dir2 = dir.path().join("film2");
         create_test_files(&film_dir2, &["ref.exr"]);
-        register_project(&conn, "film_b", &film_dir2).unwrap();
+        register_project(&conn, "film_b", &film_dir2, |_, _, _| {}).unwrap();
 
         let projects = list_projects(&conn).unwrap();
         assert_eq!(projects.len(), 2);
@@ -591,7 +631,7 @@ mod tests {
         dpx::create_synthetic_dpx(&dpx_path, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "meta_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "meta_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 1);
         assert_eq!(breakdown.variants.len(), 1);
@@ -617,7 +657,7 @@ mod tests {
         fs::write(&corrupt_path, &data).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "corrupt_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "corrupt_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 2); // Both files are .dpx
         assert_eq!(breakdown.skipped_count, 1);
@@ -646,7 +686,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "mixed_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "mixed_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 3);
         assert_eq!(project.exr_count, 1);
@@ -671,7 +711,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "exr_meta_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "exr_meta_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.exr_count, 1);
         assert_eq!(breakdown.variants.len(), 1);
@@ -695,7 +735,7 @@ mod tests {
         fs::write(&corrupt_path, vec![0xAB; 2048]).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "corrupt_exr_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "corrupt_exr_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.exr_count, 2); // Both files are .exr
         assert_eq!(breakdown.skipped_count, 1);
@@ -723,7 +763,7 @@ mod tests {
         }
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "exr_compress_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "exr_compress_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.exr_count, 5);
         assert_eq!(breakdown.skipped_count, 0);
@@ -751,7 +791,7 @@ mod tests {
         exr_format::create_synthetic_exr(&film_dir.join("c.exr"), 1920, 1080, exr::image::Encoding::SMALL_FAST_LOSSLESS).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "mixed_dpx_exr", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "mixed_dpx_exr", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 2);
         assert_eq!(project.exr_count, 3);
@@ -777,7 +817,7 @@ mod tests {
         fs::write(&corrupt_path, vec![0xAB; 2048]).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "corrupt_mov_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "corrupt_mov_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.mov_count, 1);
         assert_eq!(breakdown.skipped_count, 1);
@@ -804,7 +844,7 @@ mod tests {
         fs::write(&trunc_path, vec![0u8; 50]).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "mixed_corrupt_test", &film_dir).unwrap();
+        let (project, breakdown) = register_project(&conn, "mixed_corrupt_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 1);
         assert_eq!(project.mov_count, 2);
@@ -827,7 +867,7 @@ mod tests {
         dpx::create_synthetic_dpx(&dpx_path, 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "fp_dpx_test", &film_dir).unwrap();
+        let (_project, breakdown) = register_project(&conn, "fp_dpx_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 1);
 
@@ -860,7 +900,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "fp_exr_test", &film_dir).unwrap();
+        let (_project, breakdown) = register_project(&conn, "fp_exr_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 1);
 
@@ -885,7 +925,7 @@ mod tests {
         dpx::create_synthetic_dpx(&video_path, 4, 4, 10, 6, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "tag_test", &film_dir).unwrap();
+        let (_project, breakdown) = register_project(&conn, "tag_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 2);
 
@@ -912,7 +952,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "lum_test", &film_dir).unwrap();
+        let (_project, breakdown) = register_project(&conn, "lum_test", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 1);
 
@@ -946,7 +986,7 @@ mod tests {
         exr_format::create_synthetic_exr(&film_dir.join("ref.exr"), 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "mixed_fp", &film_dir).unwrap();
+        let (_project, breakdown) = register_project(&conn, "mixed_fp", &film_dir, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 3);
 
@@ -965,5 +1005,75 @@ mod tests {
         assert_eq!(map_transfer_string_to_color_tag("smpte_274m"), "video");
         assert_eq!(map_transfer_string_to_color_tag("linear"), "linear");
         assert_eq!(map_transfer_string_to_color_tag("user_defined"), "linear");
+    }
+
+    // --- Story 1.7: Progress, Resume, JSON tests ---
+
+    #[test]
+    fn test_progress_callback_is_called() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+        dpx::create_synthetic_dpx(&film_dir.join("a.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+        dpx::create_synthetic_dpx(&film_dir.join("b.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+        dpx::create_synthetic_dpx(&film_dir.join("c.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let mut call_count = 0usize;
+        let mut last_filename = String::new();
+        register_project(&conn, "progress_test", &film_dir, |_current, _total, filename| {
+            call_count += 1;
+            last_filename = filename.to_string();
+        }).unwrap();
+
+        assert_eq!(call_count, 3);
+        assert!(!last_filename.is_empty());
+    }
+
+    #[test]
+    fn test_resume_with_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create 2 DPX files, import
+        dpx::create_synthetic_dpx(&film_dir.join("shot001.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+        dpx::create_synthetic_dpx(&film_dir.join("shot002.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (proj1, bd1) = register_project(&conn, "resume_new", &film_dir, |_, _, _| {}).unwrap();
+        assert_eq!(proj1.dpx_count, 2);
+        assert_eq!(bd1.resumed_count, 0);
+
+        // Add a 3rd file, re-import
+        dpx::create_synthetic_dpx(&film_dir.join("shot003.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+
+        let mut processed_count = 0usize;
+        let (proj2, bd2) = register_project(&conn, "resume_new", &film_dir, |_current, _total, _filename| {
+            processed_count += 1;
+        }).unwrap();
+
+        assert_eq!(proj2.id, proj1.id);
+        assert_eq!(proj2.dpx_count, 3);
+        assert_eq!(bd2.resumed_count, 2); // 2 previously imported files skipped
+        assert_eq!(processed_count, 1);   // Only 1 new file was processed
+    }
+
+    #[test]
+    fn test_resume_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+        dpx::create_synthetic_dpx(&film_dir.join("shot.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (proj1, _bd1) = register_project(&conn, "idem_test", &film_dir, |_, _, _| {}).unwrap();
+
+        // Re-import same files — should resume everything
+        let (proj2, bd2) = register_project(&conn, "idem_test", &film_dir, |_, _, _| {}).unwrap();
+
+        assert_eq!(proj2.id, proj1.id);
+        assert_eq!(bd2.resumed_count, 1);
+        assert_eq!(bd2.fingerprint_count, 0); // No new fingerprints
     }
 }

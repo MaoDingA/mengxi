@@ -25,9 +25,9 @@ enum Commands {
         /// Project name
         #[arg(long)]
         name: Option<String>,
-        /// Override input format (dpx, exr, mov)
-        #[arg(long)]
-        format: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
     },
     /// Search indexed projects by image or tag
     Search {
@@ -134,7 +134,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Import { project, name, format: _ }) => {
+        Some(Commands::Import { project, name, format }) => {
             let project_path = match project {
                 Some(p) => p,
                 None => {
@@ -145,98 +145,169 @@ fn main() {
             let project_name = match name {
                 Some(n) => n,
                 None => {
-                    eprintln!("Error: IMPORT_MISSING_ARG --name <string> is required");
+                    eprintln!("Error: IMPORT_MISSING_ARG — --name <string> is required");
                     process::exit(1);
                 }
             };
 
             let path = Path::new(&project_path);
+            let is_json = format == "json";
+
             match db::open_db() {
-                Ok(conn) => match project::register_project(&conn, &project_name, &path) {
+                Ok(conn) => match project::register_project(&conn, &project_name, &path, |current, total, filename| {
+                    let percent = (current * 100) / total;
+                    let filled = percent / 5;
+                    let empty = 20 - filled;
+                    eprintln!("[{}{}] {}% ({}/{}) Processing {}...",
+                        "█".repeat(filled),
+                        "░".repeat(empty),
+                        percent,
+                        current,
+                        total,
+                        filename,
+                    );
+                }) {
                     Ok((proj, breakdown)) => {
-                        let dpx_detail = if breakdown.variants.iter().any(|v| v.contains("-bit")) || proj.dpx_count == 0 {
-                            if proj.dpx_count == 0 {
-                                format!("{} DPX files", proj.dpx_count)
-                            } else {
-                                let dpx_variants: Vec<&str> = breakdown.variants.iter()
-                                    .filter(|v| v.contains("-bit"))
-                                    .map(|s| s.as_str())
-                                    .collect();
-                                if dpx_variants.is_empty() {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "ok",
+                                "project": {
+                                    "id": proj.id,
+                                    "name": proj.name,
+                                    "path": proj.path,
+                                    "dpx_count": proj.dpx_count,
+                                    "exr_count": proj.exr_count,
+                                    "mov_count": proj.mov_count,
+                                    "created_at": proj.created_at,
+                                },
+                                "summary": {
+                                    "dpx_count": proj.dpx_count,
+                                    "exr_count": proj.exr_count,
+                                    "mov_count": proj.mov_count,
+                                    "fingerprint_count": breakdown.fingerprint_count,
+                                    "skipped_count": breakdown.skipped_count,
+                                    "resumed_count": breakdown.resumed_count,
+                                    "variants": breakdown.variants,
+                                }
+                            });
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            let dpx_detail = if breakdown.variants.iter().any(|v| v.contains("-bit")) || proj.dpx_count == 0 {
+                                if proj.dpx_count == 0 {
                                     format!("{} DPX files", proj.dpx_count)
                                 } else {
-                                    format!("{} DPX files ({})", proj.dpx_count, dpx_variants.join(", "))
+                                    let dpx_variants: Vec<&str> = breakdown.variants.iter()
+                                        .filter(|v| v.contains("-bit"))
+                                        .map(|s| s.as_str())
+                                        .collect();
+                                    if dpx_variants.is_empty() {
+                                        format!("{} DPX files", proj.dpx_count)
+                                    } else {
+                                        format!("{} DPX files ({})", proj.dpx_count, dpx_variants.join(", "))
+                                    }
+                                }
+                            } else {
+                                format!("{} DPX files", proj.dpx_count)
+                            };
+                            let exr_detail = {
+                                let exr_variants: Vec<&str> = breakdown.variants.iter()
+                                    .filter(|v| v.contains("half-float") || v.contains("float") || v.contains("uint"))
+                                    .map(|s| s.as_str())
+                                    .collect();
+                                if exr_variants.is_empty() {
+                                    format!("{} EXR files", proj.exr_count)
+                                } else {
+                                    format!("{} EXR files ({})", proj.exr_count, exr_variants.join(", "))
+                                }
+                            };
+                            let skipped_detail = if breakdown.skipped_count > 0 {
+                                format!(" ({} skipped)", breakdown.skipped_count)
+                            } else {
+                                String::new()
+                            };
+                            let mov_detail = {
+                                let mov_variants: Vec<&str> = breakdown.variants.iter()
+                                    .filter(|v| !v.contains("-bit") && !v.contains("half-float") && !v.contains("float") && !v.contains("uint"))
+                                    .map(|s| s.as_str())
+                                    .collect();
+                                if mov_variants.is_empty() {
+                                    format!("{} MOV files", proj.mov_count)
+                                } else {
+                                    format!("{} MOV files ({})", proj.mov_count, mov_variants.join(", "))
+                                }
+                            };
+                            let fp_detail = format!("{} fingerprints extracted", breakdown.fingerprint_count);
+                            println!(
+                                "+----------+------------------------------+\n\
+                                 | Field    | Value                        |\n\
+                                 +----------+------------------------------+\n\
+                                 | Name     | {:<28} |\n\
+                                 | Path     | {:<28} |\n\
+                                 | DPX      | {:<28}|\n\
+                                 | EXR      | {:<28} |\n\
+                                 | MOV      | {:<28} |\n\
+                                 | Color    | {:<28} |\n\
+                                 +----------+------------------------------+",
+                                proj.name,
+                                proj.path,
+                                dpx_detail,
+                                exr_detail,
+                                format!("{}{}", mov_detail, skipped_detail),
+                                fp_detail,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if is_json {
+                            let (code, message) = match &e {
+                                project::ImportError::PathNotFound(msg) => ("IMPORT_PATH_NOT_FOUND", msg.clone()),
+                                project::ImportError::DuplicateName(msg) => ("IMPORT_DUPLICATE_NAME", msg.clone()),
+                                project::ImportError::DbError(msg) => ("IMPORT_DB_ERROR", msg.clone()),
+                                project::ImportError::CorruptFile { filename, reason } => {
+                                    ("IMPORT_CORRUPT_FILE", format!("Failed to decode {}: {}", filename, reason))
+                                }
+                            };
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": {
+                                    "code": code,
+                                    "message": message,
+                                }
+                            });
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            process::exit(1);
+                        } else {
+                            match e {
+                                project::ImportError::PathNotFound(msg) => {
+                                    eprintln!("Error: {msg}");
+                                }
+                                project::ImportError::DuplicateName(msg) => {
+                                    eprintln!("Error: {msg}");
+                                }
+                                project::ImportError::DbError(msg) => {
+                                    eprintln!("Error: IMPORT_DB_ERROR — {msg}");
+                                }
+                                project::ImportError::CorruptFile { filename, reason } => {
+                                    eprintln!("Error: IMPORT_CORRUPT_FILE -- Failed to decode {}: {}", filename, reason);
                                 }
                             }
-                        } else {
-                            format!("{} DPX files", proj.dpx_count)
-                        };
-                        let exr_detail = {
-                            let exr_variants: Vec<&str> = breakdown.variants.iter()
-                                .filter(|v| v.contains("half-float") || v.contains("float") || v.contains("uint"))
-                                .map(|s| s.as_str())
-                                .collect();
-                            if exr_variants.is_empty() {
-                                format!("{} EXR files", proj.exr_count)
-                            } else {
-                                format!("{} EXR files ({})", proj.exr_count, exr_variants.join(", "))
-                            }
-                        };
-                        let skipped_detail = if breakdown.skipped_count > 0 {
-                            format!(" ({} skipped)", breakdown.skipped_count)
-                        } else {
-                            String::new()
-                        };
-                        let mov_detail = {
-                            let mov_variants: Vec<&str> = breakdown.variants.iter()
-                                .filter(|v| !v.contains("-bit") && !v.contains("half-float") && !v.contains("float") && !v.contains("uint"))
-                                .map(|s| s.as_str())
-                                .collect();
-                            if mov_variants.is_empty() {
-                                format!("{} MOV files", proj.mov_count)
-                            } else {
-                                format!("{} MOV files ({})", proj.mov_count, mov_variants.join(", "))
-                            }
-                        };
-                        let fp_detail = format!("{} fingerprints extracted", breakdown.fingerprint_count);
-                        println!(
-                            "+----------+------------------------------+\n\
-                             | Field    | Value                        |\n\
-                             +----------+------------------------------+\n\
-                             | Name     | {:<28} |\n\
-                             | Path     | {:<28} |\n\
-                             | DPX      | {:<28}|\n\
-                             | EXR      | {:<28} |\n\
-                             | MOV      | {:<28} |\n\
-                             | Color    | {:<28} |\n\
-                             +----------+------------------------------+",
-                            proj.name,
-                            proj.path,
-                            dpx_detail,
-                            exr_detail,
-                            format!("{}{}", mov_detail, skipped_detail),
-                            fp_detail,
-                        );
-                    }
-                    Err(project::ImportError::PathNotFound(msg)) => {
-                        eprintln!("Error: {msg}");
-                        process::exit(1);
-                    }
-                    Err(project::ImportError::DuplicateName(msg)) => {
-                        eprintln!("Error: {msg}");
-                        process::exit(1);
-                    }
-                    Err(project::ImportError::DbError(msg)) => {
-                        eprintln!("Error: IMPORT_DB_ERROR — {msg}");
-                        process::exit(1);
-                    }
-                    Err(project::ImportError::CorruptFile { filename, reason }) => {
-                        eprintln!("Error: IMPORT_CORRUPT_FILE -- Failed to decode {}: {}", filename, reason);
-                        process::exit(1);
+                            process::exit(1);
+                        }
                     }
                 },
                 Err(e) => {
-                    eprintln!("Error: IMPORT_DB_INIT_FAILED — {e}");
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": {
+                                "code": "IMPORT_DB_INIT_FAILED",
+                                "message": e.to_string(),
+                            }
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: IMPORT_DB_INIT_FAILED — {e}");
+                    }
                     process::exit(1);
                 }
             }
@@ -313,14 +384,14 @@ mod tests {
             "import",
             "--project", "/path/to/film",
             "--name", "my_film",
-            "--format", "dpx",
+            "--format", "json",
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
             Some(Commands::Import { project, name, format }) => {
                 assert_eq!(project.as_deref(), Some("/path/to/film"));
                 assert_eq!(name.as_deref(), Some("my_film"));
-                assert_eq!(format.as_deref(), Some("dpx"));
+                assert_eq!(format, "json");
             }
             _ => panic!("Expected Import command"),
         }

@@ -486,6 +486,7 @@ dependencies = [
  "dirs",
  "mengxi-core",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]

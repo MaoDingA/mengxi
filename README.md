@@ -8,6 +8,8 @@ license: MIT
 
 # Mengxi (梦溪)
 
+> 2026 MoonBit 软件合成挑战赛参赛项目
+
 面向数字中间片流程的命令行调色管线管理平台。Mengxi 帮助调色指导通过图像相似度匹配检索历史项目库，并将匹配的调色风格导出为 LUT 文件，一键嵌入 DaVinci Resolve 使用。
 
 **English version: [README_EN.md](README_EN.md)**
@@ -310,18 +312,6 @@ flowchart LR
 3. Cargo 构建所有 Rust crates，输出单个 `mengxi` 可执行文件
 4. Python 不是构建依赖——仅在运行时作为子进程按需启动
 
-## Development Status
-
-**规划完成，开发进行中。**
-
-- [x] 产品需求文档（PRD）
-- [x] 架构设计（41 FR + 18 NFR）
-- [x] Epics & Stories（5 个 Epic，21 个 Story）
-- [ ] Sprint 1：CLI 基础 & 项目导入
-- [ ] Sprint 2：指纹引擎 & 搜索
-- [ ] Sprint 3：LUT 引擎 & 导出
-- [ ] Sprint 4：AI 标签增强 & 校准
-- [ ] Sprint 5：分析统计 & 报告
 
 ## Roadmap
 
@@ -333,7 +323,7 @@ flowchart LR
 
 ## Contributing
 
-欢迎贡献代码，请按以下步骤操作：
+欢迎共创代码：
 
 1. Fork 本仓库
 2. 创建功能分支（`git checkout -b feature/your-feature`）
@@ -344,7 +334,3 @@ flowchart LR
 ## License
 
 本项目基于 [MIT 许可证](LICENSE) 开源。
-
-## Author
-
-**毛丁 (Mao Ding)**
