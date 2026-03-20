@@ -6,6 +6,7 @@ use std::path::Path;
 
 use mengxi_format::dpx;
 use mengxi_format::exr as exr_format;
+use mengxi_format::mov as mov_format;
 
 /// A registered project in the database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,10 @@ pub struct ProjectFile {
     pub colorimetric: Option<String>,
     pub descriptor: Option<String>,
     pub compression: Option<String>,
+    pub codec: Option<String>,
+    pub fps: Option<f64>,
+    pub duration: Option<f64>,
+    pub frame_count: Option<i64>,
     pub created_at: i64,
 }
 
@@ -166,8 +171,8 @@ pub fn register_project(
     for (filename, format) in &files {
         let file_path = path.join(filename);
 
-        // Extract DPX metadata
-        let (width, height, bit_depth, transfer, colorimetric, descriptor, compression) = if format == "dpx" {
+        // Extract format-specific metadata
+        let (width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count) = if format == "dpx" {
             match dpx::parse_dpx_header(&file_path) {
                 Ok(header) => {
                     let t = dpx::transfer_to_string(header.transfer).to_string();
@@ -182,6 +187,10 @@ pub fn register_project(
                         Some(t),
                         Some(dpx::colorimetric_to_string(header.colorimetric).to_string()),
                         Some(d),
+                        None,
+                        None,
+                        None,
+                        None,
                         None,
                     )
                 }
@@ -212,6 +221,40 @@ pub fn register_project(
                         None,
                         Some(desc),
                         Some(comp_str.to_string()),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                }
+                Err(e) => {
+                    breakdown.skipped_count += 1;
+                    breakdown.skipped_files.push(filename.clone());
+                    eprintln!("Error: {}", ImportError::CorruptFile {
+                        filename: filename.clone(),
+                        reason: e.to_string(),
+                    });
+                    continue;
+                }
+            }
+        } else if format == "mov" {
+            match mov_format::parse_mov_header(&file_path) {
+                Ok(header) => {
+                    let variant_key = mov_format::codec_to_variant_key(&header.codec);
+                    *variant_counts.entry(variant_key).or_insert(0) += 1;
+
+                    (
+                        Some(header.width as i64),
+                        Some(header.height as i64),
+                        header.bit_depth.map(|bd| bd as i64),
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(header.codec),
+                        Some(header.fps),
+                        Some(header.duration_secs),
+                        Some(header.frame_count as i64),
                     )
                 }
                 Err(e) => {
@@ -225,12 +268,12 @@ pub fn register_project(
                 }
             }
         } else {
-            (None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None, None, None)
         };
 
         conn.execute(
-            "INSERT INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression],
+            "INSERT INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count],
         )
         .map_err(|e| ImportError::DbError(e.to_string()))?;
     }
@@ -343,6 +386,10 @@ mod tests {
                 colorimetric TEXT,
                 descriptor  TEXT,
                 compression TEXT,
+                codec       TEXT,
+                fps         REAL,
+                duration    REAL,
+                frame_count INTEGER,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )
@@ -629,5 +676,55 @@ mod tests {
         assert!(all_variants.contains("half-float NONE"));
         assert!(all_variants.contains("half-float RLE"));
         assert!(all_variants.contains("half-float PIZ"));
+    }
+
+    #[test]
+    fn test_register_skips_corrupt_mov() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a corrupt MOV (garbage bytes)
+        let corrupt_path = film_dir.join("corrupt.mov");
+        fs::write(&corrupt_path, vec![0xAB; 2048]).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "corrupt_mov_test", &film_dir).unwrap();
+
+        assert_eq!(project.mov_count, 1);
+        assert_eq!(breakdown.skipped_count, 1);
+        assert_eq!(breakdown.skipped_files.len(), 1);
+        assert_eq!(breakdown.skipped_files[0], "corrupt.mov");
+    }
+
+    #[test]
+    fn test_register_skips_corrupt_mov_alongside_valid_dpx() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a valid DPX
+        let valid_path = film_dir.join("valid.dpx");
+        dpx::create_synthetic_dpx(&valid_path, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
+
+        // Create a corrupt MOV
+        let corrupt_path = film_dir.join("corrupt.mov");
+        fs::write(&corrupt_path, vec![0xAB; 1024]).unwrap();
+
+        // Create a truncated MOV (too short for valid container)
+        let trunc_path = film_dir.join("trunc.mov");
+        fs::write(&trunc_path, vec![0u8; 50]).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (project, breakdown) = register_project(&conn, "mixed_corrupt_test", &film_dir).unwrap();
+
+        assert_eq!(project.dpx_count, 1);
+        assert_eq!(project.mov_count, 2);
+        assert_eq!(breakdown.skipped_count, 2);
+        assert_eq!(breakdown.skipped_files.len(), 2);
+        assert!(breakdown.skipped_files.contains(&"corrupt.mov".to_string()));
+        assert!(breakdown.skipped_files.contains(&"trunc.mov".to_string()));
+        // DPX variant should still be present
+        assert!(breakdown.variants.iter().any(|v| v.contains("10-bit")));
     }
 }

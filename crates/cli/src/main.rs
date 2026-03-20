@@ -187,6 +187,17 @@ fn main() {
                         } else {
                             String::new()
                         };
+                        let mov_detail = {
+                            let mov_variants: Vec<&str> = breakdown.variants.iter()
+                                .filter(|v| !v.contains("-bit") && !v.contains("half-float") && !v.contains("float") && !v.contains("uint"))
+                                .map(|s| s.as_str())
+                                .collect();
+                            if mov_variants.is_empty() {
+                                format!("{} MOV files", proj.mov_count)
+                            } else {
+                                format!("{} MOV files ({})", proj.mov_count, mov_variants.join(", "))
+                            }
+                        };
                         println!(
                             "+----------+------------------------------+\n\
                              | Field    | Value                        |\n\
@@ -201,7 +212,7 @@ fn main() {
                             proj.path,
                             dpx_detail,
                             exr_detail,
-                            format!("{} MOV files{}", proj.mov_count, skipped_detail),
+                            format!("{}{}", mov_detail, skipped_detail),
                         );
                     }
                     Err(project::ImportError::PathNotFound(msg)) => {

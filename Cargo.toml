@@ -11,3 +11,5 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 dirs = "6"
 byteorder = "1"
 exr = "1.74"
+mp4parse = "0.17"
+log = "0.4"
