@@ -26,6 +26,14 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib28mengxi__compute__fingerprint(
   int32_t,
   double*
 );
+extern int32_t _M0FP216mengxi_2dmoonbit3lib23mengxi__aces__transform(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
 
 static atomic_int runtime_initialized = 0;
 
@@ -72,6 +80,54 @@ int32_t mengxi_compute_fingerprint(
   /* Call MoonBit function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib28mengxi__compute__fingerprint(
     data_len, mb_data, color_tag, out_len, mb_out
+  );
+
+  /* Copy output data back to Rust buffer before freeing */
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  /* Free MoonBit arrays */
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_data);
+
+  return result;
+}
+
+int32_t mengxi_aces_transform(
+  int32_t data_len,
+  double* data_ptr,
+  int32_t src_tag,
+  int32_t dst_tag,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  /* Allocate MoonBit-managed arrays */
+  double* mb_data = moonbit_make_double_array(data_len, 0.0);
+  if (!mb_data) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_data);
+    return -3;
+  }
+
+  /* Copy input data into MoonBit array */
+  memcpy(mb_data, data_ptr, data_len * sizeof(double));
+
+  /*
+   * Bump ref counts to survive MoonBit's incref/decref on FixedArray params.
+   * mengxi_aces_transform has 3 early return paths + 1 normal exit, each
+   * decrefing both arrays. Generous bump to prevent premature freeing.
+   */
+  Moonbit_object_header(mb_data)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  /* Call MoonBit function */
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib23mengxi__aces__transform(
+    data_len, mb_data, src_tag, dst_tag, out_len, mb_out
   );
 
   /* Copy output data back to Rust buffer before freeing */

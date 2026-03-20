@@ -5,7 +5,7 @@
   "native-stub": ["cwrap.c"],
   "link": {
     "native": {
-      "exports": ["mengxi_compute_fingerprint"]
+      "exports": ["mengxi_compute_fingerprint", "mengxi_aces_transform"]
     }
   }
 }

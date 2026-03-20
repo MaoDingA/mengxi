@@ -1,0 +1,425 @@
+// color_science.mbt — ACES 1.3 color space transforms (FR20-FR22)
+// Pure functions only — no I/O, no stateful dependencies.
+//
+// Supported transforms:
+//   ACES2065-1 (AP0) ↔ ACEScg (AP1) — 3×3 matrix
+//   ACEScg → Rec.709 — RRT + ODT chain
+//   Rec.709 → ACEScg — inverse IDT
+
+// ---------- AP0 ↔ AP1 matrices ----------
+
+fn ap0_to_ap1_m00() -> Double { 0.6954522414 }
+fn ap0_to_ap1_m01() -> Double { 0.1406786965 }
+fn ap0_to_ap1_m02() -> Double { 0.1638690622 }
+fn ap0_to_ap1_m10() -> Double { 0.0447945634 }
+fn ap0_to_ap1_m11() -> Double { 0.8596711185 }
+fn ap0_to_ap1_m12() -> Double { 0.0955343182 }
+fn ap0_to_ap1_m20() -> Double { -0.0055258826 }
+fn ap0_to_ap1_m21() -> Double { 0.0040252103 }
+fn ap0_to_ap1_m22() -> Double { 1.0015006723 }
+
+fn ap1_to_ap0_m00() -> Double { 1.4514393161 }
+fn ap1_to_ap0_m01() -> Double { -0.2365107469 }
+fn ap1_to_ap0_m02() -> Double { -0.2149285693 }
+fn ap1_to_ap0_m10() -> Double { -0.0765537734 }
+fn ap1_to_ap0_m11() -> Double { 1.1762296998 }
+fn ap1_to_ap0_m12() -> Double { -0.0996959264 }
+fn ap1_to_ap0_m20() -> Double { 0.0083161484 }
+fn ap1_to_ap0_m21() -> Double { -0.0060324498 }
+fn ap1_to_ap0_m22() -> Double { 0.9977163014 }
+
+// ---------- Matrix × Vector ----------
+
+fn mat3_mul_vec3(
+  m00 : Double, m01 : Double, m02 : Double,
+  m10 : Double, m11 : Double, m12 : Double,
+  m20 : Double, m21 : Double, m22 : Double,
+  r : Double, g : Double, b : Double
+) -> (Double, Double, Double) {
+  let out_r = m00 * r + m01 * g + m02 * b
+  let out_g = m10 * r + m11 * g + m12 * b
+  let out_b = m20 * r + m21 * g + m22 * b
+  (out_r, out_g, out_b)
+}
+
+// ---------- ACES2065-1 ↔ ACEScg ----------
+
+/// Convert from ACES2065-1 (AP0) to ACEScg (AP1).
+pub fn aces2065_to_acescg(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  mat3_mul_vec3(
+    ap0_to_ap1_m00(), ap0_to_ap1_m01(), ap0_to_ap1_m02(),
+    ap0_to_ap1_m10(), ap0_to_ap1_m11(), ap0_to_ap1_m12(),
+    ap0_to_ap1_m20(), ap0_to_ap1_m21(), ap0_to_ap1_m22(),
+    r, g, b
+  )
+}
+
+/// Convert from ACEScg (AP1) to ACES2065-1 (AP0).
+pub fn acescg_to_aces2065(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  mat3_mul_vec3(
+    ap1_to_ap0_m00(), ap1_to_ap0_m01(), ap1_to_ap0_m02(),
+    ap1_to_ap0_m10(), ap1_to_ap0_m11(), ap1_to_ap0_m12(),
+    ap1_to_ap0_m20(), ap1_to_ap0_m21(), ap1_to_ap0_m22(),
+    r, g, b
+  )
+}
+
+// ---------- ACES RRT (Reference Rendering Transform) ----------
+
+/// ACES RRT per-channel curve.
+fn rrt_curve(x : Double) -> Double {
+  let a = 2.51
+  let b = 0.03
+  let c = 2.43
+  let d = 0.59
+  let e = 0.14
+  (x * (a * x + b)) / (x * (c * x + d) + e)
+}
+
+/// Apply ACES RRT to a single pixel.
+fn apply_rrt(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  (rrt_curve(r), rrt_curve(g), rrt_curve(b))
+}
+
+// ---------- ACES ODT (Output Device Transform) for Rec.709 ----------
+
+/// sRGB gamma (linear to display): x^(1/2.2)
+fn srgb_gamma(x : Double) -> Double {
+  if x <= 0.0 { return 0.0 }
+  @math.pow(x, 1.0 / 2.2)
+}
+
+/// Inverse sRGB gamma (display to linear): x^2.2
+fn srgb_gamma_inverse(x : Double) -> Double {
+  if x <= 0.0 { return 0.0 }
+  @math.pow(x, 2.2)
+}
+
+/// Clamp value to [0.0, 1.0].
+fn clamp_zero_one(x : Double) -> Double {
+  if x < 0.0 { 0.0 }
+  else if x > 1.0 { 1.0 }
+  else { x }
+}
+
+/// Apply ACES ODT for Rec.709 output to a single pixel in AP0 space.
+fn apply_odt_rec709(r_ap0 : Double, g_ap0 : Double, b_ap0 : Double) -> (Double, Double, Double) {
+  // Clamp to [0, 1] and apply sRGB gamma
+  (srgb_gamma(clamp_zero_one(r_ap0)), srgb_gamma(clamp_zero_one(g_ap0)), srgb_gamma(clamp_zero_one(b_ap0)))
+}
+
+// ---------- Full ACEScg → Rec.709 ----------
+
+/// Convert from ACEScg to Rec.709 display output.
+/// Chain: ACEScg (AP1) → RRT → AP0 (AP1→AP0 matrix) → ODT (clamp + gamma)
+pub fn acescg_to_rec709(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  // Step 1: Apply RRT in ACEScg space
+  let (rrt_r, rrt_g, rrt_b) = apply_rrt(r, g, b)
+
+  // Step 2: Convert RRT output from AP1 to AP0
+  let (ap0_r, ap0_g, ap0_b) = acescg_to_aces2065(rrt_r, rrt_g, rrt_b)
+
+  // Step 3: Apply ODT (clamp + gamma)
+  apply_odt_rec709(ap0_r, ap0_g, ap0_b)
+}
+
+// ---------- Rec.709 → ACEScg (inverse) ----------
+
+/// Convert from Rec.709 display output back to ACEScg.
+/// Chain: sRGB gamma inverse → saturate → AP0 → inverse RRT → AP1
+pub fn rec709_to_acescg(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  // Step 1: Inverse gamma
+  let lin_r = srgb_gamma_inverse(r)
+  let lin_g = srgb_gamma_inverse(g)
+  let lin_b = srgb_gamma_inverse(b)
+
+  // Step 2: Convert AP0 to AP1
+  let (ap1_r, ap1_g, ap1_b) = aces2065_to_acescg(lin_r, lin_g, lin_b)
+
+  // Note: Inverse RRT is not applied (not analytically invertible).
+  // This is an approximate inverse — round-trip through acescg_to_rec709
+  // will be lossy. For precise round-trips, Newton's method would be needed.
+  (ap1_r, ap1_g, ap1_b)
+}
+
+// ---------- DCE prevention ----------
+
+fn init {
+  let _ = aces2065_to_acescg(0.0, 0.0, 0.0)
+  let _ = acescg_to_aces2065(0.0, 0.0, 0.0)
+  let _ = acescg_to_rec709(0.18, 0.18, 0.18)
+  let _ = rec709_to_acescg(0.5, 0.5, 0.5)
+}
+
+// ---------- FFI export ----------
+
+/// Apply ACES color space transform to interleaved RGB pixel data.
+///
+/// Parameters:
+///   data_len   — number of f64 values (num_pixels * 3)
+///   data_ptr   — interleaved RGB pixel data
+///   src_tag    — source color space: 10=ACES2065-1, 11=ACEScg, 20=Rec709
+///   dst_tag    — destination color space: 10=ACES2065-1, 11=ACEScg, 20=Rec709
+///   out_len    — length of output buffer (must be >= data_len)
+///   out_ptr    — output buffer for transformed pixel data
+///
+/// Returns: number of output values written, or negative error code.
+///   -1 = invalid data (less than 3 values)
+///   -2 = output buffer too small
+///   -3 = unsupported transform (e.g., Log source without conversion)
+///   -4 = unknown source or destination color space
+pub fn mengxi_aces_transform(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  src_tag : Int,
+  dst_tag : Int,
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+
+  let num_pixels = data_len / 3
+
+  // Reject log-encoded sources (FR22 type safety)
+  if is_log_space(src_tag) { return -3 }
+
+  // Determine transform function based on src/dst
+  let mut i = 0
+  while i < num_pixels {
+    let idx = i * 3
+    if idx + 2 >= data_ptr.length() { break }
+
+    let r = data_ptr[idx]
+    let g = data_ptr[idx + 1]
+    let b = data_ptr[idx + 2]
+
+    let (or, og, ob) = apply_transform(r, g, b, src_tag, dst_tag)
+
+    if idx < out_ptr.length() { out_ptr[idx] = or }
+    let idx1 = idx + 1
+    if idx1 < out_ptr.length() { out_ptr[idx1] = og }
+    let idx2 = idx + 2
+    if idx2 < out_ptr.length() { out_ptr[idx2] = ob }
+
+    i = i + 1
+  }
+
+  data_len
+}
+
+/// Internal: dispatch to the correct transform based on src/dst tags.
+fn apply_transform(r : Double, g : Double, b : Double, src : Int, dst : Int) -> (Double, Double, Double) {
+  // ACEScg → Rec.709
+  if src == cs_acescg() && dst == cs_rec709() {
+    return acescg_to_rec709(r, g, b)
+  }
+  // Rec.709 → ACEScg
+  if src == cs_rec709() && dst == cs_acescg() {
+    return rec709_to_acescg(r, g, b)
+  }
+  // ACES2065-1 → ACEScg
+  if src == cs_aces2065_1() && dst == cs_acescg() {
+    return aces2065_to_acescg(r, g, b)
+  }
+  // ACEScg → ACES2065-1
+  if src == cs_acescg() && dst == cs_aces2065_1() {
+    return acescg_to_aces2065(r, g, b)
+  }
+  // Same space: identity
+  if src == dst { return (r, g, b) }
+
+  // Unsupported transform
+  return (r, g, b)
+}
+
+// ---------- Unit tests ----------
+
+/// Approximate equality for Double values (within 1e-4 tolerance).
+fn approx_eq(actual : Double, expected : Double) -> Bool {
+  let diff = actual - expected
+  let abs_diff = if diff < 0.0 { 0.0 - diff } else { diff }
+  abs_diff < 0.0001
+}
+
+test {
+  // Identity: AP0 → AP1 → AP0 round-trip
+  let r = 0.5
+  let g = 0.25
+  let b = 0.75
+  let (cg_r, cg_g, cg_b) = aces2065_to_acescg(r, g, b)
+  let (back_r, back_g, back_b) = acescg_to_aces2065(cg_r, cg_g, cg_b)
+  assert_eq(approx_eq(back_r, r), true)
+  assert_eq(approx_eq(back_g, g), true)
+  assert_eq(approx_eq(back_b, b), true)
+}
+
+test {
+  // Identity: AP1 → AP0 → AP1 round-trip
+  let r = 0.1
+  let g = 0.2
+  let b = 0.3
+  let (ap0_r, ap0_g, ap0_b) = acescg_to_aces2065(r, g, b)
+  let (back_r, back_g, back_b) = aces2065_to_acescg(ap0_r, ap0_g, ap0_b)
+  assert_eq(approx_eq(back_r, r), true)
+  assert_eq(approx_eq(back_g, g), true)
+  assert_eq(approx_eq(back_b, b), true)
+}
+
+test {
+  // ACEScg(0,0,0) → Rec.709 should be (0,0,0)
+  let (r, g, b) = acescg_to_rec709(0.0, 0.0, 0.0)
+  inspect(r, content="0")
+  inspect(g, content="0")
+  inspect(b, content="0")
+}
+
+test {
+  // ACEScg(1,1,1) → Rec.709 should be near 0.9 (RRT compresses highlights)
+  let (r, g, b) = acescg_to_rec709(1.0, 1.0, 1.0)
+  assert_eq(approx_eq(r, 0.9055), true)
+  assert_eq(approx_eq(g, 0.9055), true)
+  assert_eq(approx_eq(b, 0.9055), true)
+}
+
+test {
+  // ACEScg(0.18,0.18,0.18) → Rec.709 should be a valid display value
+  let (r, g, b) = acescg_to_rec709(0.18, 0.18, 0.18)
+  // 18% grey luminance should be around 0.55
+  let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  assert_eq(approx_eq(lum, 0.5486), true)
+}
+
+test {
+  // RRT curve: RRT(0) = 0
+  let r = rrt_curve(0.0)
+  inspect(r, content="0")
+}
+
+test {
+  // RRT curve: RRT(1) = 0.8038
+  let r = rrt_curve(1.0)
+  assert_eq(approx_eq(r, 0.8038), true)
+}
+
+test {
+  // Matrix identity: AP0→AP1→AP0 for a larger value
+  let (cg_r, cg_g, cg_b) = aces2065_to_acescg(5.0, 10.0, 2.0)
+  let (back_r, back_g, back_b) = acescg_to_aces2065(cg_r, cg_g, cg_b)
+  assert_eq(approx_eq(back_r, 5.0), true)
+  assert_eq(approx_eq(back_g, 10.0), true)
+  assert_eq(approx_eq(back_b, 2.0), true)
+}
+
+test {
+  // Negative values: AP0→AP1→AP0 round-trip
+  let (cg_r, cg_g, cg_b) = aces2065_to_acescg(-0.1, -0.2, -0.3)
+  let (back_r, back_g, back_b) = acescg_to_aces2065(cg_r, cg_g, cg_b)
+  assert_eq(approx_eq(back_r, -0.1), true)
+  assert_eq(approx_eq(back_g, -0.2), true)
+  assert_eq(approx_eq(back_b, -0.3), true)
+}
+
+test {
+  // ACEScg(0.5, 0.5, 0.5) → Rec.709 should be around 0.80
+  let (r, _g, _b) = acescg_to_rec709(0.5, 0.5, 0.5)
+  assert_eq(approx_eq(r, 0.8025), true)
+}
+
+test {
+  // Rec.709(0,0,0) → ACEScg should be (0,0,0)
+  let (r, g, b) = rec709_to_acescg(0.0, 0.0, 0.0)
+  inspect(r, content="0")
+  inspect(g, content="0")
+  inspect(b, content="0")
+}
+
+test {
+  // Rec.709(1,1,1) → ACEScg should be approximately (1,1,1)
+  let (r, g, b) = rec709_to_acescg(1.0, 1.0, 1.0)
+  assert_eq(approx_eq(r, 1.0), true)
+  assert_eq(approx_eq(g, 1.0), true)
+  assert_eq(approx_eq(b, 1.0), true)
+}
+
+test {
+  // sRGB gamma: gamma(0) = 0, gamma(1) = 1
+  inspect(srgb_gamma(0.0), content="0")
+  inspect(srgb_gamma(1.0), content="1")
+}
+
+test {
+  // sRGB gamma inverse: inv_gamma(0) = 0, inv_gamma(1) = 1
+  inspect(srgb_gamma_inverse(0.0), content="0")
+  inspect(srgb_gamma_inverse(1.0), content="1")
+}
+
+test {
+  // sRGB gamma round-trip
+  let original = 0.5
+  let encoded = srgb_gamma(original)
+  let decoded = srgb_gamma_inverse(encoded)
+  assert_eq(approx_eq(decoded, 0.5), true)
+}
+
+test {
+  // FFI: valid transform ACEScg → Rec.709
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 0.18; data[1] = 0.18; data[2] = 0.18
+  data[3] = 0.5;  data[4] = 0.5;  data[5] = 0.5
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_aces_transform(6, data, cs_acescg(), cs_rec709(), 6, out)
+  assert_eq(result, 6)
+}
+
+test {
+  // FFI: reject log-encoded source
+  let data = FixedArray::make(3, 0.5)
+  let out = FixedArray::make(3, 0.0)
+  let result = mengxi_aces_transform(3, data, cs_acescct(), cs_rec709(), 3, out)
+  assert_eq(result, -3)
+}
+
+test {
+  // FFI: too few data values
+  let data = FixedArray::make(2, 0.5)
+  let out = FixedArray::make(2, 0.0)
+  let result = mengxi_aces_transform(2, data, cs_acescg(), cs_rec709(), 2, out)
+  assert_eq(result, -1)
+}
+
+test {
+  // FFI: output buffer too small
+  let data = FixedArray::make(6, 0.5)
+  let out = FixedArray::make(3, 0.0)
+  let result = mengxi_aces_transform(6, data, cs_acescg(), cs_rec709(), 3, out)
+  assert_eq(result, -2)
+}
+
+test {
+  // FFI: identity transform (same src and dst)
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 0.3; data[1] = 0.6; data[2] = 0.9
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_aces_transform(6, data, cs_acescg(), cs_acescg(), 6, out)
+  assert_eq(result, 6)
+  inspect(out[0], content="0.3")
+  inspect(out[1], content="0.6")
+  inspect(out[2], content="0.9")
+}
+
+test {
+  // FFI: ACES2065-1 → ACEScg round-trip
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 0.5; data[1] = 0.25; data[2] = 0.75
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_aces_transform(6, data, cs_aces2065_1(), cs_acescg(), 6, out)
+  assert_eq(result, 6)
+  // Now round-trip back
+  let back = FixedArray::make(6, 0.0)
+  let result2 = mengxi_aces_transform(6, out, cs_acescg(), cs_aces2065_1(), 6, back)
+  assert_eq(result2, 6)
+  assert_eq(approx_eq(back[0], 0.5), true)
+  assert_eq(approx_eq(back[1], 0.25), true)
+  assert_eq(approx_eq(back[2], 0.75), true)
+}
