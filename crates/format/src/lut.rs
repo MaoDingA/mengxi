@@ -134,7 +134,7 @@ impl fmt::Display for LutError {
                 write!(f, "LUT_UNSUPPORTED_FORMAT -- unknown format: {}", fmt)
             }
             LutError::InvalidGridSize(n) => {
-                write!(f, "LUT_INVALID_CUBE -- invalid grid size: {}", n)
+                write!(f, "LUT_PARSE_ERROR -- invalid grid size: {}", n)
             }
             LutError::InvalidDomainRange => write!(f, "LUT_PARSE_ERROR -- invalid domain range"),
             LutError::InvalidValueCount { expected, actual } => {
@@ -291,7 +291,7 @@ pub fn serialize_cube(data: &LutData) -> Result<String, LutError> {
     let mut out = String::new();
 
     if let Some(ref t) = data.title {
-        out.push_str(&format!("TITLE \"{}\"\n", t));
+        out.push_str(&format!("TITLE \"{}\"\n", t.replace('"', "\\\"")));
     }
 
     out.push_str(&format!(
@@ -435,11 +435,11 @@ fn parse_3dl_from_str(content: &str) -> Result<LutData, LutError> {
 
 /// Infer bit depth from the maximum value in a .3dl file.
 fn infer_3dl_bit_depth(max_val: u32) -> u32 {
-    if max_val <= 511 {
+    if max_val <= 255 {
         255 // 8-bit
-    } else if max_val <= 2047 {
+    } else if max_val <= 1023 {
         1023 // 10-bit
-    } else if max_val <= 8191 {
+    } else if max_val <= 4095 {
         4095 // 12-bit
     } else {
         65535 // 16-bit
@@ -489,7 +489,7 @@ fn convert_red_fastest_to_blue_fastest(values: &[f64], grid_size: u32) -> Vec<f6
 /// Serialize LUT data to .3dl format string (12-bit output).
 pub fn serialize_3dl(data: &LutData, bit_depth: u32) -> Result<String, LutError> {
     data.validate()?;
-
+    let bit_depth = bit_depth.clamp(1, 30);
     let max_code = (1u32 << bit_depth) - 1;
     let shaper_count = data.grid_size;
     let mut shaper: Vec<i32> = Vec::with_capacity(shaper_count as usize);
@@ -1257,7 +1257,8 @@ mod tests {
         assert!(format!("{}", err).contains("LUT_UNSUPPORTED_FORMAT"));
 
         let err = LutError::InvalidGridSize(999);
-        assert!(format!("{}", err).contains("LUT_INVALID_CUBE"));
+        assert!(format!("{}", err).contains("LUT_PARSE_ERROR"));
+        assert!(format!("{}", err).contains("invalid grid size"));
 
         let err = LutError::WriteError("disk full".to_string());
         assert!(format!("{}", err).contains("LUT_WRITE_ERROR"));
@@ -1448,7 +1449,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     fn test_3dl_mesh_keyword() {
         // Mesh 2 12 → grid_size = (1<<2)+1 = 5

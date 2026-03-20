@@ -56,9 +56,9 @@ pub struct PowerGradeData {
     pub gamma: f64,
     /// Per-channel gain (highlights): [R, G, B]
     pub gain: [f64; 3],
-    /// Per-channel gamma (midtones): [R, G, B]
-    pub lift: [f64; 3],
     /// Per-channel lift (shadows): [R, G, B]
+    pub lift: [f64; 3],
+    /// Per-channel power/gamma (midtones): [R, G, B]
     pub power: [f64; 3],
     /// Per-channel offset: [R, G, B]
     pub offset: [f64; 3],
@@ -112,10 +112,10 @@ impl PowerGradeData {
                     out_g = 0.5 + (out_g - 0.5) * gain_factor_g;
                     out_b = 0.5 + (out_b - 0.5) * gain_factor_b;
 
-                    // Apply power (gamma)
-                    out_r = out_r.powf(self.power[0]);
-                    out_g = out_g.powf(self.power[1]);
-                    out_b = out_b.powf(self.power[2]);
+                    // Apply power (gamma) — clamp to avoid NaN from negative base
+                    out_r = out_r.max(0.0).powf(self.power[0]);
+                    out_g = out_g.max(0.0).powf(self.power[1]);
+                    out_b = out_b.max(0.0).powf(self.power[2]);
 
                     // Apply saturation
                     let luma = 0.2126 * out_r + 0.7152 * out_g + 0.0722 * out_b;
@@ -197,8 +197,10 @@ fn detect_version(data: &[u8]) -> Result<PowerGradeVersion, PowerGradeError> {
         )));
     }
 
-    // Default to V2 for text-based files without explicit version
-    Ok(PowerGradeVersion::V2)
+    // Reject files that don't match expected PowerGrade structure
+    Err(PowerGradeError::ParseError(
+        "no recognized PowerGrade version marker found".to_string(),
+    ))
 }
 
 /// Parse text-based PowerGrade V2 format.
