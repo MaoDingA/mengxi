@@ -3,4 +3,5 @@
 pub mod color_science;
 pub mod db;
 pub mod fingerprint;
+pub mod lut_generation;
 pub mod project;

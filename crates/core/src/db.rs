@@ -216,7 +216,7 @@ mod tests {
             .unwrap()
             .join("migrations");
         let migrations = discover_migrations_from_dir(&project_root).unwrap();
-        assert_eq!(migrations.len(), 7);
+        assert_eq!(migrations.len(), 8);
         assert_eq!(migrations[0].0, 1); // 001_create_projects.sql
         assert_eq!(migrations[1].0, 2); // 002_create_files.sql
         assert_eq!(migrations[2].0, 3); // 003_add_file_metadata.sql
@@ -224,11 +224,13 @@ mod tests {
         assert_eq!(migrations[4].0, 5); // 005_add_mov_metadata.sql
         assert_eq!(migrations[5].0, 6); // 006_create_fingerprints.sql
         assert_eq!(migrations[6].0, 7); // 007_add_files_unique_constraint.sql
+        assert_eq!(migrations[7].0, 8); // 008_create_luts.sql
         assert!(migrations[0].1.contains("CREATE TABLE IF NOT EXISTS projects"));
         assert!(migrations[1].1.contains("CREATE TABLE IF NOT EXISTS files"));
         assert!(migrations[2].1.contains("ALTER TABLE files ADD COLUMN"));
         assert!(migrations[3].1.contains("compression"));
         assert!(migrations[4].1.contains("codec"));
         assert!(migrations[5].1.contains("fingerprints"));
+        assert!(migrations[7].1.contains("luts"));
     }
 }

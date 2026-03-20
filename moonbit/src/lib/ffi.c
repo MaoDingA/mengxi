@@ -34,6 +34,13 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib23mengxi__aces__transform(
   int32_t,
   double*
 );
+extern int32_t _M0FP216mengxi_2dmoonbit3lib21mengxi__generate__lut(
+  int32_t,
+  int32_t,
+  int32_t,
+  double*,
+  int32_t
+);
 
 static atomic_int runtime_initialized = 0;
 
@@ -94,6 +101,38 @@ int32_t mengxi_compute_fingerprint(
   return result;
 }
 
+int32_t mengxi_generate_lut(
+  int32_t grid_size,
+  int32_t src_cs,
+  int32_t dst_cs,
+  double* out_ptr,
+  int32_t out_len
+) {
+  ensure_runtime_init();
+
+  /* Allocate MoonBit-managed array for output */
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) return -2;
+
+  /* Bump ref count to survive MoonBit's decref on FixedArray param.
+   * mengxi_generate_lut has 3 early return paths + 1 normal exit. */
+  Moonbit_object_header(mb_out)->rc += 8;
+
+  /* Call MoonBit function */
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib21mengxi__generate__lut(
+    grid_size, src_cs, dst_cs, mb_out, out_len
+  );
+
+  /* Copy output data back to Rust buffer before freeing */
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  /* Free MoonBit array */
+  moonbit_drop_object(mb_out);
+
+  return result;
+}
 int32_t mengxi_aces_transform(
   int32_t data_len,
   double* data_ptr,

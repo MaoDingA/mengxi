@@ -77,6 +77,14 @@ extern "C" {
         out_len: i32,
         out_ptr: *mut f64,
     ) -> i32;
+
+    fn mengxi_generate_lut(
+        grid_size: i32,
+        src_cs: i32,
+        dst_cs: i32,
+        out_ptr: *mut f64,
+        out_len: i32,
+    ) -> i32;
 }
 
 /// Apply ACES color space transform to interleaved RGB pixel data.
@@ -142,6 +150,63 @@ pub fn apply_aces_transform(
         return Err(ColorScienceError::FfiError(
             result,
             format!("{:?} -> {:?}", src, dst),
+        ));
+    }
+
+    Ok(output)
+}
+
+/// Generate a 3D LUT by applying an ACES color space transform across a uniform grid.
+///
+/// # Arguments
+/// * `grid_size` — Number of samples per axis (e.g., 17, 33). Must be 2–256.
+/// * `src` — Source color space.
+/// * `dst` — Destination color space.
+///
+/// # Returns
+/// * `Ok(Vec<f64>)` with `grid_size^3 * 3` values in red-fastest order on success.
+/// * `Err(ColorScienceError)` if parameters are invalid or FFI fails.
+pub fn generate_lut(
+    grid_size: u32,
+    src: ACESColorSpace,
+    dst: ACESColorSpace,
+) -> Result<Vec<f64>, ColorScienceError> {
+    if grid_size < 2 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!("grid_size {} must be >= 2", grid_size),
+        ));
+    }
+    if grid_size > 256 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!("grid_size {} must be <= 256", grid_size),
+        ));
+    }
+    if src.is_log() {
+        return Err(ColorScienceError::LogDataRequiresConversion(format!(
+            "source color space {:?} is log-encoded; LUT generation requires linear input",
+            src
+        )));
+    }
+
+    let total = (grid_size as usize) * (grid_size as usize) * (grid_size as usize) * 3;
+    let mut output = vec![0.0_f64; total];
+
+    let result = unsafe {
+        mengxi_generate_lut(
+            grid_size as i32,
+            src.as_int(),
+            dst.as_int(),
+            output.as_mut_ptr(),
+            total as i32,
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            format!("generate_lut grid_size={} {:?} -> {:?}", grid_size, src, dst),
         ));
     }
 
@@ -274,5 +339,87 @@ mod tests {
 
         let err = ColorScienceError::UnsupportedTransform("test".to_string());
         assert!(format!("{}", err).contains("COLOR_SCIENCE_UNSUPPORTED"));
+    }
+
+    // -- generate_lut tests --
+
+    #[test]
+    fn test_generate_lut_size_2() {
+        let result = generate_lut(2, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
+        assert!(result.is_ok());
+        let values = result.unwrap();
+        assert_eq!(values.len(), 24); // 2^3 * 3
+    }
+
+    #[test]
+    fn test_generate_lut_size_33() {
+        let result = generate_lut(33, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
+        assert!(result.is_ok());
+        let values = result.unwrap();
+        assert_eq!(values.len(), 107811); // 33^3 * 3
+    }
+
+    #[test]
+    fn test_generate_lut_identity() {
+        // Grid size 2: indices normalize to 0.0 and 1.0
+        let result = generate_lut(2, ACESColorSpace::ACEScg, ACESColorSpace::ACEScg);
+        assert!(result.is_ok());
+        let v = result.unwrap();
+        // (0,0,0) → (0,0,0)
+        assert!((v[0]).abs() < 1e-10);
+        assert!((v[1]).abs() < 1e-10);
+        assert!((v[2]).abs() < 1e-10);
+        // (1,0,0) → (1,0,0)
+        assert!((v[3] - 1.0).abs() < 1e-10);
+        assert!((v[4]).abs() < 1e-10);
+        assert!((v[5]).abs() < 1e-10);
+        // (1,1,1) → (1,1,1)
+        assert!((v[21] - 1.0).abs() < 1e-10);
+        assert!((v[22] - 1.0).abs() < 1e-10);
+        assert!((v[23] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_generate_lut_black() {
+        let result = generate_lut(2, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
+        assert!(result.is_ok());
+        let v = result.unwrap();
+        assert!((v[0]).abs() < 1e-10);
+        assert!((v[1]).abs() < 1e-10);
+        assert!((v[2]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_generate_lut_grid_size_too_small() {
+        let result = generate_lut(1, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_lut_grid_size_too_large() {
+        let result = generate_lut(257, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_lut_log_rejected() {
+        let result = generate_lut(2, ACESColorSpace::ACEScct, ACESColorSpace::Rec709);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ColorScienceError::LogDataRequiresConversion(msg) => {
+                assert!(msg.contains("log-encoded"));
+            }
+            other => panic!("Expected LogDataRequiresConversion, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_generate_lut_values_in_range() {
+        let result = generate_lut(5, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
+        assert!(result.is_ok());
+        let v = result.unwrap();
+        for &val in &v {
+            assert!(val.is_finite(), "LUT value is not finite: {}", val);
+        }
     }
 }
