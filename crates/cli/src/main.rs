@@ -198,6 +198,7 @@ fn main() {
                                 format!("{} MOV files ({})", proj.mov_count, mov_variants.join(", "))
                             }
                         };
+                        let fp_detail = format!("{} fingerprints extracted", breakdown.fingerprint_count);
                         println!(
                             "+----------+------------------------------+\n\
                              | Field    | Value                        |\n\
@@ -207,12 +208,14 @@ fn main() {
                              | DPX      | {:<28}|\n\
                              | EXR      | {:<28} |\n\
                              | MOV      | {:<28} |\n\
+                             | Color    | {:<28} |\n\
                              +----------+------------------------------+",
                             proj.name,
                             proj.path,
                             dpx_detail,
                             exr_detail,
                             format!("{}{}", mov_detail, skipped_detail),
+                            fp_detail,
                         );
                     }
                     Err(project::ImportError::PathNotFound(msg)) => {

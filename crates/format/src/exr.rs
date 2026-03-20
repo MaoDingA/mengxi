@@ -54,6 +54,7 @@ pub enum ExrError {
     ParseError(String),
     NoLayers,
     IoError(String),
+    UnsupportedVariant(String),
 }
 
 impl std::fmt::Display for ExrError {
@@ -62,6 +63,7 @@ impl std::fmt::Display for ExrError {
             ExrError::ParseError(msg) => write!(f, "{}", msg),
             ExrError::NoLayers => write!(f, "EXR file contains no layers"),
             ExrError::IoError(msg) => write!(f, "IO error: {}", msg),
+            ExrError::UnsupportedVariant(msg) => write!(f, "Unsupported EXR variant: {}", msg),
         }
     }
 }
@@ -167,6 +169,57 @@ pub fn channels_to_descriptor(channels: &[String]) -> String {
         "rgba".to_string()
     } else {
         sorted.join(",")
+    }
+}
+
+/// Read pixel data from an EXR file, returning interleaved RGB f64 values normalized to [0.0, 1.0].
+/// Channels are reordered to RGB order (EXR stores B, G, R alphabetical).
+pub fn read_pixel_data(path: &Path) -> Result<Vec<f64>, ExrError> {
+    let image = exr::prelude::read_first_flat_layer_from_file(path)
+        .map_err(|e: exr::error::Error| ExrError::ParseError(e.to_string()))?;
+
+    let layer = &image.layer_data;
+    let width = layer.size.width() as usize;
+    let height = layer.size.height() as usize;
+    let num_pixels = width * height;
+
+    // Collect channels in sorted order (B, G, R, A...)
+    let sorted_channels: Vec<_> = {
+        let mut indexed: Vec<_> = layer.channel_data.list.iter().collect();
+        indexed.sort_by_key(|ch| ch.name.as_slice());
+        indexed
+    };
+
+    // Find RGB channels
+    let r_idx = sorted_channels.iter().position(|ch| ch.name == *"R");
+    let g_idx = sorted_channels.iter().position(|ch| ch.name == *"G");
+    let b_idx = sorted_channels.iter().position(|ch| ch.name == *"B");
+
+    match (r_idx, g_idx, b_idx) {
+        (Some(ri), Some(gi), Some(bi)) => {
+            let r_data = &sorted_channels[ri].sample_data;
+            let g_data = &sorted_channels[gi].sample_data;
+            let b_data = &sorted_channels[bi].sample_data;
+
+            let mut result = Vec::with_capacity(num_pixels * 3);
+            for p in 0..num_pixels {
+                match (&r_data, &g_data, &b_data) {
+                    (exr::image::FlatSamples::F16(r), exr::image::FlatSamples::F16(g), exr::image::FlatSamples::F16(b)) => {
+                        result.push(r[p].to_f64());
+                        result.push(g[p].to_f64());
+                        result.push(b[p].to_f64());
+                    }
+                    (exr::image::FlatSamples::F32(r), exr::image::FlatSamples::F32(g), exr::image::FlatSamples::F32(b)) => {
+                        result.push(r[p] as f64);
+                        result.push(g[p] as f64);
+                        result.push(b[p] as f64);
+                    }
+                    _ => return Err(ExrError::UnsupportedVariant("non-float RGB channels".to_string())),
+                }
+            }
+            Ok(result)
+        }
+        _ => Err(ExrError::NoLayers),
     }
 }
 

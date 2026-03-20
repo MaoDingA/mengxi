@@ -1,14 +1,14 @@
 ---
 title: Mengxi (梦溪)
-description: 面向专业影视后期制作的命令行调色管线管理平台，支持图像相似度搜索和历史 LUT 导出
-author: 毛丁 (Mao Ding)
-date: 2026-03-19
+description: 一种图像相似度搜索和历史 LUT 匹配工具
+author: MaoDing (毛丁)
+date: 2026-03
 license: MIT
 ---
 
 # Mengxi (梦溪)
 
-面向专业影视后期制作（数字中间片 / DI）流程的命令行调色管线管理平台。Mengxi 帮助调色师通过图像相似度匹配检索历史项目库，并将匹配的调色风格导出为 LUT 文件，直接导入 DaVinci Resolve 使用。
+面向数字中间片流程的命令行调色管线管理平台。Mengxi 帮助调色指导通过图像相似度匹配检索历史项目库，并将匹配的调色风格导出为 LUT 文件，一键嵌入 DaVinci Resolve 使用。
 
 **English version: [README_EN.md](README_EN.md)**
 

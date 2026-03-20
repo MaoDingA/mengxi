@@ -21,6 +21,7 @@ pub struct DpxHeader {
     pub descriptor: u8,
     pub packing: u16,
     pub encoding: u16,
+    pub data_offset: u32,
     pub endianness: DpxEndian,
 }
 
@@ -116,6 +117,7 @@ pub fn parse_dpx_header(path: &Path) -> Result<DpxHeader, DpxError> {
     let bit_depth = read_u8(&mut cursor)?;
     let packing = read_u16(&mut cursor, endianness)?;
     let encoding = read_u16(&mut cursor, endianness)?;
+    let data_offset = read_u32(&mut cursor, endianness)?;
 
     // Validate bit depth
     match bit_depth {
@@ -145,6 +147,7 @@ pub fn parse_dpx_header(path: &Path) -> Result<DpxHeader, DpxError> {
         descriptor,
         packing,
         encoding,
+        data_offset,
         endianness,
     })
 }
@@ -253,7 +256,7 @@ fn write_f32(cursor: &mut Cursor<&mut [u8]>, val: f32, endian: DpxEndian) -> io:
 }
 
 /// Create a synthetic DPX file for testing. Writes a valid 2048-byte header
-/// with the specified parameters followed by minimal (zero-filled) image data.
+/// with the specified parameters followed by pixel data (all zeros for simplicity).
 pub fn create_synthetic_dpx(
     path: &Path,
     width: u32,
@@ -262,8 +265,15 @@ pub fn create_synthetic_dpx(
     transfer: u8,
     endian: DpxEndian,
 ) -> io::Result<()> {
-    let file_size = DPX_HEADER_SIZE as u32; // Header only for test files
-    let mut buf = vec![0u8; DPX_HEADER_SIZE];
+    let num_pixels = (width as usize) * (height as usize);
+    let pixel_bytes = match bit_depth {
+        8 => num_pixels * 3,
+        10 => num_pixels * 4, // 3x10bit packed in 32-bit words
+        16 => num_pixels * 6, // 3x16bit
+        _ => num_pixels * 4,
+    };
+    let file_size = (DPX_HEADER_SIZE + pixel_bytes) as u32;
+    let mut buf = vec![0u8; DPX_HEADER_SIZE + pixel_bytes];
     let mut cursor = Cursor::new(buf.as_mut_slice());
 
     // Generic File Header (768 bytes)
@@ -315,6 +325,92 @@ pub fn create_synthetic_dpx(
 
     std::fs::write(path, &buf)?;
     Ok(())
+}
+
+/// Read pixel data from a DPX file, returning interleaved RGB f64 values normalized to [0.0, 1.0].
+/// Supports 8-bit, 10-bit (packed, method A/B), and 16-bit depths.
+pub fn read_pixel_data(path: &Path) -> Result<Vec<f64>, DpxError> {
+    let data = std::fs::read(path).map_err(|e| DpxError::IoError(e.to_string()))?;
+    let header = parse_dpx_header(path)?;
+
+    let offset = header.data_offset as usize;
+    if offset >= data.len() {
+        return Err(DpxError::TruncatedFile("data offset beyond file size".to_string()));
+    }
+
+    let pixel_data = &data[offset..];
+    let num_pixels = (header.width as usize) * (header.height as usize);
+
+    match header.bit_depth {
+        8 => read_pixels_8bit(pixel_data, num_pixels),
+        10 => read_pixels_10bit(pixel_data, num_pixels),
+        16 => read_pixels_16bit(pixel_data, num_pixels, header.endianness),
+        other => Err(DpxError::UnsupportedVariant(format!(
+            "pixel reading not supported for {}-bit depth", other
+        ))),
+    }
+}
+
+fn read_pixels_8bit(data: &[u8], num_pixels: usize) -> Result<Vec<f64>, DpxError> {
+    let mut result = Vec::with_capacity(num_pixels * 3);
+    let components = 3;
+    let needed = num_pixels * components;
+    if data.len() < needed {
+        return Err(DpxError::TruncatedFile(format!(
+            "need {} bytes, have {}", needed, data.len()
+        )));
+    }
+    for &b in &data[..needed] {
+        result.push(b as f64 / 255.0);
+    }
+    Ok(result)
+}
+
+fn read_pixels_10bit(data: &[u8], num_pixels: usize) -> Result<Vec<f64>, DpxError> {
+    // Each RGB pixel = 3x10bit + 2bit padding = 1 32-bit word
+    let needed_words = num_pixels;
+    if data.len() < needed_words * 4 {
+        return Err(DpxError::TruncatedFile(format!(
+            "need {} bytes for {} 10-bit pixels, have {}",
+            needed_words * 4, num_pixels, data.len()
+        )));
+    }
+    let max_val = (1u32 << 10) - 1; // 1023
+    let mut result = Vec::with_capacity(num_pixels * 3);
+    for i in 0..num_pixels {
+        let word = u32::from_le_bytes([data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]]);
+        // Method A (fill from LSB): [pad(2)][C3(10)][C2(10)][C1(10)]
+        let c1 = ((word >> 20) & max_val) as f64 / max_val as f64;
+        let c2 = ((word >> 10) & max_val) as f64 / max_val as f64;
+        let c3 = (word & max_val) as f64 / max_val as f64;
+        result.push(c1);
+        result.push(c2);
+        result.push(c3);
+    }
+    Ok(result)
+}
+
+fn read_pixels_16bit(data: &[u8], num_pixels: usize, endian: DpxEndian) -> Result<Vec<f64>, DpxError> {
+    let components = 3;
+    let needed = num_pixels * components * 2;
+    if data.len() < needed {
+        return Err(DpxError::TruncatedFile(format!(
+            "need {} bytes for {} 16-bit pixels, have {}", needed, num_pixels, data.len()
+        )));
+    }
+    let max_val = 65535.0;
+    let mut result = Vec::with_capacity(num_pixels * 3);
+    for i in 0..num_pixels {
+        let base = i * components * 2;
+        for c in 0..components {
+            let val = match endian {
+                DpxEndian::Big => u16::from_be_bytes([data[base + c*2], data[base + c*2 + 1]]),
+                DpxEndian::Little => u16::from_le_bytes([data[base + c*2], data[base + c*2 + 1]]),
+            };
+            result.push(val as f64 / max_val);
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -467,6 +563,7 @@ mod tests {
             descriptor: 50,
             packing: 0,
             encoding: 0,
+            data_offset: DPX_HEADER_SIZE as u32,
             endianness: DpxEndian::Big,
         });
     }

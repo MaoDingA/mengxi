@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use crate::fingerprint::{self, FingerprintError};
 use mengxi_format::dpx;
 use mengxi_format::exr as exr_format;
 use mengxi_format::mov as mov_format;
@@ -47,6 +48,7 @@ pub struct VariantBreakdown {
     pub variants: Vec<String>, // e.g., "5x 10-bit linear", "3x 16-bit linear"
     pub skipped_count: usize,
     pub skipped_files: Vec<String>,
+    pub fingerprint_count: usize,
 }
 
 /// Error types for import operations.
@@ -276,6 +278,71 @@ pub fn register_project(
             params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count],
         )
         .map_err(|e| ImportError::DbError(e.to_string()))?;
+
+        let file_id = conn.last_insert_rowid();
+
+        // Extract color fingerprint for DPX and EXR files
+        if format == "dpx" || format == "exr" {
+            let color_tag = if format == "dpx" {
+                transfer.as_deref().map_or("linear".to_string(), |t| {
+                    map_transfer_string_to_color_tag(t)
+                })
+            } else {
+                // EXR is always linear
+                "linear".to_string()
+            };
+
+            let pixel_result = if format == "dpx" {
+                dpx::read_pixel_data(&file_path)
+                    .map_err(|e| ImportError::CorruptFile {
+                        filename: filename.clone(),
+                        reason: e.to_string(),
+                    })
+            } else {
+                exr_format::read_pixel_data(&file_path)
+                    .map_err(|e| ImportError::CorruptFile {
+                        filename: filename.clone(),
+                        reason: e.to_string(),
+                    })
+            };
+
+            if let Ok(pixel_data) = pixel_result {
+                match fingerprint::extract_fingerprint(&pixel_data, &color_tag) {
+                    Ok(fp) => {
+                        let hist_r = fp.histogram_r.iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let hist_g = fp.histogram_g.iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let hist_b = fp.histogram_b.iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+
+                        if let Err(e) = conn.execute(
+                            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![file_id, hist_r, hist_g, hist_b, fp.luminance_mean, fp.luminance_stddev, fp.color_space_tag],
+                        ) {
+                            eprintln!("Warning: failed to store fingerprint for {}: {}", filename, e);
+                        } else {
+                            breakdown.fingerprint_count += 1;
+                        }
+                    }
+                    Err(FingerprintError::FfiUnavailable) => {
+                        // Silently skip — FFI not linked
+                    }
+                    Err(FingerprintError::FfiError(code, ctx)) => {
+                        eprintln!("Warning: fingerprint FFI error (code={}) for {}: {}", code, filename, ctx);
+                    }
+                    Err(FingerprintError::InvalidInput(msg)) => {
+                        eprintln!("Warning: fingerprint invalid input for {}: {}", filename, msg);
+                    }
+                }
+            }
+        }
     }
 
     // Build variant breakdown string
@@ -297,6 +364,16 @@ pub fn register_project(
         },
         breakdown,
     ))
+}
+
+/// Map DPX transfer characteristic string to a color space tag for fingerprint extraction.
+fn map_transfer_string_to_color_tag(transfer: &str) -> String {
+    match transfer {
+        "printing_density" | "logarithmic" => "log".to_string(),
+        "bt709" | "bt601_bg" | "bt601_m" | "smpte_274m"
+        | "unspecified_video" | "ntsc_composite" | "pal_composite" => "video".to_string(),
+        _ => "linear".to_string(),
+    }
 }
 
 /// Retrieve a project by name.
@@ -390,6 +467,17 @@ mod tests {
                 fps         REAL,
                 duration    REAL,
                 frame_count INTEGER,
+                created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE IF NOT EXISTS fingerprints (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                histogram_r TEXT NOT NULL,
+                histogram_g TEXT NOT NULL,
+                histogram_b TEXT NOT NULL,
+                luminance_mean REAL NOT NULL,
+                luminance_stddev REAL NOT NULL,
+                color_space_tag TEXT NOT NULL,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )
@@ -726,5 +814,156 @@ mod tests {
         assert!(breakdown.skipped_files.contains(&"trunc.mov".to_string()));
         // DPX variant should still be present
         assert!(breakdown.variants.iter().any(|v| v.contains("10-bit")));
+    }
+
+    #[test]
+    fn test_register_dpx_extracts_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a valid DPX with actual pixel data
+        let dpx_path = film_dir.join("shot001.dpx");
+        dpx::create_synthetic_dpx(&dpx_path, 4, 4, 10, 2, DpxEndian::Big).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (_project, breakdown) = register_project(&conn, "fp_dpx_test", &film_dir).unwrap();
+
+        assert_eq!(breakdown.fingerprint_count, 1);
+
+        // Verify fingerprint stored in DB
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let (hist_r, tag): (String, String) = conn
+            .query_row(
+                "SELECT histogram_r, color_space_tag FROM fingerprints LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tag, "linear");
+        // Histogram should be non-empty
+        assert!(!hist_r.is_empty());
+    }
+
+    #[test]
+    fn test_register_exr_extracts_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create a small valid EXR with pixel data
+        let exr_path = film_dir.join("shot001.exr");
+        exr_format::create_synthetic_exr(&exr_path, 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (_project, breakdown) = register_project(&conn, "fp_exr_test", &film_dir).unwrap();
+
+        assert_eq!(breakdown.fingerprint_count, 1);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_fingerprint_color_space_tag_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create DPX with logarithmic transfer → "log"
+        let log_path = film_dir.join("log.dpx");
+        dpx::create_synthetic_dpx(&log_path, 4, 4, 10, 3, DpxEndian::Big).unwrap();
+
+        // Create DPX with BT.709 transfer → "video"
+        let video_path = film_dir.join("video.dpx");
+        dpx::create_synthetic_dpx(&video_path, 4, 4, 10, 6, DpxEndian::Big).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (_project, breakdown) = register_project(&conn, "tag_test", &film_dir).unwrap();
+
+        assert_eq!(breakdown.fingerprint_count, 2);
+
+        let mut tags: Vec<String> = conn
+            .prepare("SELECT color_space_tag FROM fingerprints ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        tags.sort();
+        assert_eq!(tags, vec!["log".to_string(), "video".to_string()]);
+    }
+
+    #[test]
+    fn test_fingerprint_luminance_values_reasonable() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create EXR with uniform pixel values (R=0.5, G=0.25, B=0.125)
+        let exr_path = film_dir.join("uniform.exr");
+        exr_format::create_synthetic_exr(&exr_path, 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (_project, breakdown) = register_project(&conn, "lum_test", &film_dir).unwrap();
+
+        assert_eq!(breakdown.fingerprint_count, 1);
+
+        let (mean, stddev): (f64, f64) = conn
+            .query_row(
+                "SELECT luminance_mean, luminance_stddev FROM fingerprints LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        // With uniform pixel values, stddev should be very small (f16 rounding)
+        assert!(stddev.abs() < 0.01, "expected stddev ~0 for uniform pixels, got {}", stddev);
+        // Mean should be positive (luminance of non-zero pixels)
+        assert!(mean > 0.0, "expected positive luminance mean, got {}", mean);
+        assert!(mean <= 1.0, "expected luminance mean <= 1.0, got {}", mean);
+    }
+
+    #[test]
+    fn test_register_with_mixed_fingerprints() {
+        let dir = tempfile::tempdir().unwrap();
+        let film_dir = dir.path().join("film");
+        fs::create_dir_all(&film_dir).unwrap();
+
+        // Create 2 DPX files
+        for i in 0..2 {
+            let p = film_dir.join(format!("shot{}.dpx", i));
+            dpx::create_synthetic_dpx(&p, 4, 4, 10, 2, DpxEndian::Big).unwrap();
+        }
+        // Create 1 EXR file
+        exr_format::create_synthetic_exr(&film_dir.join("ref.exr"), 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
+
+        let (_db_dir, conn) = setup_test_db();
+        let (_project, breakdown) = register_project(&conn, "mixed_fp", &film_dir).unwrap();
+
+        assert_eq!(breakdown.fingerprint_count, 3);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_transfer_string_mapping() {
+        assert_eq!(map_transfer_string_to_color_tag("printing_density"), "log");
+        assert_eq!(map_transfer_string_to_color_tag("logarithmic"), "log");
+        assert_eq!(map_transfer_string_to_color_tag("bt709"), "video");
+        assert_eq!(map_transfer_string_to_color_tag("bt601_bg"), "video");
+        assert_eq!(map_transfer_string_to_color_tag("smpte_274m"), "video");
+        assert_eq!(map_transfer_string_to_color_tag("linear"), "linear");
+        assert_eq!(map_transfer_string_to_color_tag("user_defined"), "linear");
     }
 }
