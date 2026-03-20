@@ -1,11 +1,3 @@
----
-title: Mengxi (梦溪)
-description: 一种图像相似度搜索和历史 LUT 匹配工具
-author: MaoDing (毛丁)
-date: 2026-03
-license: MIT
----
-
 # Mengxi (梦溪)
 
 > 2026 MoonBit 软件合成挑战赛参赛项目

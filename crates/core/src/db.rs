@@ -98,11 +98,15 @@ fn discover_migrations_from_dir(migrations_dir: &PathBuf) -> Result<Vec<(i64, St
 
 /// Discovers migration files from the embedded migrations/ directory.
 fn discover_migrations() -> Result<Vec<(i64, String)>, Box<dyn std::error::Error>> {
-    let migrations_dir = std::env::current_dir()?.join("migrations");
+    // Use CARGO_MANIFEST_DIR at compile time to find project root, falling back to current_dir
+    let migrations_dir = option_env!("CARGO_MANIFEST_DIR")
+        .map(|dir| std::path::PathBuf::from(dir).parent().unwrap().parent().unwrap().join("migrations"))
+        .unwrap_or_else(|| std::env::current_dir().unwrap().join("migrations"));
     discover_migrations_from_dir(&migrations_dir)
 }
 
 /// Runs all pending migrations against the database.
+/// Each migration is committed individually with its version number updated after success.
 pub fn run_migrations(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     let current = current_version(conn)?;
     let migrations = discover_migrations()?;
@@ -112,13 +116,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), Box<dyn std::error::Error
             continue;
         }
         conn.execute_batch(sql)?;
-    }
-
-    let max_version = migrations.iter().map(|(v, _)| *v).max().unwrap_or(0);
-    if max_version > current {
+        // Update version immediately after each migration for crash recovery
         conn.execute(
             "UPDATE schema_version SET version = ?1",
-            [max_version],
+            [version],
         )?;
     }
 
@@ -215,13 +216,14 @@ mod tests {
             .unwrap()
             .join("migrations");
         let migrations = discover_migrations_from_dir(&project_root).unwrap();
-        assert_eq!(migrations.len(), 6);
+        assert_eq!(migrations.len(), 7);
         assert_eq!(migrations[0].0, 1); // 001_create_projects.sql
         assert_eq!(migrations[1].0, 2); // 002_create_files.sql
         assert_eq!(migrations[2].0, 3); // 003_add_file_metadata.sql
         assert_eq!(migrations[3].0, 4); // 004_add_file_compression.sql
         assert_eq!(migrations[4].0, 5); // 005_add_mov_metadata.sql
         assert_eq!(migrations[5].0, 6); // 006_create_fingerprints.sql
+        assert_eq!(migrations[6].0, 7); // 007_add_files_unique_constraint.sql
         assert!(migrations[0].1.contains("CREATE TABLE IF NOT EXISTS projects"));
         assert!(migrations[1].1.contains("CREATE TABLE IF NOT EXISTS files"));
         assert!(migrations[2].1.contains("ALTER TABLE files ADD COLUMN"));

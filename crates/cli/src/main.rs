@@ -135,28 +135,45 @@ fn main() {
 
     match cli.command {
         Some(Commands::Import { project, name, format }) => {
+            let is_json = format == "json";
+
             let project_path = match project {
                 Some(p) => p,
                 None => {
-                    eprintln!("Error: IMPORT_MISSING_ARG — --project <path> is required");
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "IMPORT_MISSING_ARG", "message": "--project <path> is required" }
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: IMPORT_MISSING_ARG — --project <path> is required");
+                    }
                     process::exit(1);
                 }
             };
             let project_name = match name {
                 Some(n) => n,
                 None => {
-                    eprintln!("Error: IMPORT_MISSING_ARG — --name <string> is required");
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "IMPORT_MISSING_ARG", "message": "--name <string> is required" }
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: IMPORT_MISSING_ARG — --name <string> is required");
+                    }
                     process::exit(1);
                 }
             };
 
             let path = Path::new(&project_path);
-            let is_json = format == "json";
 
             match db::open_db() {
                 Ok(conn) => match project::register_project(&conn, &project_name, &path, |current, total, filename| {
-                    let percent = (current * 100) / total;
-                    let filled = percent / 5;
+                    let percent = if total == 0 { 100 } else { (current * 100) / total };
+                    let filled = (percent / 5).min(20);
                     let empty = 20 - filled;
                     eprintln!("[{}{}] {}% ({}/{}) Processing {}...",
                         "█".repeat(filled),
@@ -262,7 +279,7 @@ fn main() {
                             let (code, message) = match &e {
                                 project::ImportError::PathNotFound(msg) => ("IMPORT_PATH_NOT_FOUND", msg.clone()),
                                 project::ImportError::DuplicateName(msg) => ("IMPORT_DUPLICATE_NAME", msg.clone()),
-                                project::ImportError::DbError(msg) => ("IMPORT_DB_ERROR", msg.clone()),
+                                project::ImportError::DbError(_) => ("IMPORT_DB_ERROR", "Database operation failed".to_string()),
                                 project::ImportError::CorruptFile { filename, reason } => {
                                     ("IMPORT_CORRUPT_FILE", format!("Failed to decode {}: {}", filename, reason))
                                 }
@@ -274,7 +291,7 @@ fn main() {
                                     "message": message,
                                 }
                             });
-                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
                             process::exit(1);
                         } else {
                             match e {
@@ -301,10 +318,10 @@ fn main() {
                             "status": "error",
                             "error": {
                                 "code": "IMPORT_DB_INIT_FAILED",
-                                "message": e.to_string(),
+                                "message": "Failed to initialize database",
                             }
                         });
-                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: IMPORT_DB_INIT_FAILED — {e}");
                     }

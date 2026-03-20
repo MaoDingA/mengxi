@@ -138,6 +138,14 @@ pub fn parse_dpx_header(path: &Path) -> Result<DpxHeader, DpxError> {
         )));
     }
 
+    // Validate packing (only support Method A / packing=0 for MVP)
+    if packing != 0 {
+        return Err(DpxError::UnsupportedVariant(format!(
+            "packing method {} not supported (only Method A/packing=0)",
+            packing
+        )));
+    }
+
     Ok(DpxHeader {
         width: pixels_per_line,
         height: lines_per_element,
@@ -334,6 +342,12 @@ pub fn read_pixel_data(path: &Path) -> Result<Vec<f64>, DpxError> {
     let header = parse_dpx_header(path)?;
 
     let offset = header.data_offset as usize;
+    if offset < DPX_HEADER_SIZE {
+        return Err(DpxError::TruncatedFile(format!(
+            "data offset {} is below minimum header size {}",
+            offset, DPX_HEADER_SIZE
+        )));
+    }
     if offset >= data.len() {
         return Err(DpxError::TruncatedFile("data offset beyond file size".to_string()));
     }
@@ -343,7 +357,7 @@ pub fn read_pixel_data(path: &Path) -> Result<Vec<f64>, DpxError> {
 
     match header.bit_depth {
         8 => read_pixels_8bit(pixel_data, num_pixels),
-        10 => read_pixels_10bit(pixel_data, num_pixels),
+        10 => read_pixels_10bit(pixel_data, num_pixels, header.endianness),
         16 => read_pixels_16bit(pixel_data, num_pixels, header.endianness),
         other => Err(DpxError::UnsupportedVariant(format!(
             "pixel reading not supported for {}-bit depth", other
@@ -366,7 +380,7 @@ fn read_pixels_8bit(data: &[u8], num_pixels: usize) -> Result<Vec<f64>, DpxError
     Ok(result)
 }
 
-fn read_pixels_10bit(data: &[u8], num_pixels: usize) -> Result<Vec<f64>, DpxError> {
+fn read_pixels_10bit(data: &[u8], num_pixels: usize, endian: DpxEndian) -> Result<Vec<f64>, DpxError> {
     // Each RGB pixel = 3x10bit + 2bit padding = 1 32-bit word
     let needed_words = num_pixels;
     if data.len() < needed_words * 4 {
@@ -378,8 +392,11 @@ fn read_pixels_10bit(data: &[u8], num_pixels: usize) -> Result<Vec<f64>, DpxErro
     let max_val = (1u32 << 10) - 1; // 1023
     let mut result = Vec::with_capacity(num_pixels * 3);
     for i in 0..num_pixels {
-        let word = u32::from_le_bytes([data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]]);
-        // Method A (fill from LSB): [pad(2)][C3(10)][C2(10)][C1(10)]
+        let word = match endian {
+            DpxEndian::Big => u32::from_be_bytes([data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]]),
+            DpxEndian::Little => u32::from_le_bytes([data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]]),
+        };
+        // Method A (fill from MSB for BE): [pad(2)][C1(10)][C2(10)][C3(10)]
         let c1 = ((word >> 20) & max_val) as f64 / max_val as f64;
         let c2 = ((word >> 10) & max_val) as f64 / max_val as f64;
         let c3 = (word & max_val) as f64 / max_val as f64;

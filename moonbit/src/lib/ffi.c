@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 
 /* C wrapper for MoonBit FFI.
@@ -26,14 +27,14 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib28mengxi__compute__fingerprint(
   double*
 );
 
-static int runtime_initialized = 0;
+static atomic_int runtime_initialized = 0;
 
 static void ensure_runtime_init(void) {
-  if (!runtime_initialized) {
+  if (!atomic_load(&runtime_initialized)) {
     static char argv0[] = "mengxi";
     static char* argv[] = { argv0, NULL };
     moonbit_runtime_init(1, argv);
-    runtime_initialized = 1;
+    atomic_store(&runtime_initialized, 1);
   }
 }
 

@@ -100,6 +100,11 @@ pub fn extract_fingerprint(
             "pixel data must contain at least 3 values (1 pixel)".to_string(),
         ));
     }
+    if pixel_data.len() > i32::MAX as usize {
+        return Err(FingerprintError::InvalidInput(
+            format!("pixel data too large for FFI ({} elements, max {})", pixel_data.len(), i32::MAX),
+        ));
+    }
     if pixel_data.len() % 3 != 0 {
         return Err(FingerprintError::InvalidInput(
             "pixel data length must be divisible by 3 (RGB)".to_string(),

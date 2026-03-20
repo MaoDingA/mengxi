@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -174,30 +174,28 @@ pub fn register_project(
         project_id
     };
 
-    // Query already-imported filenames for resume support
-    let existing_files: Vec<String> = if !is_new {
+    // Query already-imported filenames for resume support (use HashSet for O(1) lookup)
+    let existing_files: HashSet<String> = if !is_new {
         let mut stmt = conn.prepare(
             "SELECT filename FROM files WHERE project_id = ?1",
         ).map_err(|e| ImportError::DbError(e.to_string()))?;
-        let result: Vec<String> = stmt.query_map([project_id], |row| row.get::<_, String>(0))
+        let result: HashSet<String> = stmt.query_map([project_id], |row| row.get::<_, String>(0))
             .map_err(|e| ImportError::DbError(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Result<HashSet<_>, _>>()
             .map_err(|e| ImportError::DbError(e.to_string()))?;
         result
     } else {
-        Vec::new()
+        HashSet::new()
     };
 
-    // Update project counts to reflect total files
-    conn.execute(
-        "UPDATE projects SET dpx_count = ?1, exr_count = ?2, mov_count = ?3 WHERE id = ?4",
-        params![dpx_count, exr_count, mov_count, project_id],
-    )
-    .map_err(|e| ImportError::DbError(e.to_string()))?;
+    // Begin transaction for atomic import
+    let tx = conn.unchecked_transaction()
+        .map_err(|e| ImportError::DbError(e.to_string()))?;
 
     // Insert file records with DPX metadata extraction
     let mut variant_counts: HashMap<String, usize> = HashMap::new();
     let mut breakdown = VariantBreakdown::default();
+    let new_files_count = files.len() - existing_files.len();
 
     for (filename, format) in &files {
         // Skip already-imported files (resume support)
@@ -207,7 +205,8 @@ pub fn register_project(
         }
 
         let file_path = path.join(filename);
-        on_progress(breakdown.resumed_count + breakdown.skipped_count + 1, files.len(), filename);
+        let processed = breakdown.skipped_count + 1; // 1-indexed among new files
+        on_progress(processed, new_files_count, filename);
 
         // Extract format-specific metadata
         let (width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count) = if format == "dpx" {
@@ -310,7 +309,7 @@ pub fn register_project(
         };
 
         conn.execute(
-            "INSERT INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT OR IGNORE INTO files (project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![project_id, filename, format, width, height, bit_depth, transfer, colorimetric, descriptor, compression, codec, fps, duration, frame_count],
         )
         .map_err(|e| ImportError::DbError(e.to_string()))?;
@@ -387,6 +386,16 @@ pub fn register_project(
     for (variant, count) in sorted_variants {
         breakdown.variants.push(format!("{}x {}", count, variant));
     }
+
+    // Update project counts to reflect actual imported files
+    conn.execute(
+        "UPDATE projects SET dpx_count = ?1, exr_count = ?2, mov_count = ?3 WHERE id = ?4",
+        params![dpx_count, exr_count, mov_count, project_id],
+    )
+    .map_err(|e| ImportError::DbError(e.to_string()))?;
+
+    // Commit transaction
+    tx.commit().map_err(|e| ImportError::DbError(e.to_string()))?;
 
     // Load project record from DB for accurate created_at
     let project = conn.query_row(

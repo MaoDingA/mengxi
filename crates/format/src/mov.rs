@@ -261,16 +261,17 @@ pub fn extract_keyframe_indices(path: &Path) -> Result<Vec<KeyframeInfo>, MovErr
     // Convert keyframe indices (1-based) to timestamps
     let mut keyframes = Vec::new();
     let mut current_sample: u64 = 0;
+    let mut accumulated_time: u64 = 0;
 
     for sample in &stts.samples {
         for _i in 0..sample.sample_count {
             current_sample += 1;
+            accumulated_time += sample.sample_delta as u64;
             let sample_num = current_sample as u32;
 
             if keyframe_indices.binary_search(&sample_num).is_ok() {
                 let timestamp_secs = if timescale > 0 {
-                    // Sum all deltas up to and including this sample
-                    (sample_num as f64 * sample.sample_delta as f64) / timescale as f64
+                    accumulated_time as f64 / timescale as f64
                 } else {
                     0.0
                 };
