@@ -13,6 +13,8 @@ use crate::fingerprint::BINS_PER_CHANNEL;
 pub enum SearchError {
     /// No fingerprints exist in the database.
     NoFingerprints,
+    /// No results found for the specified project.
+    ProjectNotFound(String),
     /// A database error occurred.
     DatabaseError(String),
     /// Invalid format parameter.
@@ -24,6 +26,9 @@ impl std::fmt::Display for SearchError {
         match self {
             SearchError::NoFingerprints => {
                 write!(f, "SEARCH_NO_FINGERPRINTS -- No indexed projects found")
+            }
+            SearchError::ProjectNotFound(name) => {
+                write!(f, "SEARCH_PROJECT_NOT_FOUND -- No results found for project '{}'", name)
             }
             SearchError::DatabaseError(msg) => {
                 write!(f, "SEARCH_DB_ERROR -- {}", msg)
@@ -66,6 +71,7 @@ pub struct SearchOptions {
 
 /// Parse a comma-separated f64 string into a Vec of histogram bin values.
 /// Expects exactly `BINS_PER_CHANNEL` (64) elements.
+/// Rejects NaN and infinity values.
 pub fn parse_histogram(text: &str) -> Result<Vec<f64>, SearchError> {
     let values: Vec<f64> = text
         .split(',')
@@ -76,6 +82,16 @@ pub fn parse_histogram(text: &str) -> Result<Vec<f64>, SearchError> {
             })
         })
         .collect::<Result<_, _>>()?;
+
+    // Reject NaN and infinity values
+    for v in &values {
+        if !v.is_finite() {
+            return Err(SearchError::DatabaseError(format!(
+                "histogram contains non-finite value: {}",
+                v
+            )));
+        }
+    }
 
     if values.len() != BINS_PER_CHANNEL {
         return Err(SearchError::DatabaseError(format!(
@@ -145,8 +161,8 @@ pub fn search_histograms(
                 ))
             })
             .map_err(|e| SearchError::DatabaseError(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect(),
+            .collect::<Result<_, _>>()
+            .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
         None => stmt
             .query_map([], |row| {
                 Ok((
@@ -159,12 +175,18 @@ pub fn search_histograms(
                 ))
             })
             .map_err(|e| SearchError::DatabaseError(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect(),
+            .collect::<Result<_, _>>()
+            .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
     };
 
     if rows.is_empty() {
-        return Err(SearchError::NoFingerprints);
+        return if options.project.is_some() {
+            Err(SearchError::ProjectNotFound(
+                options.project.clone().unwrap(),
+            ))
+        } else {
+            Err(SearchError::NoFingerprints)
+        };
     }
 
     // Parse histograms and collect valid results.
@@ -341,8 +363,8 @@ mod tests {
         );
         assert!(result.is_err());
         match result.unwrap_err() {
-            SearchError::NoFingerprints => {}
-            other => panic!("Expected NoFingerprints, got: {:?}", other),
+            SearchError::ProjectNotFound(name) => assert_eq!(name, "test"),
+            other => panic!("Expected ProjectNotFound, got: {:?}", other),
         }
     }
 
@@ -496,5 +518,67 @@ mod tests {
 
         let err = SearchError::InvalidFormat("bad format".to_string());
         assert!(format!("{}", err).contains("SEARCH_INVALID_FORMAT"));
+
+        let err = SearchError::ProjectNotFound("test_proj".to_string());
+        assert!(format!("{}", err).contains("SEARCH_PROJECT_NOT_FOUND"));
+    }
+
+    #[test]
+    fn test_parse_histogram_rejects_nan() {
+        let mut hist_parts: Vec<String> = (0..63).map(|_| "0.1".to_string()).collect();
+        hist_parts.push("NaN".to_string());
+        let hist = hist_parts.join(",");
+        let result = parse_histogram(&hist);
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("non-finite"));
+    }
+
+    #[test]
+    fn test_parse_histogram_rejects_infinity() {
+        let mut hist_parts: Vec<String> = (0..63).map(|_| "0.1".to_string()).collect();
+        hist_parts.push("inf".to_string());
+        let hist = hist_parts.join(",");
+        let result = parse_histogram(&hist);
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("non-finite"));
+    }
+
+    #[test]
+    fn test_search_project_not_found() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('other', '/tmp/other')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'scene.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        )
+        .unwrap();
+
+        // Search for a project that exists but has no fingerprints
+        let result = search_histograms(
+            &conn,
+            &SearchOptions {
+                project: Some("nonexistent".to_string()),
+                limit: 5,
+            },
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SearchError::ProjectNotFound(name) => assert_eq!(name, "nonexistent"),
+            other => panic!("Expected ProjectNotFound, got: {:?}", other),
+        }
+
+        // Global search should still work
+        let result = search_histograms(
+            &conn,
+            &SearchOptions {
+                project: None,
+                limit: 5,
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
     }
 }

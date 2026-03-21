@@ -1,5 +1,7 @@
 mod config;
 
+use unicode_width::UnicodeWidthStr;
+
 use clap::{Parser, Subcommand};
 use std::path::Path;
 use std::process;
@@ -38,8 +40,8 @@ enum Commands {
         #[arg(long)]
         tag: Option<String>,
         /// Maximum number of results
-        #[arg(long, default_value_t = 5)]
-        limit: u32,
+        #[arg(long)]
+        limit: Option<u32>,
         /// Scope search to a specific project
         #[arg(long)]
         project: Option<String>,
@@ -375,12 +377,30 @@ fn main() {
                 process::exit(1);
             }
 
+            // Resolve limit from CLI flag or config default
+            let cfg = config::load_or_create_config().unwrap_or_default();
+            let limit_val = limit.unwrap_or(cfg.general.default_search_limit);
+
+            // Reject --limit 0
+            if limit_val == 0 {
+                if is_json {
+                    let output = serde_json::json!({
+                        "status": "error",
+                        "error": { "code": "SEARCH_INVALID_LIMIT", "message": "--limit must be at least 1" }
+                    });
+                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                } else {
+                    eprintln!("Error: SEARCH_INVALID_LIMIT -- --limit must be at least 1");
+                }
+                process::exit(1);
+            }
+
             // Execute histogram search
             match db::open_db() {
                 Ok(conn) => {
                     let options = mengxi_core::search::SearchOptions {
                         project: project.clone(),
-                        limit: limit as usize,
+                        limit: limit_val as usize,
                     };
 
                     match mengxi_core::search::search_histograms(&conn, &options) {
@@ -402,7 +422,7 @@ fn main() {
                                     "status": "ok",
                                     "query": {
                                         "project": project,
-                                        "limit": limit
+                                        "limit": limit_val
                                     },
                                     "results": json_results
                                 });
@@ -444,7 +464,7 @@ fn main() {
                                     "status": "ok",
                                     "query": {
                                         "project": project,
-                                        "limit": limit
+                                        "limit": limit_val
                                     },
                                     "results": [],
                                     "message": "No indexed projects found. Run 'mengxi import' first."
@@ -452,6 +472,22 @@ fn main() {
                                 println!("{}", serde_json::to_string_pretty(&output).unwrap());
                             } else {
                                 println!("No indexed projects found. Run 'mengxi import' first.");
+                            }
+                        }
+                        Err(mengxi_core::search::SearchError::ProjectNotFound(name)) => {
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "ok",
+                                    "query": {
+                                        "project": Some(&name),
+                                        "limit": limit_val
+                                    },
+                                    "results": [],
+                                    "message": format!("No fingerprints found for project '{}'.", name)
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                println!("No fingerprints found for project '{}'.", name);
                             }
                         }
                         Err(e) => {
@@ -472,7 +508,7 @@ fn main() {
                     if is_json {
                         let output = serde_json::json!({
                             "status": "error",
-                            "error": { "code": "SEARCH_DB_INIT_FAILED", "message": "Failed to initialize database" }
+                            "error": { "code": "SEARCH_DB_INIT_FAILED", "message": e.to_string() }
                         });
                         eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
@@ -1000,13 +1036,27 @@ fn main() {
     }
 }
 
-/// Truncate a string to max_len characters, appending "…" if truncated.
+/// Truncate a string to max_len display columns, appending "…" if truncated.
+/// Uses unicode-width for correct CJK/emoji column counting.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
+    let width = UnicodeWidthStr::width(s);
+    if width <= max_len {
         s.to_string()
     } else {
-        let truncated: String = s.chars().take(max_len - 1).collect();
-        format!("{}…", truncated)
+        let ellipsis_width = UnicodeWidthStr::width("…");
+        let target = max_len.saturating_sub(ellipsis_width);
+        let mut result = String::new();
+        let mut current_width = 0usize;
+        for ch in s.chars() {
+            let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+            if current_width + ch_width > target {
+                break;
+            }
+            result.push(ch);
+            current_width += ch_width;
+        }
+        result.push('…');
+        result
     }
 }
 
@@ -1083,7 +1133,7 @@ mod tests {
             Some(Commands::Search { image, tag, limit, project, format }) => {
                 assert_eq!(image.as_deref(), Some("/ref/mood.jpg"));
                 assert_eq!(tag.as_deref(), Some("industrial"));
-                assert_eq!(limit, 10);
+                assert_eq!(limit, Some(10));
                 assert_eq!(project.as_deref(), Some("my_film"));
                 assert_eq!(format, "text");
             }
@@ -1298,5 +1348,15 @@ mod tests {
     #[test]
     fn test_truncate_str_long() {
         assert_eq!(truncate_str("hello world", 8), "hello w…");
+    }
+
+    #[test]
+    fn test_truncate_str_cjk() {
+        // CJK chars are 2 columns wide each; "你好世界" = 8 columns
+        assert_eq!(truncate_str("你好世界", 8), "你好世界");
+        // 7 columns: "你好" (4) + "…" (1) = 5, need to fit "你好世…" (6+1=7)
+        assert_eq!(truncate_str("你好世界", 7), "你好世…");
+        // 5 columns: "你好" (4) + "…" (1) = 5
+        assert_eq!(truncate_str("你好世界", 5), "你好…");
     }
 }
