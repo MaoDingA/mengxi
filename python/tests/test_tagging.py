@@ -16,9 +16,18 @@ from mengxi_ai.tagging import (
     CLIP_IMAGE_SIZE,
     CLIP_MEAN,
     CLIP_STD,
+    _discover_text_encoder,
     _preprocess_clip_image,
-    _prepare_text_inputs,
     _softmax,
+)
+from mengxi_ai.tokenizer import (
+    CLIP_CONTEXT_LENGTH,
+    CLIP_EOS_TOKEN_ID,
+    CLIP_PAD_TOKEN_ID,
+    CLIP_SOS_TOKEN_ID,
+    ClipTokenizer,
+    _bytes_to_unicode,
+    _get_pairs,
 )
 
 
@@ -102,28 +111,6 @@ class TestPreprocessClipImage(unittest.TestCase):
             _preprocess_clip_image("/nonexistent/image.png")
 
 
-class TestPrepareTextInputs(unittest.TestCase):
-    """Tests for _prepare_text_inputs."""
-
-    def test_returns_numpy_array(self):
-        texts = ["warm", "cool", "cinematic"]
-        result = _prepare_text_inputs(texts)
-        self.assertIsInstance(result, np.ndarray)
-
-    def test_preserves_text_content(self):
-        texts = ["warm", "cool", "cinematic"]
-        result = _prepare_text_inputs(texts)
-        self.assertEqual(len(result), 3)
-
-    def test_empty_list(self):
-        result = _prepare_text_inputs([])
-        self.assertEqual(len(result), 0)
-
-    def test_single_tag(self):
-        result = _prepare_text_inputs(["dramatic lighting"])
-        self.assertEqual(len(result), 1)
-
-
 class TestSoftmax(unittest.TestCase):
     """Tests for _softmax utility."""
 
@@ -186,6 +173,119 @@ class TestClipConstants(unittest.TestCase):
 
     def test_clip_image_size(self):
         self.assertEqual(CLIP_IMAGE_SIZE, (224, 224))
+
+
+class TestBytesToUnicode(unittest.TestCase):
+    """Tests for the GPT-2/CLIP byte-to-unicode mapping."""
+
+    def test_returns_dict(self):
+        result = _bytes_to_unicode()
+        self.assertIsInstance(result, dict)
+
+    def test_maps_all_256_bytes(self):
+        result = _bytes_to_unicode()
+        self.assertEqual(len(result), 256)
+
+    def test_printable_ascii_preserved(self):
+        result = _bytes_to_unicode()
+        # 'a' (97) should map to 'a'
+        self.assertEqual(result[97], "a")
+        # '!' (33) should map to '!'
+        self.assertEqual(result[33], "!")
+
+    def test_inverse_is_bijective(self):
+        result = _bytes_to_unicode()
+        # Each value should be unique (bijective mapping)
+        self.assertEqual(len(set(result.values())), len(result))
+
+
+class TestGetPairs(unittest.TestCase):
+    """Tests for _get_pairs helper."""
+
+    def test_single_element(self):
+        pairs = _get_pairs(("a",))
+        self.assertEqual(pairs, set())
+
+    def test_two_elements(self):
+        pairs = _get_pairs(("a", "b"))
+        self.assertEqual(pairs, {("a", "b")})
+
+    def test_three_elements(self):
+        pairs = _get_pairs(("a", "b", "c"))
+        self.assertEqual(pairs, {("a", "b"), ("b", "c")})
+
+    def test_repeated_elements(self):
+        pairs = _get_pairs(("a", "a", "a"))
+        self.assertEqual(pairs, {("a", "a")})
+
+
+class TestDiscoverTextEncoder(unittest.TestCase):
+    """Tests for _discover_text_encoder."""
+
+    def test_no_models_dir(self):
+        with self.assertRaises(FileNotFoundError):
+            _discover_text_encoder("/nonexistent/path")
+
+    def test_no_text_model_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create an image-only model
+            open(os.path.join(tmp, "image_encoder.onnx"), "w").close()
+            with self.assertRaises(FileNotFoundError) as ctx:
+                _discover_text_encoder(tmp)
+            self.assertIn("No text encoder model found", str(ctx.exception))
+
+    def test_discovers_named_text_encoder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "image_encoder.onnx"), "w").close()
+            open(os.path.join(tmp, "text_encoder.onnx"), "w").close()
+            result = _discover_text_encoder(tmp)
+            self.assertEqual(result, "text_encoder.onnx")
+
+    def test_discovers_clip_text_encoder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "visual.onnx"), "w").close()
+            open(os.path.join(tmp, "clip_text_encoder.onnx"), "w").close()
+            result = _discover_text_encoder(tmp)
+            self.assertEqual(result, "clip_text_encoder.onnx")
+
+    def test_falls_back_to_any_text_containing_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "my_text_model_v2.onnx"), "w").close()
+            result = _discover_text_encoder(tmp)
+            self.assertEqual(result, "my_text_model_v2.onnx")
+
+
+class TestClipTokenizerWithoutVocab(unittest.TestCase):
+    """Tests for ClipTokenizer when vocab files are missing."""
+
+    def test_raises_file_not_found_without_vocab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError) as ctx:
+                ClipTokenizer(tmp)
+            self.assertIn("tokenizer files not found", str(ctx.exception))
+
+    def test_raises_file_not_found_with_only_vocab(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "vocab.json"), "w").close()
+            with self.assertRaises(FileNotFoundError) as ctx:
+                ClipTokenizer(tmp)
+            self.assertIn("tokenizer files not found", str(ctx.exception))
+
+
+class TestClipTokenizerSpecialTokens(unittest.TestCase):
+    """Tests for CLIP special token constants."""
+
+    def test_sos_token_value(self):
+        self.assertEqual(CLIP_SOS_TOKEN_ID, 49406)
+
+    def test_eos_token_value(self):
+        self.assertEqual(CLIP_EOS_TOKEN_ID, 49407)
+
+    def test_pad_token_value(self):
+        self.assertEqual(CLIP_PAD_TOKEN_ID, 0)
+
+    def test_context_length(self):
+        self.assertEqual(CLIP_CONTEXT_LENGTH, 77)
 
 
 if __name__ == "__main__":

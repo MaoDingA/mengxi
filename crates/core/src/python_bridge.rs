@@ -401,6 +401,7 @@ fn map_python_error(code: &str, message: &str) -> AiError {
     match code {
         "FILE_NOT_FOUND" => AiError::ModelNotFound(message.to_string()),
         "AI_MODEL_NOT_FOUND" => AiError::ModelNotFound(message.to_string()),
+        "INVALID_PARAMS" => AiError::ProtocolError(message.to_string()),
         "INFERENCE_ERROR" => AiError::InferenceError(message.to_string()),
         "AI_INFERENCE_ERROR" => AiError::InferenceError(message.to_string()),
         "TIMEOUT" => AiError::Timeout(message.to_string()),
@@ -676,6 +677,12 @@ mod tests {
         // Cleanup
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn test_map_python_error_invalid_params() {
+        let err = map_python_error("INVALID_PARAMS", "'top_n' must be a positive integer");
+        assert!(matches!(err, AiError::ProtocolError(msg) if msg == "'top_n' must be a positive integer"));
     }
 
     #[test]

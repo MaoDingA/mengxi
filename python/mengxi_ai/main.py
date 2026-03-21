@@ -55,6 +55,9 @@ def handle_generate_tags(params: dict) -> dict:
     model_name = params.get("model_name", "")
     top_n = params.get("top_n", 5)
 
+    if not isinstance(top_n, int) or top_n < 1:
+        return {"code": "INVALID_PARAMS", "message": "'top_n' must be a positive integer"}
+
     try:
         tags = generate_tags(
             image_path=image_path,

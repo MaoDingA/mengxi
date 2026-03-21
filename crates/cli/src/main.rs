@@ -213,6 +213,7 @@ fn main() {
                     Ok((proj, breakdown)) => {
                         // Post-import tag generation (if enabled)
                         let mut tag_count: usize = 0;
+                        let mut tag_error_count: usize = 0;
                         let cfg = config::load_or_create_config().unwrap_or_default();
                         if cfg.ai.tag_generation {
                             let fp_ids = match mengxi_core::tag::fingerprint_ids_for_project(&conn, &project_name) {
@@ -231,36 +232,57 @@ fn main() {
                                     cfg.ai.tag_model.clone(),
                                 );
 
-                                for (i, fp_id) in fp_ids.iter().enumerate() {
-                                    eprintln!("Generating tags... {}/{}", i + 1, total_fps);
-                                    // Get file path for fingerprint
-                                    let fpath_result: Result<String, _> = conn.query_row(
-                                        "SELECT f.filename || '/' || p.path FROM fingerprints fp
-                                         JOIN files f ON f.id = fp.file_id
-                                         JOIN projects p ON p.id = f.project_id
-                                         WHERE fp.id = ?1",
-                                        [*fp_id],
-                                        |row| row.get::<_, String>(0),
-                                    );
-                                    match fpath_result {
-                                        Ok(fpath) => {
-                                            match bridge.generate_tags(&fpath, cfg.ai.tag_top_n) {
-                                                Ok(tags) => {
-                                                    for tag in &tags {
-                                                        if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
-                                                            eprintln!("Warning: Failed to add tag '{}': {}", tag, e);
-                                                        } else {
-                                                            tag_count += 1;
+                                // Early subprocess health check — fail once instead of per-fingerprint
+                                match bridge.ping() {
+                                    Ok(true) => {},
+                                    Ok(false) => {
+                                        eprintln!("Warning: AI subprocess not responding, skipping tag generation for {} fingerprints", total_fps);
+                                        tag_error_count = total_fps;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Warning: AI subprocess not available ({})", e);
+                                        eprintln!("Warning: Skipping tag generation for {} fingerprints", total_fps);
+                                        tag_error_count = total_fps;
+                                    }
+                                }
+
+                                if tag_error_count == 0 {
+                                    let top_n = cfg.ai.tag_top_n.max(1);
+                                    for (i, fp_id) in fp_ids.iter().enumerate() {
+                                        eprintln!("Generating tags... {}/{}", i + 1, total_fps);
+                                        // Get file path for fingerprint
+                                        let fpath_result: Result<(String, String), _> = conn.query_row(
+                                            "SELECT p.path, f.filename FROM fingerprints fp
+                                             JOIN files f ON f.id = fp.file_id
+                                             JOIN projects p ON p.id = f.project_id
+                                             WHERE fp.id = ?1",
+                                            [*fp_id],
+                                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                                        );
+                                        match fpath_result {
+                                            Ok((base_path, filename)) => {
+                                                let fpath = format!("{}/{}", base_path, filename);
+                                                match bridge.generate_tags(&fpath, top_n) {
+                                                    Ok(tags) => {
+                                                        for tag in &tags {
+                                                            if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
+                                                                eprintln!("Warning: Failed to add tag '{}': {}", tag, e);
+                                                                tag_error_count += 1;
+                                                            } else {
+                                                                tag_count += 1;
+                                                            }
                                                         }
                                                     }
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Warning: Tag generation failed for fingerprint {}: {}", fp_id, e);
+                                                    Err(e) => {
+                                                        eprintln!("Warning: Tag generation failed for fingerprint {}: {}", fp_id, e);
+                                                        tag_error_count += 1;
+                                                    }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Warning: Could not get path for fingerprint {}: {}", fp_id, e);
+                                            Err(e) => {
+                                                eprintln!("Warning: Could not get path for fingerprint {}: {}", fp_id, e);
+                                                tag_error_count += 1;
+                                            }
                                         }
                                     }
                                 }
@@ -339,6 +361,8 @@ fn main() {
                             let fp_detail = format!("{} fingerprints extracted", breakdown.fingerprint_count);
                             let tag_detail = if tag_count > 0 {
                                 format!("{} AI tags generated", tag_count)
+                            } else if tag_error_count > 0 {
+                                format!("{} tag errors", tag_error_count)
                             } else {
                                 "No AI tags".to_string()
                             };
@@ -1148,7 +1172,19 @@ fn main() {
                         // Generate AI tags for all fingerprints in project
                         let cfg = config::load_or_create_config().unwrap_or_default();
                         if !cfg.ai.tag_generation {
-                            eprintln!("Error: TAG_GENERATION_DISABLED -- tag generation is disabled in config");
+                            eprintln!("Error: TAG_GENERATION_DISABLED -- tag generation is disabled in config. Set ai.tag_generation = true to enable.");
+                            process::exit(1);
+                        }
+
+                        // Check project exists before querying fingerprints
+                        let project_exists: bool = conn.query_row(
+                            "SELECT COUNT(*) FROM projects WHERE name = ?1",
+                            [&proj_name],
+                            |row| row.get::<_, i64>(0),
+                        ).unwrap_or(0) > 0;
+
+                        if !project_exists {
+                            eprintln!("Error: PROJECT_NOT_FOUND -- project '{}' not found", proj_name);
                             process::exit(1);
                         }
 
@@ -1168,16 +1204,18 @@ fn main() {
                         // Get file paths for each fingerprint
                         let mut fingerprint_paths: Vec<(i64, String)> = Vec::new();
                         for fp_id in &fingerprint_ids {
-                            let path_result: Result<String, _> = conn.query_row(
-                                "SELECT f.filename || '/' || p.path FROM fingerprints fp
+                            let path_result: Result<(String, String), _> = conn.query_row(
+                                "SELECT p.path, f.filename FROM fingerprints fp
                                  JOIN files f ON f.id = fp.file_id
                                  JOIN projects p ON p.id = f.project_id
                                  WHERE fp.id = ?1",
                                 [*fp_id],
-                                |row| row.get::<_, String>(0),
+                                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                             );
                             match path_result {
-                                Ok(path) => fingerprint_paths.push((*fp_id, path)),
+                                Ok((base_path, filename)) => {
+                                    fingerprint_paths.push((*fp_id, format!("{}/{}", base_path, filename)));
+                                }
                                 Err(e) => {
                                     eprintln!("Warning: Could not get path for fingerprint {}: {}", fp_id, e);
                                     continue;
@@ -1195,13 +1233,28 @@ fn main() {
                             cfg.ai.tag_model.clone(),
                         );
 
+                        // Early subprocess health check
+                        match bridge.ping() {
+                            Ok(true) => {},
+                            Ok(false) => {
+                                eprintln!("Error: AI subprocess not responding. Is Python installed and the mengxi_ai module available?");
+                                process::exit(1);
+                            }
+                            Err(e) => {
+                                eprintln!("Error: AI subprocess not available ({})", e);
+                                process::exit(1);
+                            }
+                        }
+
+                        let top_n = cfg.ai.tag_top_n.max(1);
                         for (i, (fp_id, fpath)) in fingerprint_paths.iter().enumerate() {
                             eprintln!("Generating tags... {}/{}", i + 1, total);
-                            match bridge.generate_tags(fpath, cfg.ai.tag_top_n) {
+                            match bridge.generate_tags(fpath, top_n) {
                                 Ok(tags) => {
                                     for tag in &tags {
                                         if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
                                             eprintln!("Warning: Failed to add tag '{}' to fingerprint {}: {}", tag, fp_id, e);
+                                            error_count += 1;
                                         } else {
                                             tag_count += 1;
                                         }
