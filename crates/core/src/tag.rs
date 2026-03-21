@@ -74,6 +74,12 @@ pub fn tag_add(conn: &Connection, fingerprint_id: i64, tag: &str) -> Result<(), 
 /// Remove a tag from a fingerprint.
 /// Returns `NotFound` if the tag does not exist on this fingerprint.
 pub fn tag_remove(conn: &Connection, fingerprint_id: i64, tag: &str) -> Result<(), TagError> {
+    if tag.trim().is_empty() {
+        return Err(TagError::DatabaseError(
+            "Tag must not be empty or whitespace-only".to_string(),
+        ));
+    }
+
     let affected = conn
         .execute(
             "DELETE FROM tags WHERE fingerprint_id = ?1 AND tag = ?2",
@@ -201,15 +207,17 @@ pub fn tag_list_with_source(conn: &Connection, fingerprint_id: i64) -> Result<Ve
 }
 
 /// List all unique tags for a project with their source indicator.
-/// Returns (tag, source) pairs.
+/// Returns (tag, source) pairs. If a tag has multiple sources across fingerprints,
+/// sources are merged with ", " separator (e.g., "ai, manual").
 pub fn tag_list_for_project_with_source(conn: &Connection, project_name: &str) -> Result<Vec<(String, String)>, TagError> {
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT t.tag, t.source FROM tags t
+            "SELECT t.tag, GROUP_CONCAT(t.source, ', ') FROM tags t
              JOIN fingerprints fp ON fp.id = t.fingerprint_id
              JOIN files f ON f.id = fp.file_id
              JOIN projects p ON p.id = f.project_id
              WHERE p.name = ?1
+             GROUP BY t.tag
              ORDER BY t.tag",
         )
         .map_err(|e| TagError::DatabaseError(e.to_string()))?;
@@ -228,6 +236,11 @@ pub fn tag_list_for_project_with_source(conn: &Connection, project_name: &str) -
 /// Returns `NotFound` if the old tag does not exist.
 /// Returns `DuplicateTag` if the new tag already exists for this fingerprint.
 pub fn tag_rename(conn: &Connection, fingerprint_id: i64, old_tag: &str, new_tag: &str) -> Result<(), TagError> {
+    if old_tag.trim().is_empty() {
+        return Err(TagError::DatabaseError(
+            "Tag must not be empty or whitespace-only".to_string(),
+        ));
+    }
     if new_tag.trim().is_empty() {
         return Err(TagError::DatabaseError(
             "New tag must not be empty or whitespace-only".to_string(),
@@ -264,6 +277,11 @@ pub fn tag_rename(conn: &Connection, fingerprint_id: i64, old_tag: &str, new_tag
 /// Returns the number of fingerprints where the tag was renamed.
 /// Returns `NotFound` if the tag was not found on any fingerprint in the project.
 pub fn tag_rename_in_project(conn: &Connection, project_name: &str, old_tag: &str, new_tag: &str) -> Result<usize, TagError> {
+    if old_tag.trim().is_empty() {
+        return Err(TagError::DatabaseError(
+            "Tag must not be empty or whitespace-only".to_string(),
+        ));
+    }
     if new_tag.trim().is_empty() {
         return Err(TagError::DatabaseError(
             "New tag must not be empty or whitespace-only".to_string(),
@@ -277,7 +295,10 @@ pub fn tag_rename_in_project(conn: &Connection, project_name: &str, old_tag: &st
         match tag_rename(&tx, *id, old_tag, new_tag) {
             Ok(()) => renamed += 1,
             Err(TagError::NotFound(_)) => {} // skip if not present on this fingerprint
-            Err(e) => return Err(e),
+            Err(e) => {
+                let _ = tx.rollback();
+                return Err(e);
+            }
         }
     }
 

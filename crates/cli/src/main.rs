@@ -112,7 +112,7 @@ enum Commands {
         #[arg(long, requires = "edit", conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "generate")]
         edit_new: Option<String>,
         /// Generate AI tags for all fingerprints in a project
-        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit")]
+        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit", conflicts_with = "edit_new")]
         generate: bool,
     },
     /// Compare two LUT files and display differences
@@ -1295,6 +1295,10 @@ fn main() {
                         }
                     } else if let Some(ref tag_text) = add {
                         // Add tag to project's fingerprints (source = "manual")
+                        if tag_text.trim().is_empty() {
+                            eprintln!("Error: TAG_MISSING_ARG -- tag must not be empty or whitespace-only");
+                            process::exit(1);
+                        }
                         match mengxi_core::tag::tag_add_to_project_with_source(&conn, &proj_name, tag_text, "manual") {
                             Ok(count) => {
                                 println!("Added tag '{}' to {} fingerprint(s) in project '{}'.", tag_text, count, proj_name);
@@ -1311,18 +1315,26 @@ fn main() {
                                 println!("Renamed tag '{}' to '{}' for {} fingerprint(s) in project '{}'.", old_tag, new_tag, count, proj_name);
                             }
                             Err(e) => {
-                                if format!("{}", e).contains("TAG_NOT_FOUND") {
-                                    eprintln!("Error: TAG_NOT_FOUND -- tag '{}' not found in project '{}'", old_tag, proj_name);
-                                } else if format!("{}", e).contains("TAG_DUPLICATE") {
-                                    eprintln!("Error: TAG_DUPLICATE -- tag '{}' already exists in project '{}'", new_tag, proj_name);
-                                } else {
-                                    eprintln!("Error: {}", e);
+                                match &e {
+                                    mengxi_core::tag::TagError::NotFound(_) => {
+                                        eprintln!("Error: TAG_NOT_FOUND -- tag '{}' not found in project '{}'", old_tag, proj_name);
+                                    }
+                                    mengxi_core::tag::TagError::DuplicateTag(_) => {
+                                        eprintln!("Error: TAG_DUPLICATE -- tag '{}' already exists in project '{}'", new_tag, proj_name);
+                                    }
+                                    _ => {
+                                        eprintln!("Error: {}", e);
+                                    }
                                 }
                                 process::exit(1);
                             }
                         }
                     } else if let Some(ref tag_text) = remove {
                         // Remove tag from project's fingerprints
+                        if tag_text.trim().is_empty() {
+                            eprintln!("Error: TAG_MISSING_ARG -- tag must not be empty or whitespace-only");
+                            process::exit(1);
+                        }
                         match mengxi_core::tag::tag_remove_from_project(&conn, &proj_name, tag_text) {
                             Ok(count) => {
                                 if count > 0 {
