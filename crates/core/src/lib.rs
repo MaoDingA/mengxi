@@ -6,4 +6,5 @@ pub mod fingerprint;
 pub mod lut_generation;
 pub mod lut_diff;
 pub mod project;
+pub mod python_bridge;
 pub mod search;

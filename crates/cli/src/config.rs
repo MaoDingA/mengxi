@@ -36,6 +36,10 @@ pub struct AiConfig {
     pub embedding_endpoint: String,
     #[serde(default = "default_true")]
     pub tag_generation: bool,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_secs: u64,
+    #[serde(default = "default_inference_timeout")]
+    pub inference_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,6 +61,8 @@ fn default_data_dir() -> String { "~/.mengxi/data".to_string() }
 fn default_search_limit() -> u32 { 5 }
 fn default_export_format() -> String { "cube".to_string() }
 fn default_true() -> bool { true }
+fn default_idle_timeout() -> u64 { 300 }
+fn default_inference_timeout() -> u64 { 30 }
 fn default_keyframe_extraction() -> String { "auto".to_string() }
 fn default_output_dir() -> String { "~/lut".to_string() }
 
@@ -88,6 +94,8 @@ impl Default for AiConfig {
             embedding_model: String::new(),
             embedding_endpoint: String::new(),
             tag_generation: default_true(),
+            idle_timeout_secs: default_idle_timeout(),
+            inference_timeout_secs: default_inference_timeout(),
         }
     }
 }
@@ -264,6 +272,8 @@ mod tests {
                 embedding_model: "model.onnx".to_string(),
                 embedding_endpoint: "http://localhost:8080".to_string(),
                 tag_generation: false,
+                idle_timeout_secs: 600,
+                inference_timeout_secs: 60,
             },
             import: ImportConfig {
                 auto_detect_format: false,
