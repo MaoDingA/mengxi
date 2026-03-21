@@ -45,6 +45,12 @@ enum Commands {
         /// Scope search to a specific project
         #[arg(long)]
         project: Option<String>,
+        /// Accept result by rank
+        #[arg(long, conflicts_with = "reject")]
+        accept: Option<u32>,
+        /// Reject result by rank
+        #[arg(long, conflicts_with = "accept")]
+        reject: Option<u32>,
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
@@ -69,9 +75,18 @@ enum Commands {
     },
     /// Display detailed fingerprint information for a search result
     Info {
-        /// Search result ID
+        /// Search result rank (session-bound from last search)
         #[arg(long)]
         result: Option<u32>,
+        /// Project name (persistent lookup)
+        #[arg(long)]
+        project: Option<String>,
+        /// File path (persistent lookup)
+        #[arg(long)]
+        file: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
     },
     /// Manage tags on indexed projects and results
     Tag {
@@ -345,26 +360,14 @@ fn main() {
             tag,
             limit,
             project,
+            accept,
+            reject,
             format,
         }) => {
             let is_json = format == "json";
 
-            // --image: embedding-based search
+            // --image: embedding-based search (optionally combined with --tag)
             if let Some(ref img_path) = image {
-                // --tag not yet implemented (Story 3.4)
-                if tag.is_some() {
-                    if is_json {
-                        let output = serde_json::json!({
-                            "status": "error",
-                            "error": { "code": "SEARCH_TAG_NOT_AVAILABLE", "message": "Tag search not yet implemented (Story 3.4)" }
-                        });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
-                    } else {
-                        eprintln!("Error: SEARCH_TAG_NOT_AVAILABLE -- Tag search not yet implemented (Story 3.4)");
-                    }
-                    process::exit(1);
-                }
-
                 let cfg = config::load_or_create_config().unwrap_or_default();
                 let limit_val = limit.unwrap_or(cfg.general.default_search_limit);
 
@@ -389,14 +392,33 @@ fn main() {
                             limit: limit_val as usize,
                         };
 
-                        match mengxi_core::search::search_by_image(
-                            &conn,
-                            img_path,
-                            &options,
-                            cfg.ai.idle_timeout_secs,
-                            cfg.ai.inference_timeout_secs,
-                            &cfg.ai.embedding_model,
-                        ) {
+                        let search_result = match &tag {
+                            Some(tag_text) => {
+                                // Combined --image + --tag search
+                                mengxi_core::search::search_by_image_and_tag(
+                                    &conn,
+                                    tag_text,
+                                    img_path,
+                                    &options,
+                                    cfg.ai.idle_timeout_secs,
+                                    cfg.ai.inference_timeout_secs,
+                                    &cfg.ai.embedding_model,
+                                )
+                            }
+                            None => {
+                                // Image-only search
+                                mengxi_core::search::search_by_image(
+                                    &conn,
+                                    img_path,
+                                    &options,
+                                    cfg.ai.idle_timeout_secs,
+                                    cfg.ai.inference_timeout_secs,
+                                    &cfg.ai.embedding_model,
+                                )
+                            }
+                        };
+
+                        match search_result {
                             Ok(results) => {
                                 if is_json {
                                     let json_results: Vec<serde_json::Value> = results
@@ -446,6 +468,8 @@ fn main() {
                                         );
                                     }
                                 }
+                                // Record accept/reject feedback if requested
+                                record_feedback_if_needed(&results, accept, reject, "image", is_json);
                             }
                             Err(e) => {
                                 if is_json {
@@ -474,18 +498,80 @@ fn main() {
                         process::exit(1);
                     }
                 }
-            } else if tag.is_some() {
-                // --tag not yet implemented (Story 3.4)
-                if is_json {
-                    let output = serde_json::json!({
-                        "status": "error",
-                        "error": { "code": "SEARCH_TAG_NOT_AVAILABLE", "message": "Tag search not yet implemented (Story 3.4)" }
-                    });
-                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
-                } else {
-                    eprintln!("Error: SEARCH_TAG_NOT_AVAILABLE -- Tag search not yet implemented (Story 3.4)");
+            } else if let Some(ref tag_text) = tag {
+                // Tag-only search
+                let cfg = config::load_or_create_config().unwrap_or_default();
+                let limit_val = limit.unwrap_or(cfg.general.default_search_limit);
+
+                if limit_val == 0 {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "SEARCH_INVALID_LIMIT", "message": "--limit must be at least 1" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: SEARCH_INVALID_LIMIT -- --limit must be at least 1");
+                    }
+                    process::exit(1);
                 }
-                process::exit(1);
+
+                match db::open_db() {
+                    Ok(conn) => {
+                        let options = mengxi_core::search::SearchOptions {
+                            project: project.clone(),
+                            limit: limit_val as usize,
+                        };
+
+                        match mengxi_core::search::search_by_tag(&conn, tag_text, &options) {
+                            Ok(results) => {
+                                display_search_results(&results, is_json);
+                                record_feedback_if_needed(&results, accept, reject, "tag", is_json);
+                            }
+                            Err(mengxi_core::search::SearchError::NoFingerprints) => {
+                                if is_json {
+                                    let output = serde_json::json!({
+                                        "status": "ok",
+                                        "query": {
+                                            "tag": tag_text,
+                                            "project": project,
+                                            "limit": limit_val
+                                        },
+                                        "results": [],
+                                        "message": "No results found for the specified tag."
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                } else {
+                                    println!("No results found for tag '{}'.", tag_text);
+                                }
+                            }
+                            Err(e) => {
+                                if is_json {
+                                    let output = serde_json::json!({
+                                        "status": "error",
+                                        "error": { "code": "SEARCH_TAG_ERROR", "message": e.to_string() }
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                } else {
+                                    eprintln!("Error: {}", e);
+                                }
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": { "code": "SEARCH_DB_ERROR", "message": e.to_string() }
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            eprintln!("Error: SEARCH_DB_ERROR -- {}", e);
+                        }
+                        process::exit(1);
+                    }
+                }
             } else {
                 // Histogram search (no --image, no --tag)
                 // Resolve limit from CLI flag or config default
@@ -567,6 +653,8 @@ fn main() {
                                         "+------+------------------+--------------------------+-------------+"
                                     );
                                 }
+                                // Record accept/reject feedback if requested
+                                record_feedback_if_needed(&results, accept, reject, "histogram", is_json);
                             }
                         }
                         Err(mengxi_core::search::SearchError::NoFingerprints) => {
@@ -861,13 +949,191 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Info { .. }) => {
-            eprintln!("Error: 'info' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::Info { result: _, project, file, format }) => {
+            let is_json = format == "json";
+
+            match (project.as_deref(), file.as_deref()) {
+                (Some(proj), Some(fp)) => {
+                    match db::open_db() {
+                        Ok(conn) => {
+                            match mengxi_core::search::fingerprint_info_with_tags(&conn, proj, fp) {
+                                Ok(info) => {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "ok",
+                                            "fingerprint": {
+                                                "project": info.project_name,
+                                                "file": info.file_path,
+                                                "format": info.file_format,
+                                                "color_space": info.color_space_tag,
+                                                "luminance": {
+                                                    "mean": info.luminance_mean,
+                                                    "stddev": info.luminance_stddev,
+                                                },
+                                                "histogram": {
+                                                    "r": {
+                                                        "mean": info.histogram_r_summary.mean_value,
+                                                        "dominant_bin": info.histogram_r_summary.dominant_bin_min,
+                                                    },
+                                                    "g": {
+                                                        "mean": info.histogram_g_summary.mean_value,
+                                                        "dominant_bin": info.histogram_g_summary.dominant_bin_min,
+                                                    },
+                                                    "b": {
+                                                        "mean": info.histogram_b_summary.mean_value,
+                                                        "dominant_bin": info.histogram_b_summary.dominant_bin_min,
+                                                    },
+                                                },
+                                                "tags": info.tags,
+                                            }
+                                        });
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        let tags_str = if info.tags.is_empty() {
+                                            "(none)".to_string()
+                                        } else {
+                                            info.tags.join(", ")
+                                        };
+                                        println!(
+                                            "+---------------+------------------------------+\n\
+                                             | Field         | Value                        |\n\
+                                             +---------------+------------------------------+\n\
+                                             | Project       | {:<28} |\n\
+                                             | File          | {:<28} |\n\
+                                             | Format        | {:<28} |\n\
+                                             | Color Space   | {:<28} |\n\
+                                             | Luminance     | {:.4} +/- {:.4}                |\n\
+                                             | Hist R (mean) | {:.6}                     |\n\
+                                             | Hist G (mean) | {:.6}                     |\n\
+                                             | Hist B (mean) | {:.6}                     |\n\
+                                             | Dominant R    | bin {}                      |\n\
+                                             | Dominant G    | bin {}                      |\n\
+                                             | Dominant B    | bin {}                      |\n\
+                                             | Tags          | {:<28} |\n\
+                                             +---------------+------------------------------+",
+                                            truncate_str(&info.project_name, 28),
+                                            truncate_str(&info.file_path, 28),
+                                            truncate_str(&info.file_format, 28),
+                                            truncate_str(&info.color_space_tag, 28),
+                                            info.luminance_mean,
+                                            info.luminance_stddev,
+                                            info.histogram_r_summary.mean_value,
+                                            info.histogram_g_summary.mean_value,
+                                            info.histogram_b_summary.mean_value,
+                                            info.histogram_r_summary.dominant_bin_min,
+                                            info.histogram_g_summary.dominant_bin_min,
+                                            info.histogram_b_summary.dominant_bin_min,
+                                            truncate_str(&tags_str, 28),
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "error",
+                                            "error": { "code": "INFO_NOT_FOUND", "message": e.to_string() }
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        eprintln!("Error: {}", e);
+                                    }
+                                    process::exit(1);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "error",
+                                    "error": { "code": "INFO_DB_ERROR", "message": e.to_string() }
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                eprintln!("Error: INFO_DB_ERROR -- {}", e);
+                            }
+                            process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "INFO_MISSING_ARG", "message": "--project and --file are required" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: INFO_MISSING_ARG -- --project and --file are required");
+                    }
+                    process::exit(1);
+                }
+            }
         }
-        Some(Commands::Tag { .. }) => {
-            eprintln!("Error: 'tag' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit: _ }) => {
+            let proj_name = match project {
+                Some(ref p) => p.clone(),
+                None => {
+                    eprintln!("Error: TAG_MISSING_ARG -- --project is required");
+                    process::exit(1);
+                }
+            };
+
+            match db::open_db() {
+                Ok(conn) => {
+                    if list {
+                        // List tags for project
+                        match mengxi_core::tag::tag_list_for_project(&conn, &proj_name) {
+                            Ok(tags) => {
+                                if tags.is_empty() {
+                                    println!("No tags for project '{}'.", proj_name);
+                                } else {
+                                    println!("Tags for project '{}':", proj_name);
+                                    for (i, tag) in tags.iter().enumerate() {
+                                        println!("  {}. {}", i + 1, tag);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                process::exit(1);
+                            }
+                        }
+                    } else if let Some(ref tag_text) = add {
+                        // Add tag to project's fingerprints
+                        match mengxi_core::tag::tag_add_to_project(&conn, &proj_name, tag_text) {
+                            Ok(count) => {
+                                println!("Added tag '{}' to {} fingerprint(s) in project '{}'.", tag_text, count, proj_name);
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                process::exit(1);
+                            }
+                        }
+                    } else if let Some(ref tag_text) = remove {
+                        // Remove tag from project's fingerprints
+                        match mengxi_core::tag::tag_remove_from_project(&conn, &proj_name, tag_text) {
+                            Ok(count) => {
+                                if count > 0 {
+                                    println!("Removed tag '{}' from {} fingerprint(s) in project '{}'.", tag_text, count, proj_name);
+                                } else {
+                                    println!("Tag '{}' not found in project '{}'.", tag_text, proj_name);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                process::exit(1);
+                            }
+                        }
+                    } else {
+                        eprintln!("Error: TAG_MISSING_ARG -- specify --add, --remove, or --list");
+                        process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: TAG_DB_ERROR -- {}", e);
+                    process::exit(1);
+                }
+            }
         }
         Some(Commands::LutDiff { lut_a, lut_b, format }) => {
             let is_json = format.as_deref() == Some("json");
@@ -1148,6 +1414,109 @@ fn main() {
     }
 }
 
+/// Display search results in text table or JSON format.
+fn display_search_results(results: &[mengxi_core::search::SearchResult], is_json: bool) {
+    if is_json {
+        let json_results: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "rank": r.rank,
+                    "project": r.project_name,
+                    "file": r.file_path,
+                    "score": r.score
+                })
+            })
+            .collect();
+        let output = serde_json::json!({
+            "status": "ok",
+            "results": json_results,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else if results.is_empty() {
+        println!("No results found.");
+    } else {
+        println!(
+            "+------+------------------+--------------------------+-------------+"
+        );
+        println!(
+            "| Rank | Project          | File                     | Similarity  |"
+        );
+        println!(
+            "+------+------------------+--------------------------+-------------+"
+        );
+        for r in results {
+            let display_score = r.score.max(0.0);
+            let score_pct = format!("{:.1}%", display_score * 100.0);
+            println!(
+                "| {:<4} | {:<16} | {:<24} | {:<11} |",
+                r.rank,
+                truncate_str(&r.project_name, 16),
+                truncate_str(&r.file_path, 24),
+                score_pct
+            );
+        }
+        println!(
+            "+------+------------------+--------------------------+-------------+"
+        );
+    }
+}
+
+/// Record accept/reject feedback for a search result.
+fn record_feedback_if_needed(
+    results: &[mengxi_core::search::SearchResult],
+    accept: Option<u32>,
+    reject: Option<u32>,
+    search_type: &str,
+    _is_json: bool,
+) {
+    let (rank, action) = match (accept, reject) {
+        (Some(r), _) => (r, "accepted"),
+        (_, Some(r)) => (r, "rejected"),
+        _ => return,
+    };
+
+    if results.is_empty() {
+        eprintln!("No results to provide feedback on.");
+        return;
+    }
+
+    let rank_idx = rank as usize;
+    if rank_idx < 1 || rank_idx > results.len() {
+        eprintln!(
+            "Warning: --{} {} is out of range (1-{}).",
+            if action == "accepted" { "accept" } else { "reject" },
+            rank,
+            results.len()
+        );
+        return;
+    }
+
+    let result = &results[rank_idx - 1];
+    match db::open_db() {
+        Ok(conn) => {
+            if let Err(e) = mengxi_core::feedback::record_feedback(
+                &conn,
+                &result.project_name,
+                &result.file_path,
+                &result.file_format,
+                action,
+                Some(search_type),
+            ) {
+                eprintln!("Warning: Failed to record feedback: {}", e);
+            } else {
+                eprintln!(
+                    "Feedback recorded: {} result #{} ({}/{})",
+                    action, rank, result.project_name, result.file_path
+                );
+            }
+        }
+        Err(_) => {
+            eprintln!("Warning: Failed to open database for feedback recording.");
+        }
+    }
+}
+
 /// Truncate a string to max_len display columns, appending "…" if truncated.
 /// Uses unicode-width for correct CJK/emoji column counting.
 fn truncate_str(s: &str, max_len: usize) -> String {
@@ -1242,11 +1611,13 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::Search { image, tag, limit, project, format }) => {
+            Some(Commands::Search { image, tag, limit, project, accept, reject, format }) => {
                 assert_eq!(image.as_deref(), Some("/ref/mood.jpg"));
                 assert_eq!(tag.as_deref(), Some("industrial"));
                 assert_eq!(limit, Some(10));
                 assert_eq!(project.as_deref(), Some("my_film"));
+                assert_eq!(accept, None);
+                assert_eq!(reject, None);
                 assert_eq!(format, "text");
             }
             _ => panic!("Expected Search command"),
@@ -1434,6 +1805,57 @@ mod tests {
                 assert_eq!(format, "json");
             }
             _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_accept_reject_parsing() {
+        // --accept
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "/ref.jpg", "--accept", "2",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::Search { accept, reject, .. }) => {
+                assert_eq!(accept, Some(2));
+                assert_eq!(reject, None);
+            }
+            _ => panic!("Expected Search command"),
+        }
+
+        // --reject
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--tag", "warm", "--reject", "1",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::Search { accept, reject, .. }) => {
+                assert_eq!(accept, None);
+                assert_eq!(reject, Some(1));
+            }
+            _ => panic!("Expected Search command"),
+        }
+
+        // --accept and --reject should conflict
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--accept", "1", "--reject", "2",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_info_command_with_project_file() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "info", "--project", "film", "--file", "scene.dpx",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::Info { project, file, format, .. }) => {
+                assert_eq!(project.as_deref(), Some("film"));
+                assert_eq!(file.as_deref(), Some("scene.dpx"));
+                assert_eq!(format, "text");
+            }
+            _ => panic!("Expected Info command"),
         }
     }
 

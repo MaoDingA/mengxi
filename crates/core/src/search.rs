@@ -76,6 +76,141 @@ pub struct SearchOptions {
     pub limit: usize,
 }
 
+/// Detailed fingerprint information for display.
+#[derive(Debug, Clone)]
+pub struct FingerprintInfo {
+    pub project_name: String,
+    pub file_path: String,
+    pub file_format: String,
+    pub color_space_tag: String,
+    pub luminance_mean: f64,
+    pub luminance_stddev: f64,
+    pub histogram_r_summary: HistogramSummary,
+    pub histogram_g_summary: HistogramSummary,
+    pub histogram_b_summary: HistogramSummary,
+    pub tags: Vec<String>,
+}
+
+/// Summary statistics for a single histogram channel.
+#[derive(Debug, Clone)]
+pub struct HistogramSummary {
+    pub mean_value: f64,
+    pub dominant_bin_min: usize,
+    pub dominant_bin_max: usize,
+}
+
+/// Retrieve detailed fingerprint info by project name and file path.
+pub fn fingerprint_info(
+    conn: &Connection,
+    project_name: &str,
+    file_path: &str,
+) -> Result<FingerprintInfo, SearchError> {
+    let sql = "SELECT p.name, f.filename, f.format,
+                      fp.luminance_mean, fp.luminance_stddev, fp.color_space_tag,
+                      fp.histogram_r, fp.histogram_g, fp.histogram_b
+               FROM fingerprints fp
+               JOIN files f ON f.id = fp.file_id
+               JOIN projects p ON p.id = f.project_id
+               WHERE p.name = ?1 AND f.filename = ?2
+               LIMIT 1";
+
+    let result = conn
+        .query_row(sql, rusqlite::params![project_name, file_path], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        })
+        .map_err(|e| {
+            if e.to_string().contains("Query returned no rows") {
+                SearchError::ProjectNotFound(format!(
+                    "No fingerprint found for {} / {}",
+                    project_name, file_path
+                ))
+            } else {
+                SearchError::DatabaseError(e.to_string())
+            }
+        })?;
+
+    let hist_r = parse_histogram(&result.6).unwrap_or_default();
+    let hist_g = parse_histogram(&result.7).unwrap_or_default();
+    let hist_b = parse_histogram(&result.8).unwrap_or_default();
+
+    Ok(FingerprintInfo {
+        project_name: result.0,
+        file_path: result.1,
+        file_format: result.2,
+        luminance_mean: result.3,
+        luminance_stddev: result.4,
+        color_space_tag: result.5,
+        histogram_r_summary: summarize_histogram(&hist_r),
+        histogram_g_summary: summarize_histogram(&hist_g),
+        histogram_b_summary: summarize_histogram(&hist_b),
+        tags: vec![],
+    })
+}
+
+/// Retrieve detailed fingerprint info with tags.
+pub fn fingerprint_info_with_tags(
+    conn: &Connection,
+    project_name: &str,
+    file_path: &str,
+) -> Result<FingerprintInfo, SearchError> {
+    let mut info = fingerprint_info(conn, project_name, file_path)?;
+
+    // Query tags for this fingerprint
+    let sql = "SELECT t.tag FROM tags t
+               JOIN fingerprints fp ON fp.id = t.fingerprint_id
+               JOIN files f ON f.id = fp.file_id
+               JOIN projects p ON p.id = f.project_id
+               WHERE p.name = ?1 AND f.filename = ?2
+               ORDER BY t.tag";
+
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    let tags: Vec<String> = stmt
+        .query_map(rusqlite::params![project_name, file_path], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    info.tags = tags;
+    Ok(info)
+}
+
+/// Compute summary statistics for a histogram channel.
+fn summarize_histogram(hist: &[f64]) -> HistogramSummary {
+    if hist.is_empty() {
+        return HistogramSummary {
+            mean_value: 0.0,
+            dominant_bin_min: 0,
+            dominant_bin_max: 0,
+        };
+    }
+    let mean_value = hist.iter().sum::<f64>() / hist.len() as f64;
+    let (dominant_idx, _) = hist
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or((0, &0.0));
+    HistogramSummary {
+        mean_value,
+        dominant_bin_min: dominant_idx,
+        dominant_bin_max: dominant_idx,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Histogram parsing and similarity
 // ---------------------------------------------------------------------------
@@ -305,6 +440,224 @@ pub fn search_by_image(
 }
 
 // ---------------------------------------------------------------------------
+// Tag-based search
+// ---------------------------------------------------------------------------
+
+/// Search by tag, returning results ranked by tag match count.
+///
+/// The `tag` parameter can contain multiple space-separated tags (e.g. "industrial warm").
+/// Results are ranked by the number of matching tags (normalized to [0, 1]).
+/// When `project` is set in options, results are scoped to that project.
+pub fn search_by_tag(
+    conn: &Connection,
+    tag: &str,
+    options: &SearchOptions,
+) -> Result<Vec<SearchResult>, SearchError> {
+    // Split tag query into individual tags
+    let query_tags: Vec<&str> = tag.split_whitespace().collect();
+    if query_tags.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Build dynamic SQL with one parameter per tag
+    let placeholders: Vec<String> = (1..=query_tags.len())
+        .map(|i| format!("?{}", i))
+        .collect();
+    let where_tags = placeholders.join(", ");
+
+    let mut sql = format!(
+        "SELECT p.name, f.filename, f.format, COUNT(DISTINCT t.tag) as match_count
+         FROM fingerprints fp
+         JOIN files f ON f.id = fp.file_id
+         JOIN projects p ON p.id = f.project_id
+         JOIN tags t ON t.fingerprint_id = fp.id
+         WHERE t.tag IN ({})",
+        where_tags
+    );
+
+    // Determine parameter index for project filter
+    if options.project.is_some() {
+        let proj_idx = query_tags.len() + 1;
+        sql.push_str(&format!(" AND p.name = ?{}", proj_idx));
+    }
+
+    sql.push_str(" GROUP BY fp.id ORDER BY match_count DESC");
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = query_tags
+        .iter()
+        .map(|t| Box::new(t.to_string()) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+
+    if let Some(ref proj) = options.project {
+        params.push(Box::new(proj.clone()));
+    }
+
+    let rows: Vec<(String, String, String, i64)> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    if rows.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Normalize scores: divide by max match count
+    let max_count = rows.iter().map(|(_, _, _, c)| *c).max().unwrap_or(1) as f64;
+
+    let results: Vec<SearchResult> = rows
+        .into_iter()
+        .take(options.limit)
+        .enumerate()
+        .map(|(i, (project_name, file_path, file_format, count))| SearchResult {
+            rank: i + 1,
+            project_name,
+            file_path,
+            file_format,
+            score: count as f64 / max_count,
+        })
+        .collect();
+
+    Ok(results)
+}
+
+/// Combined search: filter by tag, then rank by image similarity within filtered set.
+/// If image is not provided, falls back to pure tag search.
+pub fn search_by_image_and_tag(
+    conn: &Connection,
+    tag: &str,
+    image_path: &str,
+    options: &SearchOptions,
+    idle_timeout_secs: u64,
+    inference_timeout_secs: u64,
+    model_name: &str,
+) -> Result<Vec<SearchResult>, SearchError> {
+    // Step 1: Get fingerprint IDs matching the tag(s)
+    let query_tags: Vec<&str> = tag.split_whitespace().collect();
+    if query_tags.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    let placeholders: Vec<String> = (1..=query_tags.len())
+        .map(|i| format!("?{}", i))
+        .collect();
+    let where_tags = placeholders.join(", ");
+
+    let mut sql = format!(
+        "SELECT fp.id, p.name, f.filename, f.format,
+                fp.embedding, fp.embedding_model
+         FROM fingerprints fp
+         JOIN files f ON f.id = fp.file_id
+         JOIN projects p ON p.id = f.project_id
+         JOIN tags t ON t.fingerprint_id = fp.id
+         WHERE t.tag IN ({})",
+        where_tags
+    );
+
+    if options.project.is_some() {
+        let proj_idx = query_tags.len() + 1;
+        sql.push_str(&format!(" AND p.name = ?{}", proj_idx));
+    }
+
+    sql.push_str(" GROUP BY fp.id");
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = query_tags
+        .iter()
+        .map(|t| Box::new(t.to_string()) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+
+    if let Some(ref proj) = options.project {
+        params.push(Box::new(proj.clone()));
+    }
+
+    let rows: Vec<(i64, String, String, String, Option<Vec<u8>>, Option<String>)> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    if rows.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Step 2: Generate embedding for reference image
+    let mut bridge =
+        PythonBridge::new(idle_timeout_secs, inference_timeout_secs, model_name.to_string());
+
+    let ref_embedding = match bridge.generate_embedding(image_path) {
+        Ok(emb) => emb,
+        Err(e) => {
+            eprintln!(
+                "Warning: AI embedding unavailable — falling back to tag-only search ({})",
+                e
+            );
+            // Fall back to pure tag search
+            return search_by_tag(conn, tag, options);
+        }
+    };
+
+    // Step 3: Score filtered fingerprints by cosine similarity
+    let mut scored: Vec<(String, String, String, f64)> = Vec::new();
+
+    for (_fp_id, project_name, file_name, file_format, embedding_blob, cached_model) in rows {
+        match (embedding_blob, cached_model) {
+            (Some(blob), Some(ref m)) if m == model_name || model_name.is_empty() => {
+                if let Some(cached_emb) = deserialize_embedding(&blob) {
+                    if cached_emb.len() == ref_embedding.len() {
+                        let score = cosine_similarity(&ref_embedding, &cached_emb);
+                        scored.push((project_name, file_name, file_format, score));
+                    }
+                }
+            }
+            _ => {
+                scored.push((project_name, file_name, file_format, 0.0));
+            }
+        }
+    }
+
+    if scored.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    scored.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(options.limit);
+
+    let results: Vec<SearchResult> = scored
+        .into_iter()
+        .enumerate()
+        .map(|(i, (project_name, file_path, file_format, score))| SearchResult {
+            rank: i + 1,
+            project_name,
+            file_path,
+            file_format,
+            score,
+        })
+        .collect();
+
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
 // Search query
 // ---------------------------------------------------------------------------
 
@@ -510,7 +863,9 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));",
+             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, embedding BLOB, embedding_model TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+             CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_id INTEGER NOT NULL REFERENCES fingerprints(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+             CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);",
         )
         .unwrap();
         conn
@@ -890,5 +1245,182 @@ mod tests {
             format!("{}", err),
             "SEARCH_EMBEDDING_ERROR -- model failed"
         );
+    }
+
+    // --- Fingerprint info tests ---
+
+    #[test]
+    fn test_fingerprint_info_valid() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'scene.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.02), make_histogram_csv(0.01)],
+        ).unwrap();
+
+        let info = fingerprint_info(&conn, "film", "scene.dpx").unwrap();
+        assert_eq!(info.project_name, "film");
+        assert_eq!(info.file_path, "scene.dpx");
+        assert_eq!(info.file_format, "dpx");
+        assert_eq!(info.color_space_tag, "acescg");
+        assert!((info.luminance_mean - 0.5).abs() < 1e-10);
+        assert!((info.luminance_stddev - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fingerprint_info_not_found() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'scene.dpx', 'dpx')", [])
+            .unwrap();
+
+        let result = fingerprint_info(&conn, "film", "nonexistent.dpx");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SearchError::ProjectNotFound(msg) => {
+                assert!(msg.contains("nonexistent.dpx"));
+            }
+            other => panic!("Expected ProjectNotFound, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_summarize_histogram() {
+        // Uniform histogram
+        let uniform: Vec<f64> = vec![1.0 / 64.0; 64];
+        let summary = summarize_histogram(&uniform);
+        assert!((summary.mean_value - 1.0 / 64.0).abs() < 1e-10);
+
+        // Histogram with a dominant bin
+        let mut hist = vec![0.0; 64];
+        hist[10] = 0.5;
+        let summary = summarize_histogram(&hist);
+        assert_eq!(summary.dominant_bin_min, 10);
+        assert_eq!(summary.dominant_bin_max, 10);
+    }
+
+    // --- Tag search tests ---
+
+    #[test]
+    fn test_search_by_tag_basic() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's2.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (2, ?, ?, ?, 0.3, 0.2, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+        // Tag s1 with "warm"
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (1, 'warm')", [])
+            .unwrap();
+        // Tag s2 with "warm" and "industrial"
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (2, 'warm')", [])
+            .unwrap();
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (2, 'industrial')", [])
+            .unwrap();
+
+        // Search for single tag "warm" — both match 1 tag, so both score 1.0
+        let results = search_by_tag(
+            &conn,
+            "warm",
+            &SearchOptions {
+                project: None,
+                limit: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Search for multi-tag "warm industrial" — s2 matches 2, s1 matches 1
+        let results = search_by_tag(
+            &conn,
+            "warm industrial",
+            &SearchOptions {
+                project: None,
+                limit: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].file_path, "s2.dpx");
+        assert!((results[0].score - 1.0).abs() < 1e-10); // 2/2 = 1.0
+        assert_eq!(results[1].file_path, "s1.dpx");
+        assert!((results[1].score - 0.5).abs() < 1e-10); // 1/2 = 0.5
+    }
+
+    #[test]
+    fn test_search_by_tag_no_results() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+
+        let result = search_by_tag(
+            &conn,
+            "nonexistent",
+            &SearchOptions {
+                project: None,
+                limit: 10,
+            },
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SearchError::NoFingerprints => {}
+            other => panic!("Expected NoFingerprints, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_search_by_tag_project_scoped() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_b', '/tmp/b')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (2, 's2.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (2, ?, ?, ?, 0.3, 0.2, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (1, 'warm')", [])
+            .unwrap();
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (2, 'warm')", [])
+            .unwrap();
+
+        let results = search_by_tag(
+            &conn,
+            "warm",
+            &SearchOptions {
+                project: Some("film_a".to_string()),
+                limit: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].project_name, "film_a");
     }
 }

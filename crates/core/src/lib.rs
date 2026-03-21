@@ -8,3 +8,5 @@ pub mod lut_diff;
 pub mod project;
 pub mod python_bridge;
 pub mod search;
+pub mod tag;
+pub mod feedback;
