@@ -41,7 +41,14 @@ impl std::error::Error for TagError {}
 
 /// Add a tag to a fingerprint.
 /// Returns `DuplicateTag` if the tag already exists on this fingerprint.
+/// Returns `DatabaseError` if the tag is empty or whitespace-only.
 pub fn tag_add(conn: &Connection, fingerprint_id: i64, tag: &str) -> Result<(), TagError> {
+    if tag.trim().is_empty() {
+        return Err(TagError::DatabaseError(
+            "Tag must not be empty or whitespace-only".to_string(),
+        ));
+    }
+
     conn.execute(
         "INSERT INTO tags (fingerprint_id, tag) VALUES (?1, ?2)",
         rusqlite::params![fingerprint_id, tag],
@@ -117,13 +124,15 @@ pub fn fingerprint_ids_for_project(conn: &Connection, project_name: &str) -> Res
 pub fn tag_add_to_project(conn: &Connection, project_name: &str, tag: &str) -> Result<usize, TagError> {
     let ids = fingerprint_ids_for_project(conn, project_name)?;
     let mut added = 0;
+    let tx = conn.unchecked_transaction().map_err(|e| TagError::DatabaseError(e.to_string()))?;
     for id in &ids {
-        match tag_add(conn, *id, tag) {
+        match tag_add(&tx, *id, tag) {
             Ok(()) => added += 1,
             Err(TagError::DuplicateTag(_)) => {} // skip duplicates
             Err(e) => return Err(e),
         }
     }
+    tx.commit().map_err(|e| TagError::DatabaseError(e.to_string()))?;
     Ok(added)
 }
 
@@ -131,13 +140,15 @@ pub fn tag_add_to_project(conn: &Connection, project_name: &str, tag: &str) -> R
 pub fn tag_remove_from_project(conn: &Connection, project_name: &str, tag: &str) -> Result<usize, TagError> {
     let ids = fingerprint_ids_for_project(conn, project_name)?;
     let mut removed = 0;
+    let tx = conn.unchecked_transaction().map_err(|e| TagError::DatabaseError(e.to_string()))?;
     for id in &ids {
-        match tag_remove(conn, *id, tag) {
+        match tag_remove(&tx, *id, tag) {
             Ok(()) => removed += 1,
             Err(TagError::NotFound(_)) => {} // skip if not present
             Err(e) => return Err(e),
         }
     }
+    tx.commit().map_err(|e| TagError::DatabaseError(e.to_string()))?;
     Ok(removed)
 }
 
@@ -312,5 +323,21 @@ mod tests {
 
         let err = TagError::DuplicateTag("duplicate tag".to_string());
         assert!(format!("{}", err).contains("TAG_DUPLICATE"));
+    }
+
+    #[test]
+    fn test_tag_add_empty_rejected() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'scene.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '', '', '', 0.5, 0.1, 'acescg')", [])
+            .unwrap();
+
+        let result = tag_add(&conn, 1, "");
+        assert!(result.is_err());
+        let result = tag_add(&conn, 1, "   ");
+        assert!(result.is_err());
     }
 }

@@ -75,9 +75,6 @@ enum Commands {
     },
     /// Display detailed fingerprint information for a search result
     Info {
-        /// Search result rank (session-bound from last search)
-        #[arg(long)]
-        result: Option<u32>,
         /// Project name (persistent lookup)
         #[arg(long)]
         project: Option<String>,
@@ -469,7 +466,7 @@ fn main() {
                                     }
                                 }
                                 // Record accept/reject feedback if requested
-                                record_feedback_if_needed(&results, accept, reject, "image", is_json);
+                                record_feedback_if_needed(&conn, &results, accept, reject, "image", is_json);
                             }
                             Err(e) => {
                                 if is_json {
@@ -526,7 +523,7 @@ fn main() {
                         match mengxi_core::search::search_by_tag(&conn, tag_text, &options) {
                             Ok(results) => {
                                 display_search_results(&results, is_json);
-                                record_feedback_if_needed(&results, accept, reject, "tag", is_json);
+                                record_feedback_if_needed(&conn, &results, accept, reject, "tag", is_json);
                             }
                             Err(mengxi_core::search::SearchError::NoFingerprints) => {
                                 if is_json {
@@ -654,7 +651,7 @@ fn main() {
                                     );
                                 }
                                 // Record accept/reject feedback if requested
-                                record_feedback_if_needed(&results, accept, reject, "histogram", is_json);
+                                record_feedback_if_needed(&conn, &results, accept, reject, "histogram", is_json);
                             }
                         }
                         Err(mengxi_core::search::SearchError::NoFingerprints) => {
@@ -949,7 +946,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Info { result: _, project, file, format }) => {
+        Some(Commands::Info { project, file, format }) => {
             let is_json = format == "json";
 
             match (project.as_deref(), file.as_deref()) {
@@ -1424,7 +1421,7 @@ fn display_search_results(results: &[mengxi_core::search::SearchResult], is_json
                     "rank": r.rank,
                     "project": r.project_name,
                     "file": r.file_path,
-                    "score": r.score
+                    "score": r.score.max(0.0)
                 })
             })
             .collect();
@@ -1464,6 +1461,7 @@ fn display_search_results(results: &[mengxi_core::search::SearchResult], is_json
 
 /// Record accept/reject feedback for a search result.
 fn record_feedback_if_needed(
+    conn: &mengxi_core::db::DbConnection,
     results: &[mengxi_core::search::SearchResult],
     accept: Option<u32>,
     reject: Option<u32>,
@@ -1493,27 +1491,20 @@ fn record_feedback_if_needed(
     }
 
     let result = &results[rank_idx - 1];
-    match db::open_db() {
-        Ok(conn) => {
-            if let Err(e) = mengxi_core::feedback::record_feedback(
-                &conn,
-                &result.project_name,
-                &result.file_path,
-                &result.file_format,
-                action,
-                Some(search_type),
-            ) {
-                eprintln!("Warning: Failed to record feedback: {}", e);
-            } else {
-                eprintln!(
-                    "Feedback recorded: {} result #{} ({}/{})",
-                    action, rank, result.project_name, result.file_path
-                );
-            }
-        }
-        Err(_) => {
-            eprintln!("Warning: Failed to open database for feedback recording.");
-        }
+    if let Err(e) = mengxi_core::feedback::record_feedback(
+        conn,
+        &result.project_name,
+        &result.file_path,
+        &result.file_format,
+        action,
+        Some(search_type),
+    ) {
+        eprintln!("Warning: Failed to record feedback: {}", e);
+    } else {
+        eprintln!(
+            "Feedback recorded: {} result #{} ({}/{})",
+            action, rank, result.project_name, result.file_path
+        );
     }
 }
 
@@ -1850,7 +1841,7 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::Info { project, file, format, .. }) => {
+            Some(Commands::Info { project, file, format }) => {
                 assert_eq!(project.as_deref(), Some("film"));
                 assert_eq!(file.as_deref(), Some("scene.dpx"));
                 assert_eq!(format, "text");

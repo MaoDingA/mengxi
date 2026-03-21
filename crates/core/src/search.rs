@@ -400,16 +400,25 @@ pub fn search_by_image(
                     if cached_emb.len() == ref_embedding.len() {
                         let score = cosine_similarity(&ref_embedding, &cached_emb);
                         scored.push((project_name, file_name, file_format, score));
+                    } else {
+                        eprintln!(
+                            "Warning: embedding dimension mismatch for {} / {} ({} vs {}), skipping",
+                            project_name, file_name, cached_emb.len(), ref_embedding.len()
+                        );
                     }
-                    // else: dimension mismatch (likely different model) — skip
+                } else {
+                    eprintln!(
+                        "Warning: malformed embedding blob for {} / {}, skipping",
+                        project_name, file_name
+                    );
                 }
-                // else: malformed blob — skip
             }
-            // No embedding cached or different model
+            // No embedding cached or different model — skip rather than include with 0.0
             _ => {
-                // No reference histogram is available for meaningful comparison.
-                // Assign a sentinel score so these entries rank below all cosine-scored results.
-                scored.push((project_name, file_name, file_format, 0.0));
+                eprintln!(
+                    "Warning: no embedding cached for {} / {}, skipping",
+                    project_name, file_name
+                );
             }
         }
     }
@@ -626,11 +635,25 @@ pub fn search_by_image_and_tag(
                     if cached_emb.len() == ref_embedding.len() {
                         let score = cosine_similarity(&ref_embedding, &cached_emb);
                         scored.push((project_name, file_name, file_format, score));
+                    } else {
+                        eprintln!(
+                            "Warning: embedding dimension mismatch for {} / {} ({} vs {}), skipping",
+                            project_name, file_name, cached_emb.len(), ref_embedding.len()
+                        );
                     }
+                } else {
+                    eprintln!(
+                        "Warning: malformed embedding blob for {} / {}, skipping",
+                        project_name, file_name
+                    );
                 }
             }
             _ => {
-                scored.push((project_name, file_name, file_format, 0.0));
+                // No embedding available — skip rather than including with 0.0 score
+                eprintln!(
+                    "Warning: no embedding cached for {} / {}, skipping",
+                    project_name, file_name
+                );
             }
         }
     }

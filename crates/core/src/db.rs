@@ -2,6 +2,8 @@ use rusqlite::{Connection, Result as SqlResult};
 use std::fs;
 use std::path::PathBuf;
 
+pub type DbConnection = Connection;
+
 /// Returns the database directory path.
 /// Uses hardcoded default; can be overridden via config in future stories.
 pub fn db_dir() -> PathBuf {

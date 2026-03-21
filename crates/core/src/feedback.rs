@@ -51,7 +51,7 @@ pub fn record_feedback(
     }
 
     conn.execute(
-        "INSERT INTO search_feedback (project_name, file_path, file_format, action, search_type)
+        "INSERT OR IGNORE INTO search_feedback (project_name, file_path, file_format, action, search_type)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![project_name, file_path, file_format, action, search_type],
     )
@@ -82,7 +82,8 @@ mod tests {
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
             CREATE INDEX idx_feedback_project ON search_feedback(project_name);
-            CREATE INDEX idx_feedback_created ON search_feedback(created_at);",
+            CREATE INDEX idx_feedback_created ON search_feedback(created_at);
+            CREATE UNIQUE INDEX idx_feedback_unique_entry ON search_feedback(project_name, file_path);",
         )
         .unwrap();
         conn
