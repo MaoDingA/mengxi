@@ -35,6 +35,34 @@ class TestMethodHandlers(unittest.TestCase):
         self.assertEqual(result["code"], "INVALID_PARAMS")
         self.assertIn("image_path", result["message"])
 
+    def test_generate_tags_rejects_non_list_candidate_tags(self):
+        from mengxi_ai.main import handle_generate_tags
+        result = handle_generate_tags({
+            "image_path": "/tmp/test.png",
+            "candidate_tags": "not-a-list",
+        })
+        self.assertEqual(result["code"], "INVALID_PARAMS")
+        self.assertIn("must be a list", result["message"])
+
+    def test_generate_tags_rejects_non_string_candidate_tag_elements(self):
+        from mengxi_ai.main import handle_generate_tags
+        result = handle_generate_tags({
+            "image_path": "/tmp/test.png",
+            "candidate_tags": ["valid", 42, None],
+        })
+        self.assertEqual(result["code"], "INVALID_PARAMS")
+        self.assertIn("must be strings", result["message"])
+
+    def test_generate_tags_accepts_empty_list_candidate_tags(self):
+        from mengxi_ai.main import handle_generate_tags
+        # Empty list should pass validation (error expected from missing image, not validation)
+        result = handle_generate_tags({
+            "image_path": "/tmp/test.png",
+            "candidate_tags": [],
+        })
+        # Should not be INVALID_PARAMS for candidate_tags
+        self.assertNotEqual(result.get("code"), "INVALID_PARAMS")
+
 
 class TestJsonProtocol(unittest.TestCase):
     """Tests for JSON protocol message format."""

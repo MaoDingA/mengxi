@@ -95,10 +95,12 @@ pub fn get_calibration_history(conn: &Connection) -> Result<Vec<CalibrationRecor
 pub fn get_personalized_tags(conn: &Connection) -> Result<Vec<String>, CalibrationError> {
     let mut stmt = conn
         .prepare(
-            "SELECT tag, COUNT(*) as cnt FROM tags WHERE source = 'manual' GROUP BY tag
-             UNION ALL
-             SELECT value, 1 FROM calibration_activities, json_each(added_tags)
-             ORDER BY cnt DESC",
+            "SELECT tag, SUM(cnt) as total FROM (
+                SELECT tag, COUNT(*) as cnt FROM tags WHERE source = 'manual' GROUP BY tag
+                UNION ALL
+                SELECT value, 1 as cnt FROM calibration_activities, json_each(added_tags)
+            ) GROUP BY tag
+            ORDER BY total DESC",
         )
         .map_err(|e| CalibrationError::DatabaseError(e.to_string()))?;
 
@@ -267,6 +269,31 @@ mod tests {
         let conn = setup_test_db();
         let tags = get_personalized_tags(&conn).unwrap();
         assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_get_personalized_tags_dedup_across_sources() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '', '', '', 0.5, 0.1, 'acescg')", [])
+            .unwrap();
+
+        // Add manual tag
+        conn.execute("INSERT INTO tags (fingerprint_id, tag, source) VALUES (1, 'cool blue shadows', 'manual')", [])
+            .unwrap();
+        // Record calibration with same tag
+        record_calibration(&conn, "film", 1, r#"[]"#, r#"["cool blue shadows"]"#, r#"[]"#).unwrap();
+        // Add another tag only in calibration
+        record_calibration(&conn, "film", 1, r#"[]"#, r#"["SK-II skin"]"#, r#"[]"#).unwrap();
+
+        let tags = get_personalized_tags(&conn).unwrap();
+        // "cool blue shadows" appears in both sources (count 1 + 1 = 2), "SK-II skin" only in calibration (count 1)
+        assert_eq!(tags.len(), 2); // deduplicated
+        assert_eq!(tags[0], "cool blue shadows"); // higher frequency
+        assert_eq!(tags[1], "SK-II skin");
     }
 
     #[test]

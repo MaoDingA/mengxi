@@ -1305,11 +1305,11 @@ fn main() {
                         }
                         match mengxi_core::tag::tag_add_to_project_with_source(&conn, &proj_name, tag_text, "manual") {
                             Ok(count) => {
-                                // Record calibration (best-effort)
+                                // Record calibration (best-effort, once per operation)
                                 let fp_ids = mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name).unwrap_or_default();
-                                let added_json = serde_json::to_string(&[tag_text]).unwrap_or_else(|_| "[]".to_string());
-                                for fp_id in &fp_ids {
-                                    if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, *fp_id, "[]", &added_json, "[]") {
+                                if let Some(&fp_id) = fp_ids.first() {
+                                    let added_json = serde_json::to_string(&[tag_text]).unwrap_or_else(|_| "[]".to_string());
+                                    if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, fp_id, "[]", &added_json, "[]") {
                                         eprintln!("Warning: Failed to record calibration: {}", e);
                                     }
                                 }
@@ -1324,11 +1324,11 @@ fn main() {
                         // Rename tag in project
                         match mengxi_core::tag::tag_rename_in_project(&conn, &proj_name, old_tag, new_tag) {
                             Ok(count) => {
-                                // Record calibration (best-effort)
+                                // Record calibration (best-effort, once per operation)
                                 let fp_ids = mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name).unwrap_or_default();
-                                let renamed_json = serde_json::to_string(&[serde_json::json!({"old": old_tag, "new": new_tag})]).unwrap_or_else(|_| "[]".to_string());
-                                for fp_id in &fp_ids {
-                                    if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, *fp_id, "[]", "[]", &renamed_json) {
+                                if let Some(&fp_id) = fp_ids.first() {
+                                    let renamed_json = serde_json::to_string(&[serde_json::json!({"old": old_tag, "new": new_tag})]).unwrap_or_else(|_| "[]".to_string());
+                                    if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, fp_id, "[]", "[]", &renamed_json) {
                                         eprintln!("Warning: Failed to record calibration: {}", e);
                                     }
                                 }
@@ -1355,18 +1355,20 @@ fn main() {
                             eprintln!("Error: TAG_MISSING_ARG -- tag must not be empty or whitespace-only");
                             process::exit(1);
                         }
+                        // Check if tag is AI-sourced BEFORE removal (tag won't exist after delete)
+                        let tags_with_source = mengxi_core::tag::tag_list_for_project_with_source(&conn, &proj_name).unwrap_or_default();
+                        let ai_removed = tags_with_source.iter()
+                            .any(|(t, s)| t == tag_text && s == "ai");
+
                         match mengxi_core::tag::tag_remove_from_project(&conn, &proj_name, tag_text) {
                             Ok(count) => {
                                 if count > 0 {
-                                    // Record calibration if removed tag was AI-sourced (best-effort)
-                                    let tags_with_source = mengxi_core::tag::tag_list_for_project_with_source(&conn, &proj_name).unwrap_or_default();
-                                    let ai_removed = tags_with_source.iter()
-                                        .any(|(t, s)| t == tag_text && s == "ai");
+                                    // Record calibration if tag was AI-sourced (best-effort, once per operation)
                                     if ai_removed {
                                         let fp_ids = mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name).unwrap_or_default();
-                                        let removed_json = serde_json::to_string(&[tag_text]).unwrap_or_else(|_| "[]".to_string());
-                                        for fp_id in &fp_ids {
-                                            if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, *fp_id, &removed_json, "[]", "[]") {
+                                        if let Some(&fp_id) = fp_ids.first() {
+                                            let removed_json = serde_json::to_string(&[tag_text]).unwrap_or_else(|_| "[]".to_string());
+                                            if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, fp_id, &removed_json, "[]", "[]") {
                                                 eprintln!("Warning: Failed to record calibration: {}", e);
                                             }
                                         }

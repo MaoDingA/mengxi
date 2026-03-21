@@ -62,6 +62,9 @@ def handle_generate_tags(params: dict) -> dict:
     if candidate_tags is not None and not isinstance(candidate_tags, list):
         return {"code": "INVALID_PARAMS", "message": "'candidate_tags' must be a list"}
 
+    if candidate_tags is not None and candidate_tags and not all(isinstance(t, str) for t in candidate_tags):
+        return {"code": "INVALID_PARAMS", "message": "'candidate_tags' elements must be strings"}
+
     try:
         tags = generate_tags(
             image_path=image_path,
