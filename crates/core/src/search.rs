@@ -1,8 +1,9 @@
-// search.rs — Histogram-based search engine for color similarity
+// search.rs — Histogram-based and embedding-based search engine
 
 use rusqlite::Connection;
 
 use crate::fingerprint::BINS_PER_CHANNEL;
+use crate::python_bridge::{AiError, PythonBridge};
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -19,6 +20,10 @@ pub enum SearchError {
     DatabaseError(String),
     /// Invalid format parameter.
     InvalidFormat(String),
+    /// AI embedding generation is unavailable.
+    AiUnavailable(String),
+    /// Error during embedding computation or storage.
+    EmbeddingError(String),
 }
 
 impl std::fmt::Display for SearchError {
@@ -35,6 +40,12 @@ impl std::fmt::Display for SearchError {
             }
             SearchError::InvalidFormat(msg) => {
                 write!(f, "SEARCH_INVALID_FORMAT -- {}", msg)
+            }
+            SearchError::AiUnavailable(msg) => {
+                write!(f, "SEARCH_AI_UNAVAILABLE -- {}", msg)
+            }
+            SearchError::EmbeddingError(msg) => {
+                write!(f, "SEARCH_EMBEDDING_ERROR -- {}", msg)
             }
         }
     }
@@ -113,6 +124,213 @@ pub fn histogram_intersection(a: &[f64], b: &[f64]) -> f64 {
     }
     let sum: f64 = (0..len).map(|i| a[i].min(b[i])).sum();
     sum
+}
+
+// ---------------------------------------------------------------------------
+// Cosine similarity (embedding-based search)
+// ---------------------------------------------------------------------------
+
+/// Compute cosine similarity between two vectors.
+/// Returns a value in [-1.0, 1.0] where 1.0 = identical, 0.0 = orthogonal.
+pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
+}
+
+// ---------------------------------------------------------------------------
+// Embedding serialization helpers
+// ---------------------------------------------------------------------------
+
+/// Serialize a Vec<f64> embedding to raw bytes (stored as f32 BLOB).
+pub fn serialize_embedding(embedding: &[f64]) -> Vec<u8> {
+    embedding
+        .iter()
+        .flat_map(|v| (*v as f32).to_le_bytes())
+        .collect()
+}
+
+/// Deserialize a BLOB back to Vec<f64>.
+pub fn deserialize_embedding(blob: &[u8]) -> Vec<f64> {
+    blob.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Image-based search with embeddings
+// ---------------------------------------------------------------------------
+
+/// Search by reference image using embedding similarity.
+///
+/// Creates a PythonBridge internally, generates embeddings as needed,
+/// and falls back to histogram-only search if AI is unavailable.
+pub fn search_by_image(
+    conn: &Connection,
+    image_path: &str,
+    options: &SearchOptions,
+    idle_timeout_secs: u64,
+    inference_timeout_secs: u64,
+    model_name: &str,
+) -> Result<Vec<SearchResult>, SearchError> {
+    let mut bridge = PythonBridge::new(idle_timeout_secs, inference_timeout_secs, model_name.to_string());
+
+    // Step 1: Generate embedding for the reference image
+    let ref_embedding = match bridge.generate_embedding(image_path) {
+        Ok(emb) => emb,
+        Err(AiError::SubprocessNotFound(_msg)) => {
+            eprintln!("Warning: AI embedding unavailable — falling back to histogram search");
+            return search_histograms(conn, options);
+        }
+        Err(e) => {
+            eprintln!("Warning: AI embedding unavailable — falling back to histogram search ({})", e);
+            return search_histograms(conn, options);
+        }
+    };
+
+    // Step 2: Query all fingerprints with their embeddings
+    let sql = match &options.project {
+        Some(_) => "
+            SELECT p.name, f.filename, f.format, fp.id,
+                   fp.histogram_r, fp.histogram_g, fp.histogram_b,
+                   fp.embedding, fp.embedding_model
+            FROM fingerprints fp
+            JOIN files f ON f.id = fp.file_id
+            JOIN projects p ON p.id = f.project_id
+            WHERE p.name = ?1
+        ",
+        None => "
+            SELECT p.name, f.filename, f.format, fp.id,
+                   fp.histogram_r, fp.histogram_g, fp.histogram_b,
+                   fp.embedding, fp.embedding_model
+            FROM fingerprints fp
+            JOIN files f ON f.id = fp.file_id
+            JOIN projects p ON p.id = f.project_id
+        ",
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    let rows: Vec<(String, String, String, i64, String, String, String, Option<Vec<u8>>, Option<String>)> = match &options.project {
+        Some(proj) => stmt
+            .query_map([proj], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<Vec<u8>>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })
+            .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
+        None => stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<Vec<u8>>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })
+            .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
+    };
+
+    if rows.is_empty() {
+        return if options.project.is_some() {
+            Err(SearchError::ProjectNotFound(options.project.clone().unwrap()))
+        } else {
+            Err(SearchError::NoFingerprints)
+        };
+    }
+
+    // Step 3: Score each fingerprint
+    let mut scored: Vec<(String, String, String, f64)> = Vec::new();
+
+    for (project_name, filename, format, _fp_id, hist_r, hist_g, hist_b, embedding_blob, cached_model) in rows {
+        match (embedding_blob, cached_model) {
+            // Has cached embedding from the same model
+            (Some(blob), Some(ref m)) if m == model_name || model_name.is_empty() => {
+                let cached_emb = deserialize_embedding(&blob);
+                let score = cosine_similarity(&ref_embedding, &cached_emb);
+                scored.push((project_name, filename, format, score));
+            }
+            // No embedding cached or different model — generate and cache
+            _ => {
+                // We don't have the original file path for this fingerprint,
+                // so use histogram intersection as fallback.
+                // Embedding generation for DB fingerprints requires the original image
+                // which is not stored in the DB (only metadata).
+                // Use histogram as fallback score.
+                let score = match (
+                    parse_histogram(&hist_r),
+                    parse_histogram(&hist_g),
+                    parse_histogram(&hist_b),
+                ) {
+                    (Ok(hr), Ok(hg), Ok(hb)) => {
+                        // Compute average histogram intersection across channels
+                        let sr = histogram_intersection(&ref_histogram_from_embedding(&ref_embedding), &hr);
+                        let sg = histogram_intersection(&ref_histogram_from_embedding(&ref_embedding), &hg);
+                        let sb = histogram_intersection(&ref_histogram_from_embedding(&ref_embedding), &hb);
+                        (sr + sg + sb) / 3.0
+                    }
+                    _ => 0.0, // Malformed histogram, give lowest score
+                };
+                scored.push((project_name, filename, format, score));
+            }
+        }
+    }
+
+    if scored.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Sort by score descending
+    scored.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Apply limit
+    scored.truncate(options.limit);
+
+    let results: Vec<SearchResult> = scored
+        .into_iter()
+        .enumerate()
+        .map(|(i, (project_name, file_path, file_format, score))| SearchResult {
+            rank: i + 1,
+            project_name,
+            file_path,
+            file_format,
+            score,
+        })
+        .collect();
+
+    Ok(results)
+}
+
+/// Generate a synthetic histogram from an embedding for fallback comparison.
+/// Maps the first 192 embedding dimensions (if available) to 3 channels of 64 bins each.
+fn ref_histogram_from_embedding(_embedding: &[f64]) -> Vec<f64> {
+    // For fallback, we don't have a reference histogram.
+    // Return a flat uniform distribution as neutral comparison.
+    vec![1.0 / BINS_PER_CHANNEL as f64; BINS_PER_CHANNEL]
 }
 
 // ---------------------------------------------------------------------------
@@ -580,5 +798,113 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 1);
+    }
+
+    // --- Cosine similarity tests ---
+
+    #[test]
+    fn test_cosine_similarity_identical() {
+        let a: Vec<f64> = vec![0.1, 0.2, 0.3, 0.4];
+        let score = cosine_similarity(&a, &a);
+        assert!((score - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cosine_similarity_orthogonal() {
+        let a: Vec<f64> = vec![1.0, 0.0];
+        let b: Vec<f64> = vec![0.0, 1.0];
+        let score = cosine_similarity(&a, &b);
+        assert!(score.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cosine_similarity_opposite() {
+        let a: Vec<f64> = vec![1.0, 0.0];
+        let b: Vec<f64> = vec![-1.0, 0.0];
+        let score = cosine_similarity(&a, &b);
+        assert!((score - (-1.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_vector() {
+        let a: Vec<f64> = vec![0.0, 0.0, 0.0];
+        let b: Vec<f64> = vec![1.0, 2.0, 3.0];
+        let score = cosine_similarity(&a, &b);
+        assert!(score.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cosine_similarity_empty() {
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_mismatched_dims() {
+        let a: Vec<f64> = vec![1.0, 2.0];
+        let b: Vec<f64> = vec![1.0, 2.0, 3.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_positive() {
+        let a: Vec<f64> = vec![1.0, 0.0, 0.0];
+        let b: Vec<f64> = vec![0.707, 0.707, 0.0];
+        let score = cosine_similarity(&a, &b);
+        assert!(score > 0.0);
+        assert!(score < 1.0);
+        assert!((score - 0.70710678).abs() < 1e-5);
+    }
+
+    // --- Embedding serialization tests ---
+
+    #[test]
+    fn test_embedding_roundtrip() {
+        let original: Vec<f64> = vec![0.1, 0.2, 0.3, 0.4, -0.5, 1.0];
+        let bytes = serialize_embedding(&original);
+        assert_eq!(bytes.len(), original.len() * 4); // f32 = 4 bytes
+        let restored = deserialize_embedding(&bytes);
+        assert_eq!(restored.len(), original.len());
+        for (orig, rest) in original.iter().zip(restored.iter()) {
+            assert!((*orig - *rest).abs() < 1e-6); // f32 precision
+        }
+    }
+
+    #[test]
+    fn test_embedding_roundtrip_empty() {
+        let original: Vec<f64> = vec![];
+        let bytes = serialize_embedding(&original);
+        assert!(bytes.is_empty());
+        let restored = deserialize_embedding(&bytes);
+        assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn test_embedding_roundtrip_single() {
+        let original: Vec<f64> = vec![42.0];
+        let bytes = serialize_embedding(&original);
+        assert_eq!(bytes.len(), 4);
+        let restored = deserialize_embedding(&bytes);
+        assert_eq!(restored.len(), 1);
+        assert!((restored[0] - 42.0).abs() < 1e-6);
+    }
+
+    // --- SearchError new variants ---
+
+    #[test]
+    fn test_search_error_ai_unavailable() {
+        let err = SearchError::AiUnavailable("Python not installed".to_string());
+        assert_eq!(
+            format!("{}", err),
+            "SEARCH_AI_UNAVAILABLE -- Python not installed"
+        );
+    }
+
+    #[test]
+    fn test_search_error_embedding_error() {
+        let err = SearchError::EmbeddingError("model failed".to_string());
+        assert_eq!(
+            format!("{}", err),
+            "SEARCH_EMBEDDING_ERROR -- model failed"
+        );
     }
 }

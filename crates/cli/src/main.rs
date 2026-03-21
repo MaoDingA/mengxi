@@ -349,18 +349,130 @@ fn main() {
         }) => {
             let is_json = format == "json";
 
-            // --image not yet implemented (Story 3.3)
-            if image.is_some() {
-                if is_json {
-                    let output = serde_json::json!({
-                        "status": "error",
-                        "error": { "code": "SEARCH_IMAGE_NOT_AVAILABLE", "message": "Image-based search requires AI embedding (Story 3.3)" }
-                    });
-                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
-                } else {
-                    eprintln!("Error: SEARCH_IMAGE_NOT_AVAILABLE -- Image-based search requires AI embedding (Story 3.3)");
+            // --image: embedding-based search
+            if let Some(ref img_path) = image {
+                // --tag not yet implemented (Story 3.4)
+                if tag.is_some() {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "SEARCH_TAG_NOT_AVAILABLE", "message": "Tag search not yet implemented (Story 3.4)" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: SEARCH_TAG_NOT_AVAILABLE -- Tag search not yet implemented (Story 3.4)");
+                    }
+                    process::exit(1);
                 }
-                process::exit(1);
+
+                let cfg = config::load_or_create_config().unwrap_or_default();
+                let limit_val = limit.unwrap_or(cfg.general.default_search_limit);
+
+                // Reject --limit 0
+                if limit_val == 0 {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "SEARCH_INVALID_LIMIT", "message": "--limit must be at least 1" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: SEARCH_INVALID_LIMIT -- --limit must be at least 1");
+                    }
+                    process::exit(1);
+                }
+
+                match db::open_db() {
+                    Ok(conn) => {
+                        let options = mengxi_core::search::SearchOptions {
+                            project: project.clone(),
+                            limit: limit_val as usize,
+                        };
+
+                        match mengxi_core::search::search_by_image(
+                            &conn,
+                            img_path,
+                            &options,
+                            cfg.ai.idle_timeout_secs,
+                            cfg.ai.inference_timeout_secs,
+                            &cfg.ai.embedding_model,
+                        ) {
+                            Ok(results) => {
+                                if is_json {
+                                    let json_results: Vec<serde_json::Value> = results
+                                        .iter()
+                                        .map(|r| {
+                                            serde_json::json!({
+                                                "rank": r.rank,
+                                                "project": r.project_name,
+                                                "file": r.file_path,
+                                                "score": r.score
+                                            })
+                                        })
+                                        .collect();
+
+                                    let output = serde_json::json!({
+                                        "status": "ok",
+                                        "results": json_results,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                } else {
+                                    // Text table output
+                                    if results.is_empty() {
+                                        println!("No results found.");
+                                    } else {
+                                        println!(
+                                            "+------+------------------+--------------------------+-------------+"
+                                        );
+                                        println!(
+                                            "| Rank | Project          | File                     | Similarity  |"
+                                        );
+                                        println!(
+                                            "+------+------------------+--------------------------+-------------+"
+                                        );
+                                        for r in &results {
+                                            let score_pct = format!("{:.1}%", r.score * 100.0);
+                                            println!(
+                                                "| {:<4} | {:<16} | {:<24} | {:<11} |",
+                                                r.rank,
+                                                truncate_str(&r.project_name, 16),
+                                                truncate_str(&r.file_path, 24),
+                                                score_pct
+                                            );
+                                        }
+                                        println!(
+                                            "+------+------------------+--------------------------+-------------+"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if is_json {
+                                    let output = serde_json::json!({
+                                        "status": "error",
+                                        "error": { "code": "SEARCH_IMAGE_ERROR", "message": e.to_string() }
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                } else {
+                                    eprintln!("Error: {}", e);
+                                }
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": { "code": "SEARCH_DB_ERROR", "message": e.to_string() }
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            eprintln!("Error: SEARCH_DB_ERROR -- {}", e);
+                        }
+                        process::exit(1);
+                    }
+                }
             }
 
             // --tag not yet implemented (Story 3.4)
