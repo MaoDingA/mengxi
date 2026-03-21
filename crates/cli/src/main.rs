@@ -103,7 +103,7 @@ enum Commands {
         /// Second LUT file path
         lut_b: Option<String>,
         /// Output format (text, json)
-        #[arg(long)]
+        #[arg(long, value_parser = ["text", "json"])]
         format: Option<String>,
     },
     /// Track LUT dependencies
@@ -112,6 +112,9 @@ enum Commands {
         /// LUT file path
         #[arg(long)]
         lut: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"])]
+        format: Option<String>,
     },
     /// View usage statistics and metrics
     Stats {
@@ -583,7 +586,27 @@ fn main() {
 
             // Validate required args
             let path_a = match &lut_a {
-                Some(p) => std::path::PathBuf::from(p),
+                Some(p) => {
+                    if p == "~" {
+                        match dirs::home_dir() {
+                            Some(home) => home,
+                            None => {
+                                eprintln!("Error: LUTDIFF_MISSING_ARG -- cannot resolve home directory for '~'");
+                                process::exit(1);
+                            }
+                        }
+                    } else if p.starts_with("~/") {
+                        match dirs::home_dir() {
+                            Some(home) => home.join(&p[2..]),
+                            None => {
+                                eprintln!("Error: LUTDIFF_MISSING_ARG -- cannot resolve home directory for '~/...'");
+                                process::exit(1);
+                            }
+                        }
+                    } else {
+                        std::path::PathBuf::from(p)
+                    }
+                }
                 None => {
                     if is_json {
                         let output = serde_json::json!({
@@ -598,7 +621,27 @@ fn main() {
                 }
             };
             let path_b = match &lut_b {
-                Some(p) => std::path::PathBuf::from(p),
+                Some(p) => {
+                    if p == "~" {
+                        match dirs::home_dir() {
+                            Some(home) => home,
+                            None => {
+                                eprintln!("Error: LUTDIFF_MISSING_ARG -- cannot resolve home directory for '~'");
+                                process::exit(1);
+                            }
+                        }
+                    } else if p.starts_with("~/") {
+                        match dirs::home_dir() {
+                            Some(home) => home.join(&p[2..]),
+                            None => {
+                                eprintln!("Error: LUTDIFF_MISSING_ARG -- cannot resolve home directory for '~/...'");
+                                process::exit(1);
+                            }
+                        }
+                    } else {
+                        std::path::PathBuf::from(p)
+                    }
+                }
                 None => {
                     if is_json {
                         let output = serde_json::json!({
@@ -663,15 +706,27 @@ fn main() {
                 }
             }
         }
-        Some(Commands::LutDep { lut }) => {
-            let is_json = std::env::var("MENGXI_JSON").is_ok();
+        Some(Commands::LutDep { lut, format }) => {
+            let is_json = format.as_deref() == Some("json");
 
             let lut_path = match &lut {
                 Some(p) => {
                     if p == "~" {
-                        dirs::home_dir().unwrap_or_default()
+                        match dirs::home_dir() {
+                            Some(home) => home,
+                            None => {
+                                eprintln!("Error: LUTDEP_MISSING_ARG -- cannot resolve home directory for '~'");
+                                process::exit(1);
+                            }
+                        }
                     } else if p.starts_with("~/") {
-                        dirs::home_dir().unwrap_or_default().join(&p[2..])
+                        match dirs::home_dir() {
+                            Some(home) => home.join(&p[2..]),
+                            None => {
+                                eprintln!("Error: LUTDEP_MISSING_ARG -- cannot resolve home directory for '~/...'");
+                                process::exit(1);
+                            }
+                        }
                     } else {
                         std::path::PathBuf::from(p)
                     }
@@ -695,13 +750,8 @@ fn main() {
                     match mengxi_core::lut_diff::query_lut_dependency(&conn, &lut_path.to_string_lossy()) {
                         Ok(Some(dep)) => {
                             let timestamp = if dep.exported_at > 0 {
-                                let secs = dep.exported_at;
-                                let dt = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
-                                let datetime = std::time::SystemTime::from(dt);
-                                let duration = datetime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                                let secs_since_epoch = duration.as_secs();
-                                // Simple formatting without chrono: days since 1970-01-01
-                                let (year, month, day, hour, min, sec) = seconds_to_datetime(secs_since_epoch);
+                                let secs = dep.exported_at as u64;
+                                let (year, month, day, hour, min, sec) = seconds_to_datetime(secs);
                                 format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, min, sec)
                             } else {
                                 "unknown".to_string()
@@ -725,9 +775,9 @@ fn main() {
                                      | Field    | Value                        |\n\
                                      +----------+------------------------------+\n\
                                      | Project  | {:<28} |\n\
-                                     | File     | {:<28} |\n\
+                                     | Scene    | {:<28} |\n\
                                      | Format   | {:<28} |\n\
-                                     | Grid     | {:<28}x{:28}x{:<22} |\n\
+                                     | Grid     | {}x{}x{:<23} |\n\
                                      | Exported | {:<28} |\n\
                                      | LUT Path | {:<28} |\n\
                                      +----------+------------------------------+",
@@ -1008,11 +1058,39 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::LutDep { lut }) => {
+            Some(Commands::LutDep { lut, .. }) => {
                 assert_eq!(lut.as_deref(), Some("~/lut/grade.cube"));
             }
             _ => panic!("Expected LutDep command"),
         }
+    }
+
+    #[test]
+    fn test_lut_dep_format_json_parsing() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "lut-dep",
+            "--lut", "~/lut/grade.cube",
+            "--format", "json",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::LutDep { format, .. }) => {
+                assert_eq!(format.as_deref(), Some("json"));
+            }
+            _ => panic!("Expected LutDep command"),
+        }
+    }
+
+    #[test]
+    fn test_lut_diff_format_invalid_rejected() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "lut-diff",
+            "a.cube", "b.cube",
+            "--format", "xml",
+        ]);
+        assert!(cli.is_err());
     }
 
     #[test]
