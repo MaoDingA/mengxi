@@ -312,6 +312,52 @@ impl PythonBridge {
         Ok(floats)
     }
 
+    /// Generate semantic tags for an image using CLIP zero-shot classification.
+    pub fn generate_tags(&mut self, image_path: &str, top_n: u32) -> Result<Vec<String>, AiError> {
+        let request = serde_json::json!({
+            "request_id": uuid_simple(),
+            "method": "generate_tags",
+            "params": {
+                "image_path": image_path,
+                "model_name": if self.model_name.is_empty() { Value::Null } else { Value::String(self.model_name.clone()) },
+                "top_n": top_n,
+            }
+        });
+
+        let response = self.send_request(&request)?;
+
+        // Check for error response
+        if response["status"] == "error" {
+            let code = response["error"]["code"].as_str().unwrap_or("UNKNOWN");
+            let message = response["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown error");
+            return Err(map_python_error(code, message));
+        }
+
+        // Extract tags list
+        let tags = response["result"]["tags"].as_array().ok_or_else(|| {
+            AiError::ProtocolError("Response missing 'result.tags' array".into())
+        })?;
+
+        let strings: Vec<String> = tags
+            .iter()
+            .map(|v| {
+                v.as_str().ok_or_else(|| {
+                    AiError::ProtocolError(format!("Tag contains non-string value: {}", v))
+                }).map(|s| s.to_string())
+            })
+            .collect::<Result<_, _>>()?;
+
+        if strings.is_empty() {
+            return Err(AiError::InferenceError(
+                "No tags generated for image".into(),
+            ));
+        }
+
+        Ok(strings)
+    }
+
     /// Ping the subprocess to check liveness.
     pub fn ping(&mut self) -> Result<bool, AiError> {
         let request = serde_json::json!({
@@ -354,7 +400,9 @@ fn uuid_simple() -> String {
 fn map_python_error(code: &str, message: &str) -> AiError {
     match code {
         "FILE_NOT_FOUND" => AiError::ModelNotFound(message.to_string()),
+        "AI_MODEL_NOT_FOUND" => AiError::ModelNotFound(message.to_string()),
         "INFERENCE_ERROR" => AiError::InferenceError(message.to_string()),
+        "AI_INFERENCE_ERROR" => AiError::InferenceError(message.to_string()),
         "TIMEOUT" => AiError::Timeout(message.to_string()),
         _ => AiError::InferenceError(format!("{}: {}", code, message)),
     }
@@ -628,5 +676,87 @@ mod tests {
         // Cleanup
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn test_map_python_error_ai_model_not_found() {
+        let err = map_python_error("AI_MODEL_NOT_FOUND", "clip model not found");
+        assert!(matches!(err, AiError::ModelNotFound(msg) if msg == "clip model not found"));
+    }
+
+    #[test]
+    fn test_map_python_error_ai_inference_error() {
+        let err = map_python_error("AI_INFERENCE_ERROR", "tag generation failed");
+        assert!(matches!(err, AiError::InferenceError(msg) if msg == "tag generation failed"));
+    }
+
+    #[test]
+    fn test_generate_tags_request_format() {
+        let request = serde_json::json!({
+            "request_id": "test-tags-1",
+            "method": "generate_tags",
+            "params": {
+                "image_path": "/path/to/frame.dpx",
+                "model_name": Value::Null,
+                "top_n": 5,
+            }
+        });
+
+        assert_eq!(request["method"], "generate_tags");
+        assert_eq!(request["params"]["image_path"], "/path/to/frame.dpx");
+        assert_eq!(request["params"]["top_n"], 5);
+        assert_eq!(request["params"]["model_name"], Value::Null);
+    }
+
+    #[test]
+    fn test_generate_tags_request_format_with_model() {
+        let request = serde_json::json!({
+            "request_id": "test-tags-2",
+            "method": "generate_tags",
+            "params": {
+                "image_path": "/path/to/frame.dpx",
+                "model_name": "clip_vit_b32.onnx",
+                "top_n": 10,
+            }
+        });
+
+        assert_eq!(request["params"]["model_name"], "clip_vit_b32.onnx");
+        assert_eq!(request["params"]["top_n"], 10);
+    }
+
+    #[test]
+    fn test_parse_generate_tags_response() {
+        let response = serde_json::json!({
+            "request_id": "1",
+            "status": "ok",
+            "result": {
+                "tags": ["warm", "cinematic", "golden tones", "soft lighting", "desaturated"],
+                "count": 5
+            }
+        });
+
+        assert_eq!(response["status"], "ok");
+        let tags = response["result"]["tags"].as_array().unwrap();
+        let strings: Vec<String> = tags.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        assert_eq!(strings, vec!["warm", "cinematic", "golden tones", "soft lighting", "desaturated"]);
+        assert_eq!(response["result"]["count"], 5);
+    }
+
+    #[test]
+    fn test_parse_generate_tags_error_response() {
+        let response = serde_json::json!({
+            "request_id": "1",
+            "status": "error",
+            "error": {
+                "code": "AI_MODEL_NOT_FOUND",
+                "message": "No ONNX model found in models directory"
+            }
+        });
+
+        assert_eq!(response["status"], "error");
+        let code = response["error"]["code"].as_str().unwrap();
+        let message = response["error"]["message"].as_str().unwrap();
+        let err = map_python_error(code, message);
+        assert!(matches!(err, AiError::ModelNotFound(_)));
     }
 }

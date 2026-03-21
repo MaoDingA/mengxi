@@ -97,17 +97,20 @@ enum Commands {
         #[arg(long)]
         scene: Option<String>,
         /// Add a tag
-        #[arg(long, conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit")]
+        #[arg(long, conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit", conflicts_with = "generate")]
         add: Option<String>,
         /// Remove a tag
-        #[arg(long, conflicts_with = "add", conflicts_with = "list", conflicts_with = "edit")]
+        #[arg(long, conflicts_with = "add", conflicts_with = "list", conflicts_with = "edit", conflicts_with = "generate")]
         remove: Option<String>,
         /// List all tags
-        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "edit")]
+        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "edit", conflicts_with = "generate")]
         list: bool,
         /// Edit (rename) a tag
-        #[arg(long)]
+        #[arg(long, conflicts_with = "generate")]
         edit: Option<String>,
+        /// Generate AI tags for all fingerprints in a project
+        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit")]
+        generate: bool,
     },
     /// Compare two LUT files and display differences
     #[command(name = "lut-diff")]
@@ -208,6 +211,62 @@ fn main() {
                     );
                 }) {
                     Ok((proj, breakdown)) => {
+                        // Post-import tag generation (if enabled)
+                        let mut tag_count: usize = 0;
+                        let cfg = config::load_or_create_config().unwrap_or_default();
+                        if cfg.ai.tag_generation {
+                            let fp_ids = match mengxi_core::tag::fingerprint_ids_for_project(&conn, &project_name) {
+                                Ok(ids) => ids,
+                                Err(e) => {
+                                    eprintln!("Warning: Could not query fingerprints for tag generation: {}", e);
+                                    Vec::new()
+                                }
+                            };
+
+                            if !fp_ids.is_empty() {
+                                let total_fps = fp_ids.len();
+                                let mut bridge = mengxi_core::python_bridge::PythonBridge::new(
+                                    cfg.ai.idle_timeout_secs,
+                                    cfg.ai.inference_timeout_secs,
+                                    cfg.ai.tag_model.clone(),
+                                );
+
+                                for (i, fp_id) in fp_ids.iter().enumerate() {
+                                    eprintln!("Generating tags... {}/{}", i + 1, total_fps);
+                                    // Get file path for fingerprint
+                                    let fpath_result: Result<String, _> = conn.query_row(
+                                        "SELECT f.filename || '/' || p.path FROM fingerprints fp
+                                         JOIN files f ON f.id = fp.file_id
+                                         JOIN projects p ON p.id = f.project_id
+                                         WHERE fp.id = ?1",
+                                        [*fp_id],
+                                        |row| row.get::<_, String>(0),
+                                    );
+                                    match fpath_result {
+                                        Ok(fpath) => {
+                                            match bridge.generate_tags(&fpath, cfg.ai.tag_top_n) {
+                                                Ok(tags) => {
+                                                    for tag in &tags {
+                                                        if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
+                                                            eprintln!("Warning: Failed to add tag '{}': {}", tag, e);
+                                                        } else {
+                                                            tag_count += 1;
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Warning: Tag generation failed for fingerprint {}: {}", fp_id, e);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Warning: Could not get path for fingerprint {}: {}", fp_id, e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if is_json {
                             let output = serde_json::json!({
                                 "status": "ok",
@@ -227,6 +286,7 @@ fn main() {
                                     "fingerprint_count": breakdown.fingerprint_count,
                                     "skipped_count": breakdown.skipped_count,
                                     "resumed_count": breakdown.resumed_count,
+                                    "tag_count": tag_count,
                                     "variants": breakdown.variants,
                                 }
                             });
@@ -277,6 +337,11 @@ fn main() {
                                 }
                             };
                             let fp_detail = format!("{} fingerprints extracted", breakdown.fingerprint_count);
+                            let tag_detail = if tag_count > 0 {
+                                format!("{} AI tags generated", tag_count)
+                            } else {
+                                "No AI tags".to_string()
+                            };
                             println!(
                                 "+----------+------------------------------+\n\
                                  | Field    | Value                        |\n\
@@ -287,6 +352,7 @@ fn main() {
                                  | EXR      | {:<28} |\n\
                                  | MOV      | {:<28} |\n\
                                  | Color    | {:<28} |\n\
+                                 | Tags     | {:<28} |\n\
                                  +----------+------------------------------+",
                                 proj.name,
                                 proj.path,
@@ -294,6 +360,7 @@ fn main() {
                                 exr_detail,
                                 format!("{}{}", mov_detail, skipped_detail),
                                 fp_detail,
+                                tag_detail,
                             );
                         }
                     }
@@ -1066,7 +1133,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit: _ }) => {
+        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit: _, generate }) => {
             let proj_name = match project {
                 Some(ref p) => p.clone(),
                 None => {
@@ -1077,7 +1144,82 @@ fn main() {
 
             match db::open_db() {
                 Ok(conn) => {
-                    if list {
+                    if generate {
+                        // Generate AI tags for all fingerprints in project
+                        let cfg = config::load_or_create_config().unwrap_or_default();
+                        if !cfg.ai.tag_generation {
+                            eprintln!("Error: TAG_GENERATION_DISABLED -- tag generation is disabled in config");
+                            process::exit(1);
+                        }
+
+                        let fingerprint_ids = match mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name) {
+                            Ok(ids) => ids,
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                        if fingerprint_ids.is_empty() {
+                            println!("No fingerprints found for project '{}'.", proj_name);
+                            return;
+                        }
+
+                        // Get file paths for each fingerprint
+                        let mut fingerprint_paths: Vec<(i64, String)> = Vec::new();
+                        for fp_id in &fingerprint_ids {
+                            let path_result: Result<String, _> = conn.query_row(
+                                "SELECT f.filename || '/' || p.path FROM fingerprints fp
+                                 JOIN files f ON f.id = fp.file_id
+                                 JOIN projects p ON p.id = f.project_id
+                                 WHERE fp.id = ?1",
+                                [*fp_id],
+                                |row| row.get::<_, String>(0),
+                            );
+                            match path_result {
+                                Ok(path) => fingerprint_paths.push((*fp_id, path)),
+                                Err(e) => {
+                                    eprintln!("Warning: Could not get path for fingerprint {}: {}", fp_id, e);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        let total = fingerprint_paths.len();
+                        let mut tag_count = 0;
+                        let mut error_count = 0;
+
+                        let mut bridge = mengxi_core::python_bridge::PythonBridge::new(
+                            cfg.ai.idle_timeout_secs,
+                            cfg.ai.inference_timeout_secs,
+                            cfg.ai.tag_model.clone(),
+                        );
+
+                        for (i, (fp_id, fpath)) in fingerprint_paths.iter().enumerate() {
+                            eprintln!("Generating tags... {}/{}", i + 1, total);
+                            match bridge.generate_tags(fpath, cfg.ai.tag_top_n) {
+                                Ok(tags) => {
+                                    for tag in &tags {
+                                        if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
+                                            eprintln!("Warning: Failed to add tag '{}' to fingerprint {}: {}", tag, fp_id, e);
+                                        } else {
+                                            tag_count += 1;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: Tag generation failed for fingerprint {}: {}", fp_id, e);
+                                    error_count += 1;
+                                }
+                            }
+                        }
+
+                        if error_count > 0 {
+                            println!("Generated {} tags for {} fingerprints in project '{}' ({} errors).", tag_count, total - error_count, proj_name, error_count);
+                        } else {
+                            println!("Generated {} tags for {} fingerprints in project '{}'.", tag_count, total, proj_name);
+                        }
+                    } else if list {
                         // List tags for project
                         match mengxi_core::tag::tag_list_for_project(&conn, &proj_name) {
                             Ok(tags) => {
@@ -1122,7 +1264,7 @@ fn main() {
                             }
                         }
                     } else {
-                        eprintln!("Error: TAG_MISSING_ARG -- specify --add, --remove, or --list");
+                        eprintln!("Error: TAG_MISSING_ARG -- specify --generate, --add, --remove, or --list");
                         process::exit(1);
                     }
                 }
@@ -1677,12 +1819,58 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::Tag { add, project, .. }) => {
+            Some(Commands::Tag { add, project, generate, .. }) => {
                 assert_eq!(add.as_deref(), Some("industrial warm"));
                 assert_eq!(project.as_deref(), Some("my_film"));
+                assert!(!generate);
             }
             _ => panic!("Expected Tag command"),
         }
+    }
+
+    #[test]
+    fn test_tag_generate_command_parsing() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--generate",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::Tag { generate, project, add, remove, list, .. }) => {
+                assert!(generate);
+                assert_eq!(project.as_deref(), Some("my_film"));
+                assert_eq!(add, None);
+                assert_eq!(remove, None);
+                assert!(!list);
+            }
+            _ => panic!("Expected Tag command with --generate"),
+        }
+    }
+
+    #[test]
+    fn test_tag_generate_conflicts_with_add() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--generate",
+            "--add", "warm",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_tag_generate_conflicts_with_list() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--generate",
+            "--list",
+        ]);
+        assert!(cli.is_err());
     }
 
     #[test]

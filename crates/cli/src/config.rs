@@ -36,6 +36,10 @@ pub struct AiConfig {
     pub embedding_endpoint: String,
     #[serde(default = "default_true")]
     pub tag_generation: bool,
+    #[serde(default)]
+    pub tag_model: String,
+    #[serde(default = "default_tag_top_n")]
+    pub tag_top_n: u32,
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_secs: u64,
     #[serde(default = "default_inference_timeout")]
@@ -63,6 +67,7 @@ fn default_export_format() -> String { "cube".to_string() }
 fn default_true() -> bool { true }
 fn default_idle_timeout() -> u64 { 300 }
 fn default_inference_timeout() -> u64 { 30 }
+fn default_tag_top_n() -> u32 { 5 }
 fn default_keyframe_extraction() -> String { "auto".to_string() }
 fn default_output_dir() -> String { "~/lut".to_string() }
 
@@ -94,6 +99,8 @@ impl Default for AiConfig {
             embedding_model: String::new(),
             embedding_endpoint: String::new(),
             tag_generation: default_true(),
+            tag_model: String::new(),
+            tag_top_n: default_tag_top_n(),
             idle_timeout_secs: default_idle_timeout(),
             inference_timeout_secs: default_inference_timeout(),
         }
@@ -190,6 +197,8 @@ pub fn format_config_table(config: &Config) -> String {
         ("embedding_model", config.ai.embedding_model.clone()),
         ("embedding_endpoint", config.ai.embedding_endpoint.clone()),
         ("tag_generation", config.ai.tag_generation.to_string()),
+        ("tag_model", config.ai.tag_model.clone()),
+        ("tag_top_n", config.ai.tag_top_n.to_string()),
     ];
 
     for (key, value) in &ai_entries {
@@ -244,6 +253,8 @@ mod tests {
         assert_eq!(config.general.default_search_limit, 5);
         assert_eq!(config.general.default_export_format, "cube");
         assert!(config.ai.tag_generation);
+        assert!(config.ai.tag_model.is_empty());
+        assert_eq!(config.ai.tag_top_n, 5);
         assert!(config.import.auto_detect_format);
         assert_eq!(config.import.keyframe_extraction, "auto");
         assert_eq!(config.export.default_output_dir, "~/lut");
@@ -272,6 +283,8 @@ mod tests {
                 embedding_model: "model.onnx".to_string(),
                 embedding_endpoint: "http://localhost:8080".to_string(),
                 tag_generation: false,
+                tag_model: "clip_vit_b32.onnx".to_string(),
+                tag_top_n: 10,
                 idle_timeout_secs: 600,
                 inference_timeout_secs: 60,
             },

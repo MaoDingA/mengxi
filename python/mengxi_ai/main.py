@@ -44,6 +44,33 @@ def handle_generate_embedding(params: dict) -> dict:
         return {"code": "INFERENCE_ERROR", "message": str(e)}
 
 
+def handle_generate_tags(params: dict) -> dict:
+    """Handle generate_tags method request."""
+    from .tagging import generate_tags
+
+    image_path = params.get("image_path")
+    if not image_path:
+        return {"code": "INVALID_PARAMS", "message": "'image_path' is required"}
+
+    model_name = params.get("model_name", "")
+    top_n = params.get("top_n", 5)
+
+    try:
+        tags = generate_tags(
+            image_path=image_path,
+            model_name=model_name,
+            top_n=top_n,
+        )
+        return {"tags": tags, "count": len(tags)}
+    except FileNotFoundError as e:
+        return {"code": "AI_MODEL_NOT_FOUND", "message": str(e)}
+    except RuntimeError as e:
+        return {"code": "AI_INFERENCE_ERROR", "message": str(e)}
+    except Exception as e:
+        logger.exception("Unexpected error during tag generation")
+        return {"code": "AI_INFERENCE_ERROR", "message": str(e)}
+
+
 def handle_ping(params: dict) -> dict:
     """Health check handler."""
     return {"status": "ok"}
@@ -51,6 +78,7 @@ def handle_ping(params: dict) -> dict:
 
 METHOD_HANDLERS = {
     "generate_embedding": handle_generate_embedding,
+    "generate_tags": handle_generate_tags,
     "ping": handle_ping,
 }
 
