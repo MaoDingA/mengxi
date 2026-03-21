@@ -105,9 +105,12 @@ enum Commands {
         /// List all tags
         #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "edit", conflicts_with = "generate")]
         list: bool,
-        /// Edit (rename) a tag
-        #[arg(long, conflicts_with = "generate")]
+        /// Edit (rename) a tag — current tag name
+        #[arg(long, requires = "edit_new", conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "generate")]
         edit: Option<String>,
+        /// New tag name for --edit
+        #[arg(long, requires = "edit", conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "generate")]
+        edit_new: Option<String>,
         /// Generate AI tags for all fingerprints in a project
         #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit")]
         generate: bool,
@@ -1157,7 +1160,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit: _, generate }) => {
+        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit, edit_new, generate }) => {
             let proj_name = match project {
                 Some(ref p) => p.clone(),
                 None => {
@@ -1273,15 +1276,15 @@ fn main() {
                             println!("Generated {} tags for {} fingerprints in project '{}'.", tag_count, total, proj_name);
                         }
                     } else if list {
-                        // List tags for project
-                        match mengxi_core::tag::tag_list_for_project(&conn, &proj_name) {
+                        // List tags for project with source indicator
+                        match mengxi_core::tag::tag_list_for_project_with_source(&conn, &proj_name) {
                             Ok(tags) => {
                                 if tags.is_empty() {
                                     println!("No tags for project '{}'.", proj_name);
                                 } else {
                                     println!("Tags for project '{}':", proj_name);
-                                    for (i, tag) in tags.iter().enumerate() {
-                                        println!("  {}. {}", i + 1, tag);
+                                    for (i, (tag, source)) in tags.iter().enumerate() {
+                                        println!("  {}. {} ({})", i + 1, tag, source);
                                     }
                                 }
                             }
@@ -1291,13 +1294,30 @@ fn main() {
                             }
                         }
                     } else if let Some(ref tag_text) = add {
-                        // Add tag to project's fingerprints
-                        match mengxi_core::tag::tag_add_to_project(&conn, &proj_name, tag_text) {
+                        // Add tag to project's fingerprints (source = "manual")
+                        match mengxi_core::tag::tag_add_to_project_with_source(&conn, &proj_name, tag_text, "manual") {
                             Ok(count) => {
                                 println!("Added tag '{}' to {} fingerprint(s) in project '{}'.", tag_text, count, proj_name);
                             }
                             Err(e) => {
                                 eprintln!("Error: {}", e);
+                                process::exit(1);
+                            }
+                        }
+                    } else if let (Some(ref old_tag), Some(ref new_tag)) = (edit, edit_new) {
+                        // Rename tag in project
+                        match mengxi_core::tag::tag_rename_in_project(&conn, &proj_name, old_tag, new_tag) {
+                            Ok(count) => {
+                                println!("Renamed tag '{}' to '{}' for {} fingerprint(s) in project '{}'.", old_tag, new_tag, count, proj_name);
+                            }
+                            Err(e) => {
+                                if format!("{}", e).contains("TAG_NOT_FOUND") {
+                                    eprintln!("Error: TAG_NOT_FOUND -- tag '{}' not found in project '{}'", old_tag, proj_name);
+                                } else if format!("{}", e).contains("TAG_DUPLICATE") {
+                                    eprintln!("Error: TAG_DUPLICATE -- tag '{}' already exists in project '{}'", new_tag, proj_name);
+                                } else {
+                                    eprintln!("Error: {}", e);
+                                }
                                 process::exit(1);
                             }
                         }
@@ -1922,6 +1942,87 @@ mod tests {
             "--project", "my_film",
             "--generate",
             "--list",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_tag_edit_command_parsing() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--edit", "industrial warm",
+            "--edit-new", "warm industrial",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::Tag { edit, edit_new, project, .. }) => {
+                assert_eq!(edit.as_deref(), Some("industrial warm"));
+                assert_eq!(edit_new.as_deref(), Some("warm industrial"));
+                assert_eq!(project.as_deref(), Some("my_film"));
+            }
+            _ => panic!("Expected Tag command with --edit"),
+        }
+    }
+
+    #[test]
+    fn test_tag_edit_requires_edit_new() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--edit", "old_tag",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_tag_edit_new_requires_edit() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--edit-new", "new_tag",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_tag_edit_conflicts_with_add() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--edit", "old",
+            "--edit-new", "new",
+            "--add", "extra",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_tag_edit_conflicts_with_list() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--edit", "old",
+            "--edit-new", "new",
+            "--list",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_tag_edit_conflicts_with_generate() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "tag",
+            "--project", "my_film",
+            "--edit", "old",
+            "--edit-new", "new",
+            "--generate",
         ]);
         assert!(cli.is_err());
     }
