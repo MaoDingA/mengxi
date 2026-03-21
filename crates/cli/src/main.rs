@@ -578,13 +578,209 @@ fn main() {
             eprintln!("Error: 'tag' command is not yet implemented");
             process::exit(1);
         }
-        Some(Commands::LutDiff { .. }) => {
-            eprintln!("Error: 'lut-diff' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::LutDiff { lut_a, lut_b, format }) => {
+            let is_json = format.as_deref() == Some("json");
+
+            // Validate required args
+            let path_a = match &lut_a {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "LUTDIFF_MISSING_ARG", "message": "<lut_a> is required" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: LUTDIFF_MISSING_ARG -- <lut_a> is required");
+                    }
+                    process::exit(1);
+                }
+            };
+            let path_b = match &lut_b {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "LUTDIFF_MISSING_ARG", "message": "<lut_b> is required" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: LUTDIFF_MISSING_ARG -- <lut_b> is required");
+                    }
+                    process::exit(1);
+                }
+            };
+
+            match mengxi_core::lut_diff::compare_luts(&path_a, &path_b) {
+                Ok(result) => {
+                    if is_json {
+                        let channels = serde_json::json!([
+                            { "channel": "R", "mean_delta": result.channels[0].mean_delta, "max_delta": result.channels[0].max_delta, "changed_values": result.channels[0].changed_count },
+                            { "channel": "G", "mean_delta": result.channels[1].mean_delta, "max_delta": result.channels[1].max_delta, "changed_values": result.channels[1].changed_count },
+                            { "channel": "B", "mean_delta": result.channels[2].mean_delta, "max_delta": result.channels[2].max_delta, "changed_values": result.channels[2].changed_count },
+                        ]);
+                        let output = serde_json::json!({
+                            "status": "ok",
+                            "lut_a": path_a.to_string_lossy(),
+                            "lut_b": path_b.to_string_lossy(),
+                            "total_points": result.total_points,
+                            "channels": channels
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        println!(
+                            "LUT Diff: {} vs {}\n",
+                            path_a.display(),
+                            path_b.display()
+                        );
+                        println!("{:<12} {:>12} {:>12} {:>14}",
+                            "Channel", "Mean Delta", "Max Delta", "Changed");
+                        println!("{:<12} {:<12} {:<12} {:<14}", "----------", "----------", "----------", "----------");
+                        for (name, ch) in [("R", &result.channels[0]), ("G", &result.channels[1]), ("B", &result.channels[2])] {
+                            println!("{:<12} {:>12.6} {:>12.6} {:>14}",
+                                name,
+                                ch.mean_delta,
+                                ch.max_delta,
+                                ch.changed_count,
+                            );
+                        }
+                        println!("\nTotal points compared: {}", result.total_points);
+                    }
+                }
+                Err(e) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": format!("{}", e).split(" -- ").next().unwrap_or("LUTDIFF_ERROR"), "message": format!("{}", e) }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: {}", e);
+                    }
+                    process::exit(1);
+                }
+            }
         }
-        Some(Commands::LutDep { .. }) => {
-            eprintln!("Error: 'lut-dep' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::LutDep { lut }) => {
+            let is_json = std::env::var("MENGXI_JSON").is_ok();
+
+            let lut_path = match &lut {
+                Some(p) => {
+                    if p == "~" {
+                        dirs::home_dir().unwrap_or_default()
+                    } else if p.starts_with("~/") {
+                        dirs::home_dir().unwrap_or_default().join(&p[2..])
+                    } else {
+                        std::path::PathBuf::from(p)
+                    }
+                }
+                None => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "LUTDEP_MISSING_ARG", "message": "--lut <path> is required" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: LUTDEP_MISSING_ARG -- --lut <path> is required");
+                    }
+                    process::exit(1);
+                }
+            };
+
+            match db::open_db() {
+                Ok(conn) => {
+                    match mengxi_core::lut_diff::query_lut_dependency(&conn, &lut_path.to_string_lossy()) {
+                        Ok(Some(dep)) => {
+                            let timestamp = if dep.exported_at > 0 {
+                                let secs = dep.exported_at;
+                                let dt = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
+                                let datetime = std::time::SystemTime::from(dt);
+                                let duration = datetime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                                let secs_since_epoch = duration.as_secs();
+                                // Simple formatting without chrono: days since 1970-01-01
+                                let (year, month, day, hour, min, sec) = seconds_to_datetime(secs_since_epoch);
+                                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, min, sec)
+                            } else {
+                                "unknown".to_string()
+                            };
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "ok",
+                                    "dependency": {
+                                        "project": dep.project_name,
+                                        "file": dep.file_path,
+                                        "format": dep.format,
+                                        "grid_size": dep.grid_size,
+                                        "exported_at": timestamp,
+                                        "lut_path": lut_path.to_string_lossy(),
+                                    }
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                println!(
+                                    "+----------+------------------------------+\n\
+                                     | Field    | Value                        |\n\
+                                     +----------+------------------------------+\n\
+                                     | Project  | {:<28} |\n\
+                                     | File     | {:<28} |\n\
+                                     | Format   | {:<28} |\n\
+                                     | Grid     | {:<28}x{:28}x{:<22} |\n\
+                                     | Exported | {:<28} |\n\
+                                     | LUT Path | {:<28} |\n\
+                                     +----------+------------------------------+",
+                                    dep.project_name,
+                                    dep.file_path,
+                                    dep.format,
+                                    dep.grid_size,
+                                    dep.grid_size,
+                                    dep.grid_size,
+                                    timestamp,
+                                    lut_path.display(),
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "ok",
+                                    "dependency": null,
+                                    "message": "No dependency records found for this LUT"
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                println!("No dependency records found for this LUT");
+                            }
+                        }
+                        Err(e) => {
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "error",
+                                    "error": { "code": "LUTDEP_DB_ERROR", "message": e.to_string() }
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                eprintln!("Error: {}", e);
+                            }
+                            process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "LUTDEP_DB_ERROR", "message": "Failed to initialize database" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: LUTDEP_DB_ERROR -- {e}");
+                    }
+                    process::exit(1);
+                }
+            }
         }
         Some(Commands::Stats { .. }) => {
             eprintln!("Error: 'stats' command is not yet implemented");
@@ -612,6 +808,31 @@ fn main() {
             // No subcommand — clap displays help automatically
         }
     }
+}
+
+/// Convert seconds since Unix epoch to (year, month, day, hour, min, sec).
+/// Simple implementation to avoid chrono dependency.
+fn seconds_to_datetime(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let days = (secs / 86400) as i32;
+    let time_of_day = (secs % 86400) as u32;
+    let hour = time_of_day / 3600;
+    let min = (time_of_day % 3600) / 60;
+    let sec = time_of_day % 60;
+
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let mut z = days + 719468;
+    let era = z / 146097;
+    z -= era * 146097;
+    let doe = z;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (y as u32, m as u32, d as u32, hour, min, sec)
 }
 
 #[cfg(test)]
@@ -755,5 +976,56 @@ mod tests {
             }
             _ => panic!("Expected Stats command"),
         }
+    }
+
+    #[test]
+    fn test_seconds_to_datetime_epoch() {
+        // 1970-01-01 00:00:00
+        let (y, m, d, h, min, s) = seconds_to_datetime(0);
+        assert_eq!((y, m, d, h, min, s), (1970, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_seconds_to_datetime_known() {
+        // 2024-01-15 12:30:45 UTC = 1705321845 seconds
+        let (y, m, d, h, min, s) = seconds_to_datetime(1705321845);
+        assert_eq!((y, m, d, h, min, s), (2024, 1, 15, 12, 30, 45));
+    }
+
+    #[test]
+    fn test_seconds_to_datetime_leap_year() {
+        // 2024-02-29 00:00:00 UTC = 1709164800 seconds
+        let (y, m, d, h, min, s) = seconds_to_datetime(1709164800);
+        assert_eq!((y, m, d, h, min, s), (2024, 2, 29, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_lut_dep_command_parsing() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "lut-dep",
+            "--lut", "~/lut/grade.cube",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::LutDep { lut }) => {
+                assert_eq!(lut.as_deref(), Some("~/lut/grade.cube"));
+            }
+            _ => panic!("Expected LutDep command"),
+        }
+    }
+
+    #[test]
+    fn test_lut_diff_missing_args_parsing() {
+        // lut-diff without positional args should still parse (args are Option<String>)
+        let cli = Cli::try_parse_from(["mengxi", "lut-diff"]);
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn test_lut_dep_missing_arg_parsing() {
+        // lut-dep without --lut should still parse (arg is Option<String>)
+        let cli = Cli::try_parse_from(["mengxi", "lut-dep"]);
+        assert!(cli.is_ok());
     }
 }

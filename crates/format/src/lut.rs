@@ -71,6 +71,85 @@ impl LutData {
 }
 
 // ---------------------------------------------------------------------------
+// Diff result
+// ---------------------------------------------------------------------------
+
+/// Per-channel diff statistics for a single color channel (R, G, or B).
+#[derive(Debug, Clone)]
+pub struct ChannelDiff {
+    pub mean_delta: f64,
+    pub max_delta: f64,
+    pub changed_count: usize,
+}
+
+/// Result of comparing two LUT files.
+#[derive(Debug, Clone)]
+pub struct LutDiffResult {
+    /// Per-channel statistics (index 0=R, 1=G, 2=B).
+    pub channels: [ChannelDiff; 3],
+    /// Total number of RGB triplets compared.
+    pub total_points: usize,
+}
+
+impl LutData {
+    /// Compare this LUT against another, returning per-channel diff statistics.
+    ///
+    /// Both LUTs must have the same `grid_size`. Returns an error if grid sizes
+    /// differ or if either LUT has an invalid value count.
+    ///
+    /// A value is considered "changed" when its absolute delta exceeds `epsilon` (1e-6).
+    pub fn diff(&self, other: &LutData) -> Result<LutDiffResult, LutError> {
+        if self.grid_size != other.grid_size {
+            return Err(LutError::GridSizeMismatch {
+                a: self.grid_size,
+                b: other.grid_size,
+            });
+        }
+        let expected = self.grid_size as usize * self.grid_size as usize * self.grid_size as usize * 3;
+        if self.values.len() != expected {
+            return Err(LutError::InvalidValueCount {
+                expected,
+                actual: self.values.len(),
+            });
+        }
+        if other.values.len() != expected {
+            return Err(LutError::InvalidValueCount {
+                expected,
+                actual: other.values.len(),
+            });
+        }
+
+        let total_points = self.grid_size as usize * self.grid_size as usize * self.grid_size as usize;
+        let epsilon = 1e-6_f64;
+        let mut channels = [
+            ChannelDiff { mean_delta: 0.0, max_delta: 0.0, changed_count: 0 },
+            ChannelDiff { mean_delta: 0.0, max_delta: 0.0, changed_count: 0 },
+            ChannelDiff { mean_delta: 0.0, max_delta: 0.0, changed_count: 0 },
+        ];
+
+        for i in 0..total_points {
+            for ch in 0..3 {
+                let idx = i * 3 + ch;
+                let delta = (self.values[idx] - other.values[idx]).abs();
+                channels[ch].mean_delta += delta;
+                if delta > channels[ch].max_delta {
+                    channels[ch].max_delta = delta;
+                }
+                if delta > epsilon {
+                    channels[ch].changed_count += 1;
+                }
+            }
+        }
+
+        for ch in 0..3 {
+            channels[ch].mean_delta /= total_points as f64;
+        }
+
+        Ok(LutDiffResult { channels, total_points })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Format enum
 // ---------------------------------------------------------------------------
 
@@ -121,6 +200,7 @@ pub enum LutError {
     InvalidGridSize(u32),
     InvalidDomainRange,
     InvalidValueCount { expected: usize, actual: usize },
+    GridSizeMismatch { a: u32, b: u32 },
     WriteError(String),
     UnsupportedPowerGradeVersion(String),
     IoError(String),
@@ -149,6 +229,13 @@ impl fmt::Display for LutError {
                 write!(f, "LUT_UNSUPPORTED_FORMAT -- unsupported PowerGrade version: {}", ver)
             }
             LutError::IoError(msg) => write!(f, "LUT_IO_ERROR -- {}", msg),
+            LutError::GridSizeMismatch { a, b } => {
+                write!(
+                    f,
+                    "LUTDIFF_GRID_MISMATCH -- grid sizes differ: {} vs {}",
+                    a, b
+                )
+            }
         }
     }
 }
@@ -1792,5 +1879,83 @@ mod tests {
         tmp.write_all(content.as_bytes()).unwrap();
         tmp.flush().unwrap();
         tmp
+    }
+
+    // -- Diff tests --
+
+    #[test]
+    fn test_diff_identical_luts() {
+        let a = LutData::identity(5);
+        let b = LutData::identity(5);
+        let result = a.diff(&b).unwrap();
+        for ch in 0..3 {
+            assert!(result.channels[ch].mean_delta < 1e-15);
+            assert!(result.channels[ch].max_delta < 1e-15);
+            assert_eq!(result.channels[ch].changed_count, 0);
+        }
+        assert_eq!(result.total_points, 125);
+    }
+
+    #[test]
+    fn test_diff_different_luts() {
+        let mut a = LutData::identity(3);
+        let b = LutData::identity(3);
+        // Offset R channel of first point by 0.1
+        a.values[0] += 0.1;
+        let result = a.diff(&b).unwrap();
+        assert!(result.channels[0].max_delta > 0.09); // R
+        assert!(result.channels[1].max_delta < 1e-15); // G unchanged
+        assert!(result.channels[2].max_delta < 1e-15); // B unchanged
+        assert_eq!(result.channels[0].changed_count, 1);
+        assert_eq!(result.channels[1].changed_count, 0);
+        assert_eq!(result.channels[2].changed_count, 0);
+        assert_eq!(result.total_points, 27);
+    }
+
+    #[test]
+    fn test_diff_grid_size_mismatch() {
+        let a = LutData::identity(3);
+        let b = LutData::identity(5);
+        let result = a.diff(&b);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LutError::GridSizeMismatch { a, b } => {
+                assert_eq!(a, 3);
+                assert_eq!(b, 5);
+            }
+            other => panic!("Expected GridSizeMismatch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_diff_mean_delta_calculation() {
+        let mut a = LutData::identity(3);
+        let b = LutData::identity(3);
+        // Set all R values to a + 0.3
+        for i in 0..27 {
+            a.values[i * 3] += 0.3;
+        }
+        let result = a.diff(&b).unwrap();
+        // Mean should be 0.3 (sum of 0.3 * 27 / 27)
+        assert!((result.channels[0].mean_delta - 0.3).abs() < 1e-10);
+        assert_eq!(result.channels[0].changed_count, 27);
+        // G and B unchanged
+        assert!(result.channels[1].mean_delta < 1e-15);
+        assert!(result.channels[2].mean_delta < 1e-15);
+    }
+
+    #[test]
+    fn test_diff_single_channel_change() {
+        let mut a = LutData::identity(5);
+        let b = LutData::identity(5);
+        // Change only B channel of point (2,2,2)
+        // point index = 2 + 5*2 + 5*5*2 = 62
+        // B value index = 62*3 + 2 = 188
+        a.values[188] = 0.51; // original is 2/4 = 0.5, delta = 0.01
+        let result = a.diff(&b).unwrap();
+        assert_eq!(result.channels[0].changed_count, 0); // R
+        assert_eq!(result.channels[1].changed_count, 0); // G
+        assert_eq!(result.channels[2].changed_count, 1); // B
+        assert!((result.channels[2].mean_delta - 0.01 / 125.0).abs() < 1e-10);
     }
 }
