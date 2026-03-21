@@ -251,6 +251,8 @@ fn main() {
 
                                 if tag_error_count == 0 {
                                     let top_n = cfg.ai.tag_top_n.max(1);
+                                    // Get personalized tags from calibration (best-effort)
+                                    let personalized_tags = mengxi_core::calibration::get_personalized_tags(&conn).unwrap_or_default();
                                     for (i, fp_id) in fp_ids.iter().enumerate() {
                                         eprintln!("Generating tags... {}/{}", i + 1, total_fps);
                                         // Get file path for fingerprint
@@ -265,7 +267,7 @@ fn main() {
                                         match fpath_result {
                                             Ok((base_path, filename)) => {
                                                 let fpath = format!("{}/{}", base_path, filename);
-                                                match bridge.generate_tags(&fpath, top_n) {
+                                                match bridge.generate_tags_with_calibration(&fpath, top_n, &personalized_tags) {
                                                     Ok(tags) => {
                                                         for tag in &tags {
                                                             if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
@@ -1250,9 +1252,11 @@ fn main() {
                         }
 
                         let top_n = cfg.ai.tag_top_n.max(1);
+                        // Get personalized tags from calibration (best-effort)
+                        let personalized_tags = mengxi_core::calibration::get_personalized_tags(&conn).unwrap_or_default();
                         for (i, (fp_id, fpath)) in fingerprint_paths.iter().enumerate() {
                             eprintln!("Generating tags... {}/{}", i + 1, total);
-                            match bridge.generate_tags(fpath, top_n) {
+                            match bridge.generate_tags_with_calibration(fpath, top_n, &personalized_tags) {
                                 Ok(tags) => {
                                     for tag in &tags {
                                         if let Err(e) = mengxi_core::tag::tag_add(&conn, *fp_id, tag) {
@@ -1301,6 +1305,14 @@ fn main() {
                         }
                         match mengxi_core::tag::tag_add_to_project_with_source(&conn, &proj_name, tag_text, "manual") {
                             Ok(count) => {
+                                // Record calibration (best-effort)
+                                let fp_ids = mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name).unwrap_or_default();
+                                let added_json = serde_json::to_string(&[tag_text]).unwrap_or_else(|_| "[]".to_string());
+                                for fp_id in &fp_ids {
+                                    if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, *fp_id, "[]", &added_json, "[]") {
+                                        eprintln!("Warning: Failed to record calibration: {}", e);
+                                    }
+                                }
                                 println!("Added tag '{}' to {} fingerprint(s) in project '{}'.", tag_text, count, proj_name);
                             }
                             Err(e) => {
@@ -1312,6 +1324,14 @@ fn main() {
                         // Rename tag in project
                         match mengxi_core::tag::tag_rename_in_project(&conn, &proj_name, old_tag, new_tag) {
                             Ok(count) => {
+                                // Record calibration (best-effort)
+                                let fp_ids = mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name).unwrap_or_default();
+                                let renamed_json = serde_json::to_string(&[serde_json::json!({"old": old_tag, "new": new_tag})]).unwrap_or_else(|_| "[]".to_string());
+                                for fp_id in &fp_ids {
+                                    if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, *fp_id, "[]", "[]", &renamed_json) {
+                                        eprintln!("Warning: Failed to record calibration: {}", e);
+                                    }
+                                }
                                 println!("Renamed tag '{}' to '{}' for {} fingerprint(s) in project '{}'.", old_tag, new_tag, count, proj_name);
                             }
                             Err(e) => {
@@ -1338,6 +1358,19 @@ fn main() {
                         match mengxi_core::tag::tag_remove_from_project(&conn, &proj_name, tag_text) {
                             Ok(count) => {
                                 if count > 0 {
+                                    // Record calibration if removed tag was AI-sourced (best-effort)
+                                    let tags_with_source = mengxi_core::tag::tag_list_for_project_with_source(&conn, &proj_name).unwrap_or_default();
+                                    let ai_removed = tags_with_source.iter()
+                                        .any(|(t, s)| t == tag_text && s == "ai");
+                                    if ai_removed {
+                                        let fp_ids = mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name).unwrap_or_default();
+                                        let removed_json = serde_json::to_string(&[tag_text]).unwrap_or_else(|_| "[]".to_string());
+                                        for fp_id in &fp_ids {
+                                            if let Err(e) = mengxi_core::calibration::record_calibration(&conn, &proj_name, *fp_id, &removed_json, "[]", "[]") {
+                                                eprintln!("Warning: Failed to record calibration: {}", e);
+                                            }
+                                        }
+                                    }
                                     println!("Removed tag '{}' from {} fingerprint(s) in project '{}'.", tag_text, count, proj_name);
                                 } else {
                                     println!("Tag '{}' not found in project '{}'.", tag_text, proj_name);

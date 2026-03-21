@@ -358,6 +358,63 @@ impl PythonBridge {
         Ok(strings)
     }
 
+    /// Generate tags for an image, incorporating personalized vocabulary from calibration.
+    /// If `personalized_tags` is non-empty, they are passed as `candidate_tags` to Python
+    /// so CLIP ranks them alongside default tags. If empty, falls back to default
+    /// `generate_tags()`.
+    pub fn generate_tags_with_calibration(
+        &mut self,
+        image_path: &str,
+        top_n: u32,
+        personalized_tags: &[String],
+    ) -> Result<Vec<String>, AiError> {
+        if personalized_tags.is_empty() {
+            return self.generate_tags(image_path, top_n);
+        }
+
+        let request = serde_json::json!({
+            "request_id": uuid_simple(),
+            "method": "generate_tags",
+            "params": {
+                "image_path": image_path,
+                "model_name": if self.model_name.is_empty() { Value::Null } else { Value::String(self.model_name.clone()) },
+                "top_n": top_n,
+                "candidate_tags": personalized_tags,
+            }
+        });
+
+        let response = self.send_request(&request)?;
+
+        if response["status"] == "error" {
+            let code = response["error"]["code"].as_str().unwrap_or("UNKNOWN");
+            let message = response["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown error");
+            return Err(map_python_error(code, message));
+        }
+
+        let tags = response["result"]["tags"].as_array().ok_or_else(|| {
+            AiError::ProtocolError("Response missing 'result.tags' array".into())
+        })?;
+
+        let strings: Vec<String> = tags
+            .iter()
+            .map(|v| {
+                v.as_str().ok_or_else(|| {
+                    AiError::ProtocolError(format!("Tag contains non-string value: {}", v))
+                }).map(|s| s.to_string())
+            })
+            .collect::<Result<_, _>>()?;
+
+        if strings.is_empty() {
+            return Err(AiError::InferenceError(
+                "No tags generated for image".into(),
+            ));
+        }
+
+        Ok(strings)
+    }
+
     /// Ping the subprocess to check liveness.
     pub fn ping(&mut self) -> Result<bool, AiError> {
         let request = serde_json::json!({
@@ -765,5 +822,47 @@ mod tests {
         let message = response["error"]["message"].as_str().unwrap();
         let err = map_python_error(code, message);
         assert!(matches!(err, AiError::ModelNotFound(_)));
+    }
+
+    #[test]
+    fn test_generate_tags_with_calibration_request_format() {
+        // Verify the request format includes candidate_tags when personalized tags are provided
+        let personalized_tags = vec!["cool blue shadows".to_string(), "SK-II skin".to_string()];
+        let request = serde_json::json!({
+            "request_id": "test-tags-cal-1",
+            "method": "generate_tags",
+            "params": {
+                "image_path": "/path/to/frame.dpx",
+                "model_name": Value::Null,
+                "top_n": 5,
+                "candidate_tags": personalized_tags,
+            }
+        });
+
+        assert_eq!(request["method"], "generate_tags");
+        assert_eq!(request["params"]["image_path"], "/path/to/frame.dpx");
+        assert_eq!(request["params"]["top_n"], 5);
+        let ct = request["params"]["candidate_tags"].as_array().unwrap();
+        assert_eq!(ct.len(), 2);
+        assert_eq!(ct[0], "cool blue shadows");
+        assert_eq!(ct[1], "SK-II skin");
+    }
+
+    #[test]
+    fn test_generate_tags_with_calibration_request_format_no_tags() {
+        // When no personalized tags, should NOT include candidate_tags in params
+        // (generate_tags_with_calibration falls back to generate_tags which omits it)
+        let request = serde_json::json!({
+            "request_id": "test-tags-cal-2",
+            "method": "generate_tags",
+            "params": {
+                "image_path": "/path/to/frame.dpx",
+                "model_name": Value::Null,
+                "top_n": 5,
+            }
+        });
+
+        assert_eq!(request["method"], "generate_tags");
+        assert!(request["params"].get("candidate_tags").is_none());
     }
 }

@@ -52,6 +52,35 @@ class TestCandidateTags(unittest.TestCase):
         for tag in CANDIDATE_TAGS:
             self.assertEqual(tag, tag.lower(), f"Non-lowercase tag: '{tag}'")
 
+    def test_custom_candidate_tags_merge_dedup(self):
+        """Custom tags merged with defaults, deduplicated, custom first."""
+        # Simulate the merge logic from generate_tags
+        candidate_tags = ["cool blue shadows", "warm"]
+        seen = set(candidate_tags)
+        merged = list(candidate_tags)
+        for t in CANDIDATE_TAGS:
+            if t not in seen:
+                merged.append(t)
+                seen.add(t)
+        # Custom tags should be at the front
+        self.assertEqual(merged[0], "cool blue shadows")
+        self.assertEqual(merged[1], "warm")
+        # No duplicates
+        self.assertEqual(len(merged), len(set(merged)))
+        # Should have more tags than custom alone
+        self.assertGreater(len(merged), len(candidate_tags))
+
+    def test_custom_candidate_tags_empty_list(self):
+        """Empty custom tag list still includes defaults."""
+        candidate_tags = []
+        seen = set(candidate_tags)
+        merged = list(candidate_tags)
+        for t in CANDIDATE_TAGS:
+            if t not in seen:
+                merged.append(t)
+                seen.add(t)
+        self.assertEqual(len(merged), len(CANDIDATE_TAGS))
+
 
 class TestPreprocessClipImage(unittest.TestCase):
     """Tests for _preprocess_clip_image."""

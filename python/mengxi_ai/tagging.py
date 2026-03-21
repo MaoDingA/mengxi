@@ -230,7 +230,17 @@ def generate_tags(
     from .models import ModelRegistry
     from .tokenizer import ClipTokenizer
 
-    tags = candidate_tags if candidate_tags is not None else CANDIDATE_TAGS
+    # Merge custom tags with defaults: custom first for priority in ranking
+    if candidate_tags is not None:
+        seen = set(candidate_tags)
+        merged = list(candidate_tags)
+        for t in CANDIDATE_TAGS:
+            if t not in seen:
+                merged.append(t)
+                seen.add(t)
+        tags = merged
+    else:
+        tags = CANDIDATE_TAGS
 
     if top_n <= 0:
         top_n = len(tags)

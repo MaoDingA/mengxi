@@ -54,15 +54,20 @@ def handle_generate_tags(params: dict) -> dict:
 
     model_name = params.get("model_name", "")
     top_n = params.get("top_n", 5)
+    candidate_tags = params.get("candidate_tags")  # Optional: list of custom tags
 
     if not isinstance(top_n, int) or top_n < 1:
         return {"code": "INVALID_PARAMS", "message": "'top_n' must be a positive integer"}
+
+    if candidate_tags is not None and not isinstance(candidate_tags, list):
+        return {"code": "INVALID_PARAMS", "message": "'candidate_tags' must be a list"}
 
     try:
         tags = generate_tags(
             image_path=image_path,
             model_name=model_name,
             top_n=top_n,
+            candidate_tags=candidate_tags,
         )
         return {"tags": tags, "count": len(tags)}
     except FileNotFoundError as e:

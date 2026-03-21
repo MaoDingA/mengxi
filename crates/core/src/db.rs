@@ -218,7 +218,7 @@ mod tests {
             .unwrap()
             .join("migrations");
         let migrations = discover_migrations_from_dir(&project_root).unwrap();
-        assert!(migrations.len() >= 12);
+        assert!(migrations.len() >= 14);
         assert_eq!(migrations[0].0, 1); // 001_create_projects.sql
         assert_eq!(migrations[1].0, 2); // 002_create_files.sql
         assert_eq!(migrations[2].0, 3); // 003_add_file_metadata.sql
