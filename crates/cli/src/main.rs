@@ -415,7 +415,7 @@ fn main() {
                                         "status": "ok",
                                         "results": json_results,
                                     });
-                                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                 } else {
                                     // Text table output
                                     if results.is_empty() {
@@ -431,7 +431,8 @@ fn main() {
                                             "+------+------------------+--------------------------+-------------+"
                                         );
                                         for r in &results {
-                                            let score_pct = format!("{:.1}%", r.score * 100.0);
+                                            let display_score = r.score.max(0.0);
+                                            let score_pct = format!("{:.1}%", display_score * 100.0);
                                             println!(
                                                 "| {:<4} | {:<16} | {:<24} | {:<11} |",
                                                 r.rank,
@@ -473,10 +474,8 @@ fn main() {
                         process::exit(1);
                     }
                 }
-            }
-
-            // --tag not yet implemented (Story 3.4)
-            if tag.is_some() {
+            } else if tag.is_some() {
+                // --tag not yet implemented (Story 3.4)
                 if is_json {
                     let output = serde_json::json!({
                         "status": "error",
@@ -487,9 +486,9 @@ fn main() {
                     eprintln!("Error: SEARCH_TAG_NOT_AVAILABLE -- Tag search not yet implemented (Story 3.4)");
                 }
                 process::exit(1);
-            }
-
-            // Resolve limit from CLI flag or config default
+            } else {
+                // Histogram search (no --image, no --tag)
+                // Resolve limit from CLI flag or config default
             let cfg = config::load_or_create_config().unwrap_or_default();
             let limit_val = limit.unwrap_or(cfg.general.default_search_limit);
 
@@ -629,6 +628,7 @@ fn main() {
                     process::exit(1);
                 }
             }
+            } // end else (histogram search)
         }
         Some(Commands::Export {
             result,

@@ -158,10 +158,16 @@ pub fn serialize_embedding(embedding: &[f64]) -> Vec<u8> {
 }
 
 /// Deserialize a BLOB back to Vec<f64>.
-pub fn deserialize_embedding(blob: &[u8]) -> Vec<f64> {
-    blob.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
-        .collect()
+/// Returns None if the blob length is not a multiple of 4 bytes.
+pub fn deserialize_embedding(blob: &[u8]) -> Option<Vec<f64>> {
+    if blob.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        blob.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -196,64 +202,48 @@ pub fn search_by_image(
     };
 
     // Step 2: Query all fingerprints with their embeddings
-    let sql = match &options.project {
-        Some(_) => "
-            SELECT p.name, f.filename, f.format, fp.id,
-                   fp.histogram_r, fp.histogram_g, fp.histogram_b,
-                   fp.embedding, fp.embedding_model
-            FROM fingerprints fp
-            JOIN files f ON f.id = fp.file_id
-            JOIN projects p ON p.id = f.project_id
-            WHERE p.name = ?1
-        ",
-        None => "
-            SELECT p.name, f.filename, f.format, fp.id,
-                   fp.histogram_r, fp.histogram_g, fp.histogram_b,
-                   fp.embedding, fp.embedding_model
-            FROM fingerprints fp
-            JOIN files f ON f.id = fp.file_id
-            JOIN projects p ON p.id = f.project_id
-        ",
-    };
+    let mut sql = String::from(
+        "SELECT p.name, f.filename, f.format,
+                fp.embedding, fp.embedding_model
+         FROM fingerprints fp
+         JOIN files f ON f.id = fp.file_id
+         JOIN projects p ON p.id = f.project_id"
+    );
+    if options.project.is_some() {
+        sql.push_str(" WHERE p.name = ?1");
+    }
 
-    let mut stmt = conn.prepare(sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+    let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
 
-    let rows: Vec<(String, String, String, i64, String, String, String, Option<Vec<u8>>, Option<String>)> = match &options.project {
-        Some(proj) => stmt
-            .query_map([proj], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<Vec<u8>>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            })
-            .map_err(|e| SearchError::DatabaseError(e.to_string()))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
-        None => stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<Vec<u8>>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            })
-            .map_err(|e| SearchError::DatabaseError(e.to_string()))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
-    };
+    let rows: Vec<(String, String, String, Option<Vec<u8>>, Option<String>)> =
+        match &options.project {
+            Some(proj) => stmt
+                .query_map([proj], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
+            None => stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
+        };
 
     if rows.is_empty() {
         return if options.project.is_some() {
@@ -266,36 +256,25 @@ pub fn search_by_image(
     // Step 3: Score each fingerprint
     let mut scored: Vec<(String, String, String, f64)> = Vec::new();
 
-    for (project_name, filename, format, _fp_id, hist_r, hist_g, hist_b, embedding_blob, cached_model) in rows {
+    for (project_name, file_name, file_format, embedding_blob, cached_model) in rows {
         match (embedding_blob, cached_model) {
             // Has cached embedding from the same model
             (Some(blob), Some(ref m)) if m == model_name || model_name.is_empty() => {
-                let cached_emb = deserialize_embedding(&blob);
-                let score = cosine_similarity(&ref_embedding, &cached_emb);
-                scored.push((project_name, filename, format, score));
-            }
-            // No embedding cached or different model — generate and cache
-            _ => {
-                // We don't have the original file path for this fingerprint,
-                // so use histogram intersection as fallback.
-                // Embedding generation for DB fingerprints requires the original image
-                // which is not stored in the DB (only metadata).
-                // Use histogram as fallback score.
-                let score = match (
-                    parse_histogram(&hist_r),
-                    parse_histogram(&hist_g),
-                    parse_histogram(&hist_b),
-                ) {
-                    (Ok(hr), Ok(hg), Ok(hb)) => {
-                        // Compute average histogram intersection across channels
-                        let sr = histogram_intersection(&ref_histogram_from_embedding(&ref_embedding), &hr);
-                        let sg = histogram_intersection(&ref_histogram_from_embedding(&ref_embedding), &hg);
-                        let sb = histogram_intersection(&ref_histogram_from_embedding(&ref_embedding), &hb);
-                        (sr + sg + sb) / 3.0
+                if let Some(cached_emb) = deserialize_embedding(&blob) {
+                    // Verify dimension compatibility; skip if mismatched
+                    if cached_emb.len() == ref_embedding.len() {
+                        let score = cosine_similarity(&ref_embedding, &cached_emb);
+                        scored.push((project_name, file_name, file_format, score));
                     }
-                    _ => 0.0, // Malformed histogram, give lowest score
-                };
-                scored.push((project_name, filename, format, score));
+                    // else: dimension mismatch (likely different model) — skip
+                }
+                // else: malformed blob — skip
+            }
+            // No embedding cached or different model
+            _ => {
+                // No reference histogram is available for meaningful comparison.
+                // Assign a sentinel score so these entries rank below all cosine-scored results.
+                scored.push((project_name, file_name, file_format, 0.0));
             }
         }
     }
@@ -323,14 +302,6 @@ pub fn search_by_image(
         .collect();
 
     Ok(results)
-}
-
-/// Generate a synthetic histogram from an embedding for fallback comparison.
-/// Maps the first 192 embedding dimensions (if available) to 3 channels of 64 bins each.
-fn ref_histogram_from_embedding(_embedding: &[f64]) -> Vec<f64> {
-    // For fallback, we don't have a reference histogram.
-    // Return a flat uniform distribution as neutral comparison.
-    vec![1.0 / BINS_PER_CHANNEL as f64; BINS_PER_CHANNEL]
 }
 
 // ---------------------------------------------------------------------------
@@ -862,7 +833,7 @@ mod tests {
         let original: Vec<f64> = vec![0.1, 0.2, 0.3, 0.4, -0.5, 1.0];
         let bytes = serialize_embedding(&original);
         assert_eq!(bytes.len(), original.len() * 4); // f32 = 4 bytes
-        let restored = deserialize_embedding(&bytes);
+        let restored = deserialize_embedding(&bytes).unwrap();
         assert_eq!(restored.len(), original.len());
         for (orig, rest) in original.iter().zip(restored.iter()) {
             assert!((*orig - *rest).abs() < 1e-6); // f32 precision
@@ -874,7 +845,7 @@ mod tests {
         let original: Vec<f64> = vec![];
         let bytes = serialize_embedding(&original);
         assert!(bytes.is_empty());
-        let restored = deserialize_embedding(&bytes);
+        let restored = deserialize_embedding(&bytes).unwrap();
         assert!(restored.is_empty());
     }
 
@@ -883,9 +854,22 @@ mod tests {
         let original: Vec<f64> = vec![42.0];
         let bytes = serialize_embedding(&original);
         assert_eq!(bytes.len(), 4);
-        let restored = deserialize_embedding(&bytes);
+        let restored = deserialize_embedding(&bytes).unwrap();
         assert_eq!(restored.len(), 1);
         assert!((restored[0] - 42.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_embedding_deserialize_truncated_blob() {
+        // 5 bytes — not a multiple of 4
+        let blob = vec![0x00, 0x00, 0x80, 0x3f, 0xFF];
+        assert!(deserialize_embedding(&blob).is_none());
+    }
+
+    #[test]
+    fn test_embedding_deserialize_one_byte() {
+        let blob = vec![0x42];
+        assert!(deserialize_embedding(&blob).is_none());
     }
 
     // --- SearchError new variants ---
