@@ -44,8 +44,8 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
         /// Output format (text, json)
-        #[arg(long, default_value = "text")]
-        output_format: String,
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
     },
     /// Export a matching style as a LUT file
     Export {
@@ -338,9 +338,149 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Search { .. }) => {
-            eprintln!("Error: 'search' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::Search {
+            image,
+            tag,
+            limit,
+            project,
+            format,
+        }) => {
+            let is_json = format == "json";
+
+            // --image not yet implemented (Story 3.3)
+            if image.is_some() {
+                if is_json {
+                    let output = serde_json::json!({
+                        "status": "error",
+                        "error": { "code": "SEARCH_IMAGE_NOT_AVAILABLE", "message": "Image-based search requires AI embedding (Story 3.3)" }
+                    });
+                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                } else {
+                    eprintln!("Error: SEARCH_IMAGE_NOT_AVAILABLE -- Image-based search requires AI embedding (Story 3.3)");
+                }
+                process::exit(1);
+            }
+
+            // --tag not yet implemented (Story 3.4)
+            if tag.is_some() {
+                if is_json {
+                    let output = serde_json::json!({
+                        "status": "error",
+                        "error": { "code": "SEARCH_TAG_NOT_AVAILABLE", "message": "Tag search not yet implemented (Story 3.4)" }
+                    });
+                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                } else {
+                    eprintln!("Error: SEARCH_TAG_NOT_AVAILABLE -- Tag search not yet implemented (Story 3.4)");
+                }
+                process::exit(1);
+            }
+
+            // Execute histogram search
+            match db::open_db() {
+                Ok(conn) => {
+                    let options = mengxi_core::search::SearchOptions {
+                        project: project.clone(),
+                        limit: limit as usize,
+                    };
+
+                    match mengxi_core::search::search_histograms(&conn, &options) {
+                        Ok(results) => {
+                            if is_json {
+                                let json_results: Vec<serde_json::Value> = results
+                                    .iter()
+                                    .map(|r| {
+                                        serde_json::json!({
+                                            "rank": r.rank,
+                                            "project": r.project_name,
+                                            "file": r.file_path,
+                                            "score": r.score
+                                        })
+                                    })
+                                    .collect();
+
+                                let output = serde_json::json!({
+                                    "status": "ok",
+                                    "query": {
+                                        "project": project,
+                                        "limit": limit
+                                    },
+                                    "results": json_results
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                // Text table output
+                                if results.is_empty() {
+                                    println!("No results found.");
+                                } else {
+                                    // Header
+                                    println!(
+                                        "+------+------------------+--------------------------+-------------+"
+                                    );
+                                    println!(
+                                        "| Rank | Project          | File                     | Similarity  |"
+                                    );
+                                    println!(
+                                        "+------+------------------+--------------------------+-------------+"
+                                    );
+                                    for r in &results {
+                                        let score_pct = format!("{:.1}%", r.score * 100.0);
+                                        println!(
+                                            "| {:<4} | {:<16} | {:<24} | {:<11} |",
+                                            r.rank,
+                                            truncate_str(&r.project_name, 16),
+                                            truncate_str(&r.file_path, 24),
+                                            score_pct
+                                        );
+                                    }
+                                    println!(
+                                        "+------+------------------+--------------------------+-------------+"
+                                    );
+                                }
+                            }
+                        }
+                        Err(mengxi_core::search::SearchError::NoFingerprints) => {
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "ok",
+                                    "query": {
+                                        "project": project,
+                                        "limit": limit
+                                    },
+                                    "results": [],
+                                    "message": "No indexed projects found. Run 'mengxi import' first."
+                                });
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                println!("No indexed projects found. Run 'mengxi import' first.");
+                            }
+                        }
+                        Err(e) => {
+                            if is_json {
+                                let output = serde_json::json!({
+                                    "status": "error",
+                                    "error": { "code": "SEARCH_DB_ERROR", "message": e.to_string() }
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            } else {
+                                eprintln!("Error: {}", e);
+                            }
+                            process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "SEARCH_DB_INIT_FAILED", "message": "Failed to initialize database" }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: SEARCH_DB_INIT_FAILED -- {e}");
+                    }
+                    process::exit(1);
+                }
+            }
         }
         Some(Commands::Export {
             result,
@@ -860,6 +1000,16 @@ fn main() {
     }
 }
 
+/// Truncate a string to max_len characters, appending "…" if truncated.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len - 1).collect();
+        format!("{}…", truncated)
+    }
+}
+
 /// Convert seconds since Unix epoch to (year, month, day, hour, min, sec).
 /// Simple implementation to avoid chrono dependency.
 fn seconds_to_datetime(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
@@ -930,11 +1080,12 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::Search { image, tag, limit, project, .. }) => {
+            Some(Commands::Search { image, tag, limit, project, format }) => {
                 assert_eq!(image.as_deref(), Some("/ref/mood.jpg"));
                 assert_eq!(tag.as_deref(), Some("industrial"));
                 assert_eq!(limit, 10);
                 assert_eq!(project.as_deref(), Some("my_film"));
+                assert_eq!(format, "text");
             }
             _ => panic!("Expected Search command"),
         }
@@ -1105,5 +1256,47 @@ mod tests {
         // lut-dep without --lut should still parse (arg is Option<String>)
         let cli = Cli::try_parse_from(["mengxi", "lut-dep"]);
         assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn test_search_format_field_renamed() {
+        // Verify --format flag (not --output-format) works on search command
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "search",
+            "--format", "json",
+        ]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Some(Commands::Search { format, .. }) => {
+                assert_eq!(format, "json");
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_format_invalid_rejected() {
+        let cli = Cli::try_parse_from([
+            "mengxi",
+            "search",
+            "--format", "xml",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_truncate_str_short() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_exact() {
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_long() {
+        assert_eq!(truncate_str("hello world", 8), "hello w…");
     }
 }
