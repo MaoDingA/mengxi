@@ -385,7 +385,9 @@ fn main() {
             let out_path = match &output {
                 Some(p) => {
                     // Expand ~ to home directory
-                    let expanded = if p.starts_with("~/") {
+                    let expanded = if p == "~" {
+                        dirs::home_dir().unwrap_or_default()
+                    } else if p.starts_with("~/") {
                         let home = dirs::home_dir().unwrap_or_default();
                         home.join(&p[2..])
                     } else {
@@ -503,6 +505,19 @@ fn main() {
                                             }
                                             process::exit(1);
                                         }
+                                    }
+                                } else {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "error",
+                                            "error": { "code": "EXPORT_CANCELLED", "message": "Export cancelled by user" }
+                                        });
+                                        eprintln!(
+                                            "{}",
+                                            serde_json::to_string_pretty(&output).unwrap()
+                                        );
+                                    } else {
+                                        eprintln!("Export cancelled.");
                                     }
                                 }
                             } else {

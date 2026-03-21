@@ -20,6 +20,7 @@
 ///   -1 = invalid grid_size (< 2 or > 256)
 ///   -2 = output buffer too small
 ///   -3 = log-encoded source (not supported for LUT generation)
+///   -4 = invalid color space code
 pub fn mengxi_generate_lut(
   grid_size : Int,
   src_cs : Int,
@@ -33,6 +34,10 @@ pub fn mengxi_generate_lut(
 
   // Reject log-encoded sources
   if is_log_space(src_cs) { return -3 }
+
+  // Reject invalid color space codes
+  if !is_valid_cs(src_cs) { return -4 }
+  if !is_valid_cs(dst_cs) { return -4 }
 
   // Calculate total values needed
   let total = grid_size * grid_size * grid_size * 3
@@ -73,6 +78,12 @@ pub fn mengxi_generate_lut(
   }
 
   total
+}
+
+// ---------- Helpers ----------
+
+fn is_valid_cs(cs : Int) -> Bool {
+  cs == cs_aces2065_1() || cs == cs_acescg() || cs == cs_acescct() || cs == cs_rec709()
 }
 
 // ---------- DCE prevention ----------
@@ -172,6 +183,20 @@ test {
   let out = FixedArray::make(24, 0.0)
   let result = mengxi_generate_lut(2, cs_acescct(), cs_rec709(), out, 24)
   assert_eq(result, -3)
+}
+
+test {
+  // Invalid source color space code rejected
+  let out = FixedArray::make(24, 0.0)
+  let result = mengxi_generate_lut(2, 99, cs_rec709(), out, 24)
+  assert_eq(result, -4)
+}
+
+test {
+  // Invalid destination color space code rejected
+  let out = FixedArray::make(24, 0.0)
+  let result = mengxi_generate_lut(2, cs_acescg(), 99, out, 24)
+  assert_eq(result, -4)
 }
 
 test {

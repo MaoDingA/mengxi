@@ -88,7 +88,7 @@ impl std::fmt::Display for LutGenerationError {
                 write!(f, "EXPORT_WRITE_ERROR -- {}", msg)
             }
             LutGenerationError::OverwriteDenied(path) => {
-                write!(f, "EXPORT_OVERWRITE_DENIED -- user declined to overwrite {}", path.display())
+                write!(f, "EXPORT_FILE_EXISTS -- {} already exists. Use --force to overwrite.", path.display())
             }
             LutGenerationError::FileExists(path) => {
                 write!(f, "EXPORT_FILE_EXISTS -- {}", path.display())
@@ -138,8 +138,24 @@ pub fn export_lut(
     let (src_cs, title) = resolve_color_space(conn, config)?;
 
     // Validate format
-    LutFormat::from_extension(&config.format)
+    let lut_fmt = LutFormat::from_extension(&config.format)
         .map_err(|e| LutGenerationError::FormatError(e))?;
+
+    // Reject CDL format (parametric, not a 3D LUT)
+    if matches!(lut_fmt, LutFormat::AscCdl) {
+        return Err(LutError::UnsupportedFormat(
+            "ASC-CDL is parametric and cannot be exported as a 3D LUT".to_string(),
+        ).into());
+    }
+
+    // Validate path extension matches format
+    if let Some(ext) = config.output_path.extension().and_then(|e| e.to_str()) {
+        if ext.to_lowercase() != config.format.to_lowercase() {
+            return Err(LutError::UnsupportedFormat(
+                format!("output path extension '.{}' does not match specified format '{}'", ext, config.format)
+            ).into());
+        }
+    }
 
     // Generate LUT values via MoonBit FFI
     let dst = ACESColorSpace::Rec709;
@@ -147,7 +163,7 @@ pub fn export_lut(
 
     // Build LutData
     let lut_data = LutData {
-        title,
+        title: title.clone(),
         grid_size: config.grid_size,
         domain_min: [0.0, 0.0, 0.0],
         domain_max: [1.0, 1.0, 1.0],
@@ -168,7 +184,7 @@ pub fn export_lut(
         .map_err(LutGenerationError::FormatError)?;
 
     // Record in DB
-    record_export(conn, config)?;
+    record_export(conn, config, title.as_deref())?;
 
     Ok(LutExportResult {
         path: config.output_path.clone(),
@@ -217,7 +233,11 @@ fn resolve_color_space(
             }
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
-            Ok((ACESColorSpace::ACEScg, None))
+            if config.fingerprint_id.is_some() {
+                Err(LutGenerationError::FingerprintNotFound)
+            } else {
+                Ok((ACESColorSpace::ACEScg, None))
+            }
         }
         Err(e) => Err(LutGenerationError::WriteError(format!(
             "database error: {}",
@@ -230,16 +250,18 @@ fn resolve_color_space(
 fn record_export(
     conn: &Connection,
     config: &ExportLutConfig,
+    title: Option<&str>,
 ) -> Result<(), LutGenerationError> {
     conn.execute(
-        "INSERT INTO luts (project_id, fingerprint_id, format, grid_size, output_path)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO luts (project_id, fingerprint_id, format, grid_size, output_path, title)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             config.project_id,
             config.fingerprint_id,
             config.format,
             config.grid_size as i64,
             config.output_path.to_string_lossy().to_string(),
+            title,
         ],
     )
     .map_err(|e| LutGenerationError::WriteError(format!("database insert failed: {}", e)))?;
@@ -475,12 +497,111 @@ mod tests {
         assert!(format!("{}", err).contains("EXPORT_FINGERPRINT_NOT_FOUND"));
 
         let err = LutGenerationError::OverwriteDenied(PathBuf::from("/tmp/test.cube"));
-        assert!(format!("{}", err).contains("EXPORT_OVERWRITE_DENIED"));
+        assert!(format!("{}", err).contains("EXPORT_FILE_EXISTS"));
 
         let err = LutGenerationError::FileExists(PathBuf::from("/tmp/test.cube"));
         assert!(format!("{}", err).contains("EXPORT_FILE_EXISTS"));
 
         let err = LutGenerationError::WriteError("disk full".to_string());
         assert!(format!("{}", err).contains("EXPORT_WRITE_ERROR"));
+    }
+
+    #[test]
+    fn test_export_lut_cdl_rejected() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES ('test', '/tmp/test')",
+            [],
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("test.cdl");
+        let config = ExportLutConfig::new(1, output, "cdl".to_string());
+
+        let result = export_lut(&conn, &config);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LutGenerationError::FormatError(_) => {}
+            other => panic!("Expected FormatError for CDL, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_export_lut_fingerprint_id_not_found() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES ('test', '/tmp/test')",
+            [],
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("test.cube");
+        let mut config = ExportLutConfig::new(1, output, "cube".to_string());
+        config.fingerprint_id = Some(999);
+
+        let result = export_lut(&conn, &config);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LutGenerationError::FingerprintNotFound => {}
+            other => panic!("Expected FingerprintNotFound, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_export_lut_path_extension_mismatch() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES ('test', '/tmp/test')",
+            [],
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("test.dat");
+        let config = ExportLutConfig::new(1, output, "cube".to_string());
+
+        let result = export_lut(&conn, &config);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LutGenerationError::FormatError(_) => {}
+            other => panic!("Expected FormatError for extension mismatch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_export_lut_db_record_with_title() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES ('test', '/tmp/test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO files (project_id, filename, format) VALUES (1, 'test.dpx', 'dpx')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'acescg')",
+            [],
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("test.cube");
+        let config = ExportLutConfig::new(1, output, "cube".to_string());
+
+        export_lut(&conn, &config).unwrap();
+
+        // Verify title is stored in DB
+        let title: Option<String> = conn
+            .query_row("SELECT title FROM luts WHERE project_id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(title.is_some());
+        assert_eq!(title.unwrap(), "LUT: cube");
     }
 }
