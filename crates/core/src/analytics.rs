@@ -295,8 +295,8 @@ pub fn get_search_hit_rate_by_type(
         Some(_) => conn.prepare(
             "SELECT
                 COALESCE(search_type, 'unknown') as search_type,
-                SUM(CASE WHEN action = 'accepted' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN action = 'rejected' THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN action = 'accepted' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN action = 'rejected' THEN 1 ELSE 0 END), 0),
                 COUNT(*)
              FROM search_feedback
              WHERE created_at >= ?1
@@ -306,8 +306,8 @@ pub fn get_search_hit_rate_by_type(
         None => conn.prepare(
             "SELECT
                 COALESCE(search_type, 'unknown') as search_type,
-                SUM(CASE WHEN action = 'accepted' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN action = 'rejected' THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN action = 'accepted' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN action = 'rejected' THEN 1 ELSE 0 END), 0),
                 COUNT(*)
              FROM search_feedback
              GROUP BY search_type
@@ -418,15 +418,26 @@ pub fn get_calibration_metrics(
         }
     };
 
-    let latest: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(created_at) FROM calibration_activities",
-            rusqlite::params![],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e: rusqlite::Error| AnalyticsError::DatabaseError(e.to_string()))?
-        .flatten();
+    let latest: Option<i64> = match since_timestamp {
+        Some(since) => conn
+            .query_row(
+                "SELECT MAX(created_at) FROM calibration_activities WHERE created_at >= ?1",
+                rusqlite::params![since],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e: rusqlite::Error| AnalyticsError::DatabaseError(e.to_string()))?
+            .flatten(),
+        None => conn
+            .query_row(
+                "SELECT MAX(created_at) FROM calibration_activities",
+                rusqlite::params![],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e: rusqlite::Error| AnalyticsError::DatabaseError(e.to_string()))?
+            .flatten(),
+    };
 
     Ok(CalibrationMetrics {
         total_corrections: total as usize,
@@ -860,6 +871,22 @@ mod tests {
         assert_eq!(hr.accepted, 0);
         assert_eq!(hr.rejected, 0);
         assert_eq!(hr.total, 0);
+        assert!((hr.rate - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_get_search_hit_rate_all_rejected() {
+        let conn = setup_test_db();
+        for i in 0..4 {
+            conn.execute(
+                "INSERT OR IGNORE INTO search_feedback (project_name, file_path, file_format, action, created_at) VALUES ('p', ?1, 'dpx', 'rejected', ?2)",
+                rusqlite::params![format!("r{}.dpx", i), ts(i)],
+            ).unwrap();
+        }
+        let hr = get_search_hit_rate(&conn, None).unwrap();
+        assert_eq!(hr.accepted, 0);
+        assert_eq!(hr.rejected, 4);
+        assert_eq!(hr.total, 4);
         assert!((hr.rate - 0.0).abs() < 0.001);
     }
 

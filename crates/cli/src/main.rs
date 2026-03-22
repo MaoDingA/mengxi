@@ -1802,12 +1802,16 @@ fn main() {
             let recent = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
 
             // New metrics: hit rate, calibration, vocabulary (best-effort)
-            let hit_rate = analytics::get_search_hit_rate(&conn, since_timestamp).unwrap_or_else(|_| analytics::HitRateMetrics {
+            // search_feedback and calibration_activities store timestamps in seconds,
+            // but since_timestamp is in milliseconds — convert before passing.
+            let since_seconds = since_timestamp.map(|ts| ts / 1000);
+            let hit_rate = analytics::get_search_hit_rate(&conn, since_seconds).unwrap_or_else(|_| analytics::HitRateMetrics {
                 accepted: 0, rejected: 0, total: 0, rate: 0.0,
             });
-            let calibration = analytics::get_calibration_metrics(&conn, since_timestamp).unwrap_or_else(|_| analytics::CalibrationMetrics {
+            let calibration = analytics::get_calibration_metrics(&conn, since_seconds).unwrap_or_else(|_| analytics::CalibrationMetrics {
                 total_corrections: 0, project_breakdown: Vec::new(), latest_correction_at: None,
             });
+            let trend = analytics::get_calibration_trend(&conn).unwrap_or_default();
             let vocab = analytics::get_vocabulary_metrics(&conn).unwrap_or_else(|_| analytics::VocabularyMetrics {
                 total_unique_tags: 0, new_tags_last_week: 0, top_tags: Vec::new(),
             });
@@ -1829,6 +1833,18 @@ fn main() {
                     }
                     serde_json::Value::Object(obj)
                 }).collect();
+                // Build calibration project_breakdown as ordered map
+                let mut cal_breakdown = serde_json::Map::new();
+                for (k, v) in &calibration.project_breakdown {
+                    cal_breakdown.insert(k.clone(), serde_json::json!(*v));
+                }
+                // Build trend as JSON array
+                let trend_json: Vec<serde_json::Value> = trend.iter().map(|tp| {
+                    serde_json::json!({
+                        "week_start": tp.week_start,
+                        "rate": tp.rate,
+                    })
+                }).collect();
                 let output = serde_json::json!({
                     "period": period_label,
                     "total_sessions": total_sessions,
@@ -1843,8 +1859,10 @@ fn main() {
                     },
                     "calibration": {
                         "total_corrections": calibration.total_corrections,
-                        "project_breakdown": calibration.project_breakdown.iter().map(|(k, v)| (k.clone(), *v)).collect::<std::collections::HashMap<String, usize>>(),
+                        "project_breakdown": cal_breakdown,
+                        "latest_correction_at": calibration.latest_correction_at,
                     },
+                    "trend": trend_json,
                     "vocabulary": {
                         "total_unique_tags": vocab.total_unique_tags,
                         "new_tags_last_week": vocab.new_tags_last_week,
@@ -1884,11 +1902,25 @@ fn main() {
                 if calibration.total_corrections > 0 {
                     println!("\nCalibration:");
                     println!("  Total corrections: {}", calibration.total_corrections);
+                    if let Some(latest) = calibration.latest_correction_at {
+                        let (y, m, d, h, min, sec) = seconds_to_datetime(latest as u64);
+                        println!("  Latest at:         {}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, sec);
+                    }
                     if !calibration.project_breakdown.is_empty() {
                         println!("  Top projects:");
                         for (proj, count) in &calibration.project_breakdown {
                             println!("    {:<20} {}", proj, count);
                         }
+                    }
+                }
+
+                // Trend metrics
+                if trend.len() >= 2 {
+                    let direction = if trend.last().unwrap().rate > trend.first().unwrap().rate { "improving" } else { "declining" };
+                    println!("\nTrend ({} weeks, {}):", trend.len(), direction);
+                    for tp in &trend {
+                        let (y, m, d, _, _, _) = seconds_to_datetime(tp.week_start as u64);
+                        println!("  {}-{:02}-{:02}  {:.1}%", y, m, d, tp.rate * 100.0);
                     }
                 }
 
