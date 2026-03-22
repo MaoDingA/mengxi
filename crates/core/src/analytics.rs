@@ -1,6 +1,6 @@
 // analytics.rs — Session tracking and usage analytics
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -86,10 +86,11 @@ pub fn get_last_search_started_at(conn: &Connection) -> Result<Option<i64>, Anal
         .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
 
     let result = stmt
-        .query_row([], |row| row.get::<_, Option<i64>>(0))
-        .unwrap_or(None);
+        .query_row([], |row| row.get(0))
+        .optional()
+        .map_err(|e: rusqlite::Error| AnalyticsError::DatabaseError(e.to_string()))?;
 
-    Ok(result)
+    Ok(result.flatten())
 }
 
 /// Get session count within a time range.

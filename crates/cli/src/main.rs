@@ -165,14 +165,14 @@ enum Commands {
 // Session tracking helpers
 // ---------------------------------------------------------------------------
 
-/// Generate a simple session ID: timestamp + random suffix.
+/// Generate a simple session ID: timestamp + process ID.
 fn generate_session_id() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let rand_suffix: u32 = (((ts as u64) & 0xFFFF) ^ ((ts as u64 >> 16) & 0xFFFF)) as u32;
-    format!("{}_{}", ts, rand_suffix)
+    let pid = std::process::id();
+    format!("{}_{}", ts, pid)
 }
 
 /// Extract command name, key args as JSON, and optional search-to-export timing.
@@ -197,8 +197,9 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as i64;
-                    now_ts - search_ts
-                })
+                    let delta = now_ts - search_ts;
+                    if delta > 0 { Some(delta) } else { None }
+                }).flatten()
             } else {
                 None
             };
@@ -238,6 +239,8 @@ fn record_session_best_effort(
         ) {
             eprintln!("Warning: Failed to record session: {}", e);
         }
+    } else {
+        eprintln!("Warning: Failed to open database for session recording");
     }
 }
 
@@ -1837,7 +1840,7 @@ fn main() {
                     println!("\nRecent sessions:");
                     println!("  {:2}  {:<20} {:<10} {:<10} {}", "#", "Time", "Command", "Duration", "Status");
                     for (i, s) in recent.iter().enumerate() {
-                        let (y, m, d, h, min, sec) = seconds_to_datetime(s.started_at as u64);
+                        let (y, m, d, h, min, sec) = seconds_to_datetime((s.started_at / 1000) as u64);
                         let time_str = format!("{}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, sec);
                         let status = if s.exit_code == 0 { "OK" } else { "ERROR" };
                         println!("  {:2}  {:<20} {:<10} {:<10} {}", i + 1, time_str, s.command, format_duration_ms(s.duration_ms), status);
@@ -1868,7 +1871,10 @@ fn main() {
         }
     }
 
-    // Record session (best-effort, non-blocking)
+    // Record session (best-effort, non-blocking).
+    // Note: error paths that call process::exit(1) bypass this recording.
+    // This is intentional — those are argument validation failures, not real work sessions.
+    // Only commands that complete (success or handled error) reach this point.
     let ended_at = SystemTime::now();
     let ended_at_unix = ended_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
     let duration_ms = ended_at_unix - started_at_unix;
