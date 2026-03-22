@@ -594,7 +594,7 @@ pub fn get_user_stats(
             Some(since) => conn.query_row(
                 "SELECT
                     COUNT(*),
-                    COALESCE(AVG(duration_ms), 0),
+                    COALESCE(AVG(CASE WHEN exit_code = 0 THEN duration_ms END), 0),
                     COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
                     MAX(started_at)
                  FROM analytics_sessions
@@ -605,7 +605,7 @@ pub fn get_user_stats(
             None => conn.query_row(
                 "SELECT
                     COUNT(*),
-                    COALESCE(AVG(duration_ms), 0),
+                    COALESCE(AVG(CASE WHEN exit_code = 0 THEN duration_ms END), 0),
                     COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
                     MAX(started_at)
                  FROM analytics_sessions
@@ -619,7 +619,7 @@ pub fn get_user_stats(
     Ok(UserStats {
         user: user.to_string(),
         session_count: session_count as usize,
-        avg_duration_ms: avg_duration_ms as i64,
+        avg_duration_ms: avg_duration_ms.round() as i64,
         search_count: search_count as usize,
         last_session_at,
     })
@@ -650,25 +650,25 @@ pub fn get_per_user_breakdown(
             "SELECT
                 user,
                 COUNT(*),
-                COALESCE(AVG(duration_ms), 0),
+                COALESCE(AVG(CASE WHEN exit_code = 0 THEN duration_ms END), 0),
                 COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
                 MAX(started_at)
              FROM analytics_sessions
              WHERE user != '' AND started_at >= ?1
              GROUP BY user
-             ORDER BY COUNT(*) DESC",
+             ORDER BY COUNT(*) DESC, user ASC",
         ),
         None => conn.prepare(
             "SELECT
                 user,
                 COUNT(*),
-                COALESCE(AVG(duration_ms), 0),
+                COALESCE(AVG(CASE WHEN exit_code = 0 THEN duration_ms END), 0),
                 COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
                 MAX(started_at)
              FROM analytics_sessions
              WHERE user != ''
              GROUP BY user
-             ORDER BY COUNT(*) DESC",
+             ORDER BY COUNT(*) DESC, user ASC",
         ),
     }
     .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
@@ -679,7 +679,7 @@ pub fn get_per_user_breakdown(
                 Ok(UserStats {
                     user: row.get(0)?,
                     session_count: row.get::<_, i64>(1)? as usize,
-                    avg_duration_ms: row.get::<_, f64>(2)? as i64,
+                    avg_duration_ms: row.get::<_, f64>(2)?.round() as i64,
                     search_count: row.get::<_, i64>(3)? as usize,
                     last_session_at: row.get(4)?,
                 })
@@ -692,9 +692,109 @@ pub fn get_per_user_breakdown(
                 Ok(UserStats {
                     user: row.get(0)?,
                     session_count: row.get::<_, i64>(1)? as usize,
-                    avg_duration_ms: row.get::<_, f64>(2)? as i64,
+                    avg_duration_ms: row.get::<_, f64>(2)?.round() as i64,
                     search_count: row.get::<_, i64>(3)? as usize,
                     last_session_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?,
+    };
+
+    Ok(rows)
+}
+
+/// Get command breakdown for a specific user, optionally filtered by time period.
+pub fn get_command_breakdown_for_user(
+    conn: &Connection,
+    user: &str,
+    since_timestamp: Option<i64>,
+) -> Result<Vec<(String, usize)>, AnalyticsError> {
+    let mut stmt = match since_timestamp {
+        Some(_) => conn.prepare(
+            "SELECT command, COUNT(*) as cnt FROM analytics_sessions WHERE user = ?1 AND started_at >= ?2 GROUP BY command ORDER BY cnt DESC",
+        ),
+        None => conn.prepare(
+            "SELECT command, COUNT(*) as cnt FROM analytics_sessions WHERE user = ?1 GROUP BY command ORDER BY cnt DESC",
+        ),
+    }
+    .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
+
+    let rows: Vec<(String, usize)> = match since_timestamp {
+        Some(since) => stmt
+            .query_map(rusqlite::params![user, since], |row| {
+                let command: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((command, count as usize))
+            })
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?,
+        None => stmt
+            .query_map(rusqlite::params![user], |row| {
+                let command: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((command, count as usize))
+            })
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?,
+    };
+
+    Ok(rows)
+}
+
+/// Get sessions for a specific user, optionally filtered by time period.
+pub fn get_sessions_for_user(
+    conn: &Connection,
+    user: &str,
+    since_timestamp: Option<i64>,
+    limit: usize,
+) -> Result<Vec<SessionRecord>, AnalyticsError> {
+    let mut stmt = match since_timestamp {
+        Some(_) => conn.prepare(
+            "SELECT session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user
+             FROM analytics_sessions WHERE user = ?1 AND started_at >= ?2
+             ORDER BY started_at DESC LIMIT ?3",
+        ),
+        None => conn.prepare(
+            "SELECT session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user
+             FROM analytics_sessions WHERE user = ?1 ORDER BY started_at DESC LIMIT ?2",
+        ),
+    }
+    .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
+
+    let rows: Vec<SessionRecord> = match since_timestamp {
+        Some(since) => stmt
+            .query_map(rusqlite::params![user, since, limit as i64], |row| {
+                Ok(SessionRecord {
+                    session_id: row.get(0)?,
+                    command: row.get(1)?,
+                    args_json: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
+                    duration_ms: row.get(5)?,
+                    exit_code: row.get(6)?,
+                    search_to_export_ms: row.get(7)?,
+                    user: row.get(8)?,
+                })
+            })
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?,
+        None => stmt
+            .query_map(rusqlite::params![user, limit as i64], |row| {
+                Ok(SessionRecord {
+                    session_id: row.get(0)?,
+                    command: row.get(1)?,
+                    args_json: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
+                    duration_ms: row.get(5)?,
+                    exit_code: row.get(6)?,
+                    search_to_export_ms: row.get(7)?,
+                    user: row.get(8)?,
                 })
             })
             .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
@@ -733,6 +833,7 @@ mod tests {
             CREATE UNIQUE INDEX idx_sessions_session_id ON analytics_sessions(session_id);
             CREATE INDEX idx_sessions_started ON analytics_sessions(started_at);
             CREATE INDEX idx_sessions_command ON analytics_sessions(command);
+            CREATE INDEX idx_sessions_user ON analytics_sessions(user);
             CREATE TABLE search_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_name TEXT NOT NULL,
@@ -1285,9 +1386,10 @@ mod tests {
         let breakdown = get_per_user_breakdown(&conn, Some(ts(3000))).unwrap();
         assert_eq!(breakdown.len(), 2);
         // Only alice's second session and bob's session are after ts(3000)
-        assert_eq!(breakdown[0].user, "bob");
+        // Tied on count, secondary sort by user ASC
+        assert_eq!(breakdown[0].user, "alice");
         assert_eq!(breakdown[0].session_count, 1);
-        assert_eq!(breakdown[1].user, "alice");
+        assert_eq!(breakdown[1].user, "bob");
         assert_eq!(breakdown[1].session_count, 1);
     }
 }

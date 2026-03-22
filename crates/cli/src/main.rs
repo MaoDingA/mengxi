@@ -1797,9 +1797,12 @@ fn main() {
             };
 
             // Resolve user filter: CLI --user flag takes priority, fallback to config
-            let effective_user = user.as_deref().map(|u| u.to_string()).or_else(|| {
-                config::load_or_create_config().ok().map(|c| c.general.user)
-            });
+            let effective_user = user.as_deref()
+                .filter(|u| !u.is_empty())
+                .map(|u| u.to_string())
+                .or_else(|| {
+                    config::load_or_create_config().ok().map(|c| c.general.user)
+                });
 
             // Query session stats — user-scoped or global
             let (total_sessions, avg_duration_ms, total_searches, breakdown, recent) =
@@ -1807,8 +1810,8 @@ fn main() {
                     let user_stats = analytics::get_user_stats(&conn, u, since_timestamp).unwrap_or_else(|_| analytics::UserStats {
                         user: u.clone(), session_count: 0, avg_duration_ms: 0, search_count: 0, last_session_at: None,
                     });
-                    let breakdown = analytics::get_command_breakdown(&conn, since_timestamp).unwrap_or_default();
-                    let recent = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
+                    let breakdown = analytics::get_command_breakdown_for_user(&conn, u, since_timestamp).unwrap_or_default();
+                    let recent = analytics::get_sessions_for_user(&conn, u, since_timestamp, 10).unwrap_or_default();
                     (user_stats.session_count, user_stats.avg_duration_ms, user_stats.search_count, breakdown, recent)
                 } else {
                     let count = analytics::get_session_count(&conn, since_timestamp).unwrap_or(0);
@@ -1986,12 +1989,12 @@ fn main() {
                 }
 
                 // Per-user breakdown (only when multiple users exist and no --user filter)
-                if !per_user.is_empty() && effective_user.is_none() {
+                if per_user.len() > 1 && effective_user.is_none() {
                     println!("\nUser Breakdown:");
-                    println!("  {:<10} | {:>8} | {:>13} | {:>8}", "User", "Sessions", "Avg Duration", "Searches");
-                    println!("  {}-+-{}-+-{}-+-{}-", "----------", "--------", "-------------", "--------");
+                    println!("  {:<20} | {:>8} | {:>13} | {:>8}", "User", "Sessions", "Avg Duration", "Searches");
+                    println!("  {}-+-{}-+-{}-+-{}-", "--------------------", "--------", "-------------", "--------");
                     for us in &per_user {
-                        println!("  {:<10} | {:>8} | {:>13} | {:>8}",
+                        println!("  {:<20} | {:>8} | {:>13} | {:>8}",
                             us.user, us.session_count, format_duration_ms(us.avg_duration_ms), us.search_count);
                     }
                 }
