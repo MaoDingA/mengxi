@@ -40,6 +40,7 @@ pub struct SessionRecord {
     pub duration_ms: i64,
     pub exit_code: i32,
     pub search_to_export_ms: Option<i64>,
+    pub user: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -57,10 +58,11 @@ pub fn record_session(
     duration_ms: i64,
     exit_code: i32,
     search_to_export_ms: Option<i64>,
+    user: &str,
 ) -> Result<(), AnalyticsError> {
     conn.execute(
-        "INSERT OR REPLACE INTO analytics_sessions (session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT OR REPLACE INTO analytics_sessions (session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             session_id,
             command,
@@ -70,6 +72,7 @@ pub fn record_session(
             duration_ms,
             exit_code,
             search_to_export_ms,
+            user,
         ],
     )
     .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
@@ -182,12 +185,12 @@ pub fn get_sessions(
 ) -> Result<Vec<SessionRecord>, AnalyticsError> {
     let mut stmt = match since_timestamp {
         Some(_) => conn.prepare(
-            "SELECT session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms
+            "SELECT session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user
              FROM analytics_sessions WHERE started_at >= ?1
              ORDER BY started_at DESC LIMIT ?2",
         ),
         None => conn.prepare(
-            "SELECT session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms
+            "SELECT session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user
              FROM analytics_sessions ORDER BY started_at DESC LIMIT ?1",
         ),
     }
@@ -205,6 +208,7 @@ pub fn get_sessions(
                     duration_ms: row.get(5)?,
                     exit_code: row.get(6)?,
                     search_to_export_ms: row.get(7)?,
+                    user: row.get(8)?,
                 })
             })
             .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
@@ -221,6 +225,7 @@ pub fn get_sessions(
                     duration_ms: row.get(5)?,
                     exit_code: row.get(6)?,
                     search_to_export_ms: row.get(7)?,
+                    user: row.get(8)?,
                 })
             })
             .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
@@ -565,6 +570,142 @@ pub fn get_vocabulary_metrics(
 }
 
 // ---------------------------------------------------------------------------
+// User statistics (FR35)
+// ---------------------------------------------------------------------------
+
+/// Per-user statistics for session analytics.
+#[derive(Debug, Clone)]
+pub struct UserStats {
+    pub user: String,
+    pub session_count: usize,
+    pub avg_duration_ms: i64,
+    pub search_count: usize,
+    pub last_session_at: Option<i64>,
+}
+
+/// Get statistics for a specific user, optionally filtered by time period.
+pub fn get_user_stats(
+    conn: &Connection,
+    user: &str,
+    since_timestamp: Option<i64>,
+) -> Result<UserStats, AnalyticsError> {
+    let (session_count, avg_duration_ms, search_count, last_session_at): (i64, f64, i64, Option<i64>) =
+        match since_timestamp {
+            Some(since) => conn.query_row(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(AVG(duration_ms), 0),
+                    COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
+                    MAX(started_at)
+                 FROM analytics_sessions
+                 WHERE user = ?1 AND started_at >= ?2",
+                rusqlite::params![user, since],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ),
+            None => conn.query_row(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(AVG(duration_ms), 0),
+                    COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
+                    MAX(started_at)
+                 FROM analytics_sessions
+                 WHERE user = ?1",
+                rusqlite::params![user],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ),
+        }
+        .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
+
+    Ok(UserStats {
+        user: user.to_string(),
+        session_count: session_count as usize,
+        avg_duration_ms: avg_duration_ms as i64,
+        search_count: search_count as usize,
+        last_session_at,
+    })
+}
+
+/// Get all distinct user values from analytics_sessions.
+pub fn get_all_users(conn: &Connection) -> Result<Vec<String>, AnalyticsError> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT user FROM analytics_sessions WHERE user != '' ORDER BY user")
+        .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
+
+    let users: Vec<String> = stmt
+        .query_map(rusqlite::params![], |row| row.get(0))
+        .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
+
+    Ok(users)
+}
+
+/// Get per-user breakdown, optionally filtered by time period.
+pub fn get_per_user_breakdown(
+    conn: &Connection,
+    since_timestamp: Option<i64>,
+) -> Result<Vec<UserStats>, AnalyticsError> {
+    let mut stmt = match since_timestamp {
+        Some(_) => conn.prepare(
+            "SELECT
+                user,
+                COUNT(*),
+                COALESCE(AVG(duration_ms), 0),
+                COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
+                MAX(started_at)
+             FROM analytics_sessions
+             WHERE user != '' AND started_at >= ?1
+             GROUP BY user
+             ORDER BY COUNT(*) DESC",
+        ),
+        None => conn.prepare(
+            "SELECT
+                user,
+                COUNT(*),
+                COALESCE(AVG(duration_ms), 0),
+                COALESCE(SUM(CASE WHEN command = 'search' THEN 1 ELSE 0 END), 0),
+                MAX(started_at)
+             FROM analytics_sessions
+             WHERE user != ''
+             GROUP BY user
+             ORDER BY COUNT(*) DESC",
+        ),
+    }
+    .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
+
+    let rows: Vec<UserStats> = match since_timestamp {
+        Some(since) => stmt
+            .query_map(rusqlite::params![since], |row| {
+                Ok(UserStats {
+                    user: row.get(0)?,
+                    session_count: row.get::<_, i64>(1)? as usize,
+                    avg_duration_ms: row.get::<_, f64>(2)? as i64,
+                    search_count: row.get::<_, i64>(3)? as usize,
+                    last_session_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?,
+        None => stmt
+            .query_map(rusqlite::params![], |row| {
+                Ok(UserStats {
+                    user: row.get(0)?,
+                    session_count: row.get::<_, i64>(1)? as usize,
+                    avg_duration_ms: row.get::<_, f64>(2)? as i64,
+                    search_count: row.get::<_, i64>(3)? as usize,
+                    last_session_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?,
+    };
+
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -586,7 +727,8 @@ mod tests {
                 duration_ms INTEGER NOT NULL DEFAULT 0,
                 exit_code INTEGER NOT NULL DEFAULT 0,
                 search_to_export_ms INTEGER,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                user TEXT NOT NULL DEFAULT ''
             );
             CREATE UNIQUE INDEX idx_sessions_session_id ON analytics_sessions(session_id);
             CREATE INDEX idx_sessions_started ON analytics_sessions(started_at);
@@ -635,7 +777,7 @@ mod tests {
     fn test_record_session_basic() {
         let conn = setup_test_db();
         record_session(
-            &conn, "ses_001", "import", r#"{"name":"film"}"#, ts(0), ts(5000), 5000, 0, None,
+            &conn, "ses_001", "import", r#"{"name":"film"}"#, ts(0), ts(5000), 5000, 0, None, "test_user",
         )
         .unwrap();
 
@@ -654,7 +796,7 @@ mod tests {
     fn test_record_session_with_search_to_export() {
         let conn = setup_test_db();
         record_session(
-            &conn, "ses_002", "export", "{}", ts(10000), ts(15000), 5000, 0, Some(8000),
+            &conn, "ses_002", "export", "{}", ts(10000), ts(15000), 5000, 0, Some(8000), "test_user",
         )
         .unwrap();
 
@@ -671,8 +813,8 @@ mod tests {
     #[test]
     fn test_record_session_upsert() {
         let conn = setup_test_db();
-        record_session(&conn, "ses_003", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "ses_003", "import", "{}", ts(0), ts(3000), 3000, 0, None).unwrap();
+        record_session(&conn, "ses_003", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "ses_003", "import", "{}", ts(0), ts(3000), 3000, 0, None, "default").unwrap();
 
         let dur: i64 = conn
             .query_row(
@@ -687,9 +829,9 @@ mod tests {
     #[test]
     fn test_get_last_search_started_at() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(5000), ts(8000), 3000, 0, None).unwrap();
-        record_session(&conn, "s3", "search", "{}", ts(10000), ts(12000), 2000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(5000), ts(8000), 3000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "search", "{}", ts(10000), ts(12000), 2000, 0, None, "default").unwrap();
 
         let result = get_last_search_started_at(&conn).unwrap();
         assert_eq!(result, Some(ts(10000))); // most recent
@@ -698,7 +840,7 @@ mod tests {
     #[test]
     fn test_get_last_search_started_at_none() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
 
         let result = get_last_search_started_at(&conn).unwrap();
         assert_eq!(result, None);
@@ -707,8 +849,8 @@ mod tests {
     #[test]
     fn test_get_last_search_started_at_before_export() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "search", "{}", ts(0), ts(8000), 8000, 0, None).unwrap();
-        record_session(&conn, "s2", "export", "{}", ts(20000), ts(25000), 5000, 0, None).unwrap();
+        record_session(&conn, "s1", "search", "{}", ts(0), ts(8000), 8000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "export", "{}", ts(20000), ts(25000), 5000, 0, None, "default").unwrap();
 
         let result = get_last_search_started_at(&conn).unwrap();
         assert_eq!(result, Some(ts(0))); // still the search session, not export
@@ -717,9 +859,9 @@ mod tests {
     #[test]
     fn test_get_session_count_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None).unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(4000), ts(5000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(4000), ts(5000), 1000, 0, None, "default").unwrap();
 
         assert_eq!(get_session_count(&conn, None).unwrap(), 3);
     }
@@ -727,9 +869,9 @@ mod tests {
     #[test]
     fn test_get_session_count_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None).unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(7000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "default").unwrap();
 
         // Only sessions starting at or after ts(5000)
         assert_eq!(get_session_count(&conn, Some(ts(5000))).unwrap(), 1);
@@ -738,9 +880,9 @@ mod tests {
     #[test]
     fn test_get_average_duration_ms_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(2000), 2000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(3000), ts(5000), 2000, 0, None).unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(11000), 5000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(2000), 2000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(3000), ts(5000), 2000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(6000), ts(11000), 5000, 0, None, "default").unwrap();
 
         // Average of 2000 + 2000 + 5000 = 3000
         assert_eq!(get_average_duration_ms(&conn, None).unwrap(), 3000);
@@ -749,9 +891,9 @@ mod tests {
     #[test]
     fn test_get_average_duration_ms_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(2000), 2000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(3000), ts(5000), 2000, 0, None).unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(11000), 5000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(2000), 2000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(3000), ts(5000), 2000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(6000), ts(11000), 5000, 0, None, "default").unwrap();
 
         // Only sessions starting at or after ts(5000): avg of [5000] = 5000
         assert_eq!(get_average_duration_ms(&conn, Some(ts(5000))).unwrap(), 5000);
@@ -767,10 +909,10 @@ mod tests {
     #[test]
     fn test_get_command_breakdown_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "import", "{}", ts(2000), ts(3000), 1000, 0, None).unwrap();
-        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None).unwrap();
-        record_session(&conn, "s4", "tag", "{}", ts(6000), ts(7000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "import", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s4", "tag", "{}", ts(6000), ts(7000), 1000, 0, None, "default").unwrap();
 
         let breakdown = get_command_breakdown(&conn, None).unwrap();
         assert_eq!(breakdown.len(), 3); // import(2), search(1), tag(1)
@@ -782,9 +924,9 @@ mod tests {
     #[test]
     fn test_get_command_breakdown_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None).unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(7000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "default").unwrap();
 
         let breakdown = get_command_breakdown(&conn, Some(ts(5000))).unwrap();
         assert_eq!(breakdown.len(), 1);
@@ -794,8 +936,8 @@ mod tests {
     #[test]
     fn test_get_sessions_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
 
         let sessions = get_sessions(&conn, None, 10).unwrap();
         assert_eq!(sessions.len(), 2);
@@ -810,7 +952,7 @@ mod tests {
         let conn = setup_test_db();
         for i in 0..5 {
             record_session(
-                &conn, &format!("s{}", i), "import", "{}", ts(i * 1000), ts(i * 1000 + 500), 500, 0, None,
+                &conn, &format!("s{}", i), "import", "{}", ts(i * 1000), ts(i * 1000 + 500), 500, 0, None, "default",
             )
             .unwrap();
         }
@@ -823,9 +965,9 @@ mod tests {
     #[test]
     fn test_get_sessions_with_filter() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None).unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None).unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(10000), ts(11000), 1000, 0, None).unwrap();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(10000), ts(11000), 1000, 0, None, "default").unwrap();
 
         let sessions = get_sessions(&conn, Some(ts(6000)), 10).unwrap();
         assert_eq!(sessions.len(), 1);
@@ -1051,5 +1193,101 @@ mod tests {
         assert_eq!(metrics.total_unique_tags, 0);
         assert_eq!(metrics.new_tags_last_week, 0);
         assert!(metrics.top_tags.is_empty());
+    }
+
+    // --- User stats tests ---
+
+    #[test]
+    fn test_get_user_stats_basic() {
+        let conn = setup_test_db();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None, "bob").unwrap();
+
+        let stats = get_user_stats(&conn, "alice", None).unwrap();
+        assert_eq!(stats.user, "alice");
+        assert_eq!(stats.session_count, 2);
+        assert_eq!(stats.avg_duration_ms, 1000);
+        assert_eq!(stats.search_count, 1);
+        assert_eq!(stats.last_session_at, Some(ts(2000)));
+    }
+
+    #[test]
+    fn test_get_user_stats_filtered_by_period() {
+        let conn = setup_test_db();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None, "alice").unwrap();
+
+        let stats = get_user_stats(&conn, "alice", Some(ts(3000))).unwrap();
+        assert_eq!(stats.session_count, 1);
+    }
+
+    #[test]
+    fn test_get_user_stats_no_sessions() {
+        let conn = setup_test_db();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+
+        let stats = get_user_stats(&conn, "nonexistent", None).unwrap();
+        assert_eq!(stats.user, "nonexistent");
+        assert_eq!(stats.session_count, 0);
+        assert_eq!(stats.avg_duration_ms, 0);
+        assert_eq!(stats.search_count, 0);
+        assert_eq!(stats.last_session_at, None);
+    }
+
+    #[test]
+    fn test_get_all_users() {
+        let conn = setup_test_db();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "bob").unwrap();
+        record_session(&conn, "s3", "tag", "{}", ts(4000), ts(5000), 1000, 0, None, "alice").unwrap();
+        // Empty user should be excluded
+        record_session(&conn, "s4", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "").unwrap();
+
+        let users = get_all_users(&conn).unwrap();
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0], "alice");
+        assert_eq!(users[1], "bob");
+    }
+
+    #[test]
+    fn test_get_all_users_empty() {
+        let conn = setup_test_db();
+        let users = get_all_users(&conn).unwrap();
+        assert!(users.is_empty());
+    }
+
+    #[test]
+    fn test_get_per_user_breakdown() {
+        let conn = setup_test_db();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s4", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "bob").unwrap();
+
+        let breakdown = get_per_user_breakdown(&conn, None).unwrap();
+        assert_eq!(breakdown.len(), 2);
+        // alice has more sessions, should be first
+        assert_eq!(breakdown[0].user, "alice");
+        assert_eq!(breakdown[0].session_count, 3);
+        assert_eq!(breakdown[0].search_count, 2);
+        assert_eq!(breakdown[1].user, "bob");
+        assert_eq!(breakdown[1].session_count, 1);
+    }
+
+    #[test]
+    fn test_get_per_user_breakdown_filtered() {
+        let conn = setup_test_db();
+        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, "s3", "import", "{}", ts(10000), ts(11000), 1000, 0, None, "bob").unwrap();
+
+        let breakdown = get_per_user_breakdown(&conn, Some(ts(3000))).unwrap();
+        assert_eq!(breakdown.len(), 2);
+        // Only alice's second session and bob's session are after ts(3000)
+        assert_eq!(breakdown[0].user, "bob");
+        assert_eq!(breakdown[0].session_count, 1);
+        assert_eq!(breakdown[1].user, "alice");
+        assert_eq!(breakdown[1].session_count, 1);
     }
 }

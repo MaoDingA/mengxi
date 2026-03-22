@@ -26,6 +26,8 @@ pub struct GeneralConfig {
     pub default_search_limit: u32,
     #[serde(default = "default_export_format")]
     pub default_export_format: String,
+    #[serde(default = "default_user")]
+    pub user: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +72,7 @@ fn default_inference_timeout() -> u64 { 30 }
 fn default_tag_top_n() -> u32 { 5 }
 fn default_keyframe_extraction() -> String { "auto".to_string() }
 fn default_output_dir() -> String { "~/lut".to_string() }
+fn default_user() -> String { "default".to_string() }
 
 impl Default for Config {
     fn default() -> Self {
@@ -89,6 +92,7 @@ impl Default for GeneralConfig {
             data_dir: default_data_dir(),
             default_search_limit: default_search_limit(),
             default_export_format: default_export_format(),
+            user: "default".to_string(),
         }
     }
 }
@@ -184,6 +188,7 @@ pub fn format_config_table(config: &Config) -> String {
         ("data_dir", config.general.data_dir.clone()),
         ("default_search_limit", config.general.default_search_limit.to_string()),
         ("default_export_format", config.general.default_export_format.clone()),
+        ("user", config.general.user.clone()),
     ];
 
     for (key, value) in &general_entries {
@@ -252,6 +257,7 @@ mod tests {
         assert_eq!(config.general.data_dir, "~/.mengxi/data");
         assert_eq!(config.general.default_search_limit, 5);
         assert_eq!(config.general.default_export_format, "cube");
+        assert_eq!(config.general.user, "default");
         assert!(config.ai.tag_generation);
         assert!(config.ai.tag_model.is_empty());
         assert_eq!(config.ai.tag_top_n, 5);
@@ -278,6 +284,7 @@ mod tests {
                 data_dir: "/custom/data".to_string(),
                 default_search_limit: 10,
                 default_export_format: "3dl".to_string(),
+                user: "chen_liang".to_string(),
             },
             ai: AiConfig {
                 embedding_model: "model.onnx".to_string(),
@@ -300,6 +307,7 @@ mod tests {
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.general.log_level, "debug");
         assert_eq!(parsed.general.default_search_limit, 10);
+        assert_eq!(parsed.general.user, "chen_liang");
         assert_eq!(parsed.ai.embedding_model, "model.onnx");
         assert!(!parsed.ai.tag_generation);
         assert!(!parsed.import.auto_detect_format);

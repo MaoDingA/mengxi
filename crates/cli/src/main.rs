@@ -231,11 +231,12 @@ fn record_session_best_effort(
     duration_ms: i64,
     exit_code: i32,
     search_to_export_ms: Option<i64>,
+    user: &str,
 ) {
     if let Ok(conn) = db::open_db() {
         if let Err(e) = analytics::record_session(
             &conn, session_id, command, args_json,
-            started_at, ended_at, duration_ms, exit_code, search_to_export_ms,
+            started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user,
         ) {
             eprintln!("Warning: Failed to record session: {}", e);
         }
@@ -1750,8 +1751,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Stats { user: _user, period, format }) => {
-            // --user is a no-op placeholder (single-user tool)
+        Some(Commands::Stats { user, period, format }) => {
             let is_json = format.as_deref() == Some("json");
 
             let conn = match db::open_db() {
@@ -1796,10 +1796,29 @@ fn main() {
                 None => "all time".to_string(),
             };
 
-            let total_sessions = analytics::get_session_count(&conn, since_timestamp).unwrap_or(0);
-            let avg_duration_ms = analytics::get_average_duration_ms(&conn, since_timestamp).unwrap_or(0);
-            let breakdown = analytics::get_command_breakdown(&conn, since_timestamp).unwrap_or_default();
-            let recent = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
+            // Resolve user filter: CLI --user flag takes priority, fallback to config
+            let effective_user = user.as_deref().map(|u| u.to_string()).or_else(|| {
+                config::load_or_create_config().ok().map(|c| c.general.user)
+            });
+
+            // Query session stats — user-scoped or global
+            let (total_sessions, avg_duration_ms, total_searches, breakdown, recent) =
+                if let Some(ref u) = effective_user {
+                    let user_stats = analytics::get_user_stats(&conn, u, since_timestamp).unwrap_or_else(|_| analytics::UserStats {
+                        user: u.clone(), session_count: 0, avg_duration_ms: 0, search_count: 0, last_session_at: None,
+                    });
+                    let breakdown = analytics::get_command_breakdown(&conn, since_timestamp).unwrap_or_default();
+                    let recent = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
+                    (user_stats.session_count, user_stats.avg_duration_ms, user_stats.search_count, breakdown, recent)
+                } else {
+                    let count = analytics::get_session_count(&conn, since_timestamp).unwrap_or(0);
+                    let avg = analytics::get_average_duration_ms(&conn, since_timestamp).unwrap_or(0);
+                    let bd = analytics::get_command_breakdown(&conn, since_timestamp).unwrap_or_default();
+                    let rec = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
+                    // Extract total searches from command breakdown
+                    let searches = bd.iter().find(|(cmd, _)| cmd == "search").map(|(_, c)| *c).unwrap_or(0);
+                    (count, avg, searches, bd, rec)
+                };
 
             // New metrics: hit rate, calibration, vocabulary (best-effort)
             // search_feedback and calibration_activities store timestamps in seconds,
@@ -1815,6 +1834,13 @@ fn main() {
             let vocab = analytics::get_vocabulary_metrics(&conn).unwrap_or_else(|_| analytics::VocabularyMetrics {
                 total_unique_tags: 0, new_tags_last_week: 0, top_tags: Vec::new(),
             });
+
+            // Per-user breakdown (only when --user is NOT specified)
+            let per_user = if effective_user.is_none() {
+                analytics::get_per_user_breakdown(&conn, since_timestamp).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
 
             if is_json {
                 let mut cmd_map = serde_json::Map::new();
@@ -1845,35 +1871,55 @@ fn main() {
                         "rate": tp.rate,
                     })
                 }).collect();
-                let output = serde_json::json!({
-                    "period": period_label,
-                    "total_sessions": total_sessions,
-                    "average_duration_ms": avg_duration_ms,
-                    "command_breakdown": cmd_map,
-                    "recent_sessions": recent_json,
-                    "search_hit_rate": {
-                        "accepted": hit_rate.accepted,
-                        "rejected": hit_rate.rejected,
-                        "total": hit_rate.total,
-                        "rate": hit_rate.rate,
-                    },
-                    "calibration": {
-                        "total_corrections": calibration.total_corrections,
-                        "project_breakdown": cal_breakdown,
-                        "latest_correction_at": calibration.latest_correction_at,
-                    },
-                    "trend": trend_json,
-                    "vocabulary": {
-                        "total_unique_tags": vocab.total_unique_tags,
-                        "new_tags_last_week": vocab.new_tags_last_week,
-                        "top_tags": vocab.top_tags.iter().map(|(tag, count)| serde_json::json!({"tag": tag, "count": count})).collect::<Vec<_>>(),
-                    },
-                });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+
+                let mut output_map = serde_json::Map::new();
+                output_map.insert("period".to_string(), serde_json::json!(period_label));
+                output_map.insert("total_sessions".to_string(), serde_json::json!(total_sessions));
+                output_map.insert("average_duration_ms".to_string(), serde_json::json!(avg_duration_ms));
+                output_map.insert("total_searches".to_string(), serde_json::json!(total_searches));
+                output_map.insert("command_breakdown".to_string(), serde_json::json!(cmd_map));
+                output_map.insert("recent_sessions".to_string(), serde_json::json!(recent_json));
+                output_map.insert("search_hit_rate".to_string(), serde_json::json!({
+                    "accepted": hit_rate.accepted,
+                    "rejected": hit_rate.rejected,
+                    "total": hit_rate.total,
+                    "rate": hit_rate.rate,
+                }));
+                output_map.insert("calibration".to_string(), serde_json::json!({
+                    "total_corrections": calibration.total_corrections,
+                    "project_breakdown": cal_breakdown,
+                    "latest_correction_at": calibration.latest_correction_at,
+                }));
+                output_map.insert("trend".to_string(), serde_json::json!(trend_json));
+                output_map.insert("vocabulary".to_string(), serde_json::json!({
+                    "total_unique_tags": vocab.total_unique_tags,
+                    "new_tags_last_week": vocab.new_tags_last_week,
+                    "top_tags": vocab.top_tags.iter().map(|(tag, count)| serde_json::json!({"tag": tag, "count": count})).collect::<Vec<_>>(),
+                }));
+
+                // User-scoped output
+                if let Some(ref u) = effective_user {
+                    output_map.insert("user".to_string(), serde_json::json!(u));
+                }
+                // Per-user breakdown
+                if !per_user.is_empty() {
+                    let users_json: Vec<serde_json::Value> = per_user.iter().map(|us| {
+                        serde_json::json!({
+                            "user": us.user,
+                            "session_count": us.session_count,
+                            "avg_duration_ms": us.avg_duration_ms,
+                            "search_count": us.search_count,
+                        })
+                    }).collect();
+                    output_map.insert("users".to_string(), serde_json::json!(users_json));
+                }
+
+                println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(output_map)).unwrap());
             } else {
                 println!("Usage Statistics ({}):", period_label);
                 println!("  Total sessions:    {}", total_sessions);
                 println!("  Average duration:  {}", format_duration_ms(avg_duration_ms));
+                println!("  Total searches:     {}", total_searches);
                 if !breakdown.is_empty() {
                     println!("  Command breakdown:");
                     for (cmd, count) in &breakdown {
@@ -1938,6 +1984,17 @@ fn main() {
                         }
                     }
                 }
+
+                // Per-user breakdown (only when multiple users exist and no --user filter)
+                if !per_user.is_empty() && effective_user.is_none() {
+                    println!("\nUser Breakdown:");
+                    println!("  {:<10} | {:>8} | {:>13} | {:>8}", "User", "Sessions", "Avg Duration", "Searches");
+                    println!("  {}-+-{}-+-{}-+-{}-", "----------", "--------", "-------------", "--------");
+                    for us in &per_user {
+                        println!("  {:<10} | {:>8} | {:>13} | {:>8}",
+                            us.user, us.session_count, format_duration_ms(us.avg_duration_ms), us.search_count);
+                    }
+                }
             }
         }
         Some(Commands::Config { show: true, edit: false }) => {
@@ -1971,10 +2028,12 @@ fn main() {
     let ended_at_unix = ended_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
     let duration_ms = ended_at_unix - started_at_unix;
 
+    let user_name = config::load_or_create_config().map(|c| c.general.user).unwrap_or_else(|_| "default".to_string());
+
     record_session_best_effort(
         &session_id, &command_name, &args_json,
         started_at_unix, ended_at_unix, duration_ms, 0,
-        search_to_export_ms_override,
+        search_to_export_ms_override, &user_name,
     );
 }
 
