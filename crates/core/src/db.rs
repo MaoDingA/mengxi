@@ -128,6 +128,234 @@ pub fn run_migrations(conn: &Connection) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Database browsing / inspection queries
+// ---------------------------------------------------------------------------
+
+/// Row returned by `db_list_projects`.
+#[derive(Debug, Clone)]
+pub struct ProjectRow {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub dpx_count: i64,
+    pub exr_count: i64,
+    pub mov_count: i64,
+    pub file_count: i64,
+    pub fingerprint_count: i64,
+    pub created_at: i64,
+}
+
+/// List all projects with file/fingerprint counts.
+pub fn db_list_projects(conn: &Connection) -> Result<Vec<ProjectRow>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.name, p.path, p.dpx_count, p.exr_count, p.mov_count,
+                COALESCE(fc.cnt, 0) AS file_count,
+                COALESCE(fpc.cnt, 0) AS fingerprint_count,
+                p.created_at
+         FROM projects p
+         LEFT JOIN (SELECT project_id, COUNT(*) AS cnt FROM files GROUP BY project_id) fc ON fc.project_id = p.id
+         LEFT JOIN (SELECT f.project_id, COUNT(*) AS cnt
+                   FROM fingerprints fp JOIN files f ON f.id = fp.file_id GROUP BY f.project_id) fpc ON fpc.project_id = p.id
+         ORDER BY p.created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ProjectRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            path: row.get(2)?,
+            dpx_count: row.get(3)?,
+            exr_count: row.get(4)?,
+            mov_count: row.get(5)?,
+            file_count: row.get(6)?,
+            fingerprint_count: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+}
+
+/// Row returned by `db_list_files`.
+#[derive(Debug, Clone)]
+pub struct FileRow {
+    pub id: i64,
+    pub filename: String,
+    pub format: String,
+    pub fingerprint_count: i64,
+    pub created_at: i64,
+}
+
+/// List files in a project with fingerprint counts.
+pub fn db_list_files(conn: &Connection, project_name: &str) -> Result<Vec<FileRow>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.filename, f.format,
+                COALESCE(fpc.cnt, 0) AS fingerprint_count,
+                f.created_at
+         FROM files f
+         JOIN projects p ON p.id = f.project_id
+         LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM fingerprints GROUP BY file_id) fpc ON fpc.file_id = f.id
+         WHERE p.name = ?1
+         ORDER BY f.created_at DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![project_name], |row| {
+        Ok(FileRow {
+            id: row.get(0)?,
+            filename: row.get(1)?,
+            format: row.get(2)?,
+            fingerprint_count: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+}
+
+/// Row returned by `db_list_tags`.
+#[derive(Debug, Clone)]
+pub struct TagRow {
+    pub id: i64,
+    pub tag: String,
+    pub source: String,
+    pub project_name: String,
+    pub filename: String,
+    pub created_at: i64,
+}
+
+/// List tags, optionally filtered by project name.
+pub fn db_list_tags(conn: &Connection, project_name: Option<&str>) -> Result<Vec<TagRow>, rusqlite::Error> {
+    let sql = match project_name {
+        Some(_) => "SELECT t.id, t.tag, t.source, p.name, f.filename, t.created_at
+                    FROM tags t
+                    JOIN fingerprints fp ON fp.id = t.fingerprint_id
+                    JOIN files f ON f.id = fp.file_id
+                    JOIN projects p ON p.id = f.project_id
+                    WHERE p.name = ?1
+                    ORDER BY t.created_at DESC",
+        None => "SELECT t.id, t.tag, t.source, p.name, f.filename, t.created_at
+                 FROM tags t
+                 JOIN fingerprints fp ON fp.id = t.fingerprint_id
+                 JOIN files f ON f.id = fp.file_id
+                 JOIN projects p ON p.id = f.project_id
+                 ORDER BY t.created_at DESC",
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = if let Some(pn) = project_name {
+        let mut rows = Vec::new();
+        let mut mapped = stmt.query_map(rusqlite::params![pn], |row| {
+            Ok(TagRow {
+                id: row.get(0)?,
+                tag: row.get(1)?,
+                source: row.get(2)?,
+                project_name: row.get(3)?,
+                filename: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        while let Some(row) = mapped.next() {
+            rows.push(row?);
+        }
+        rows
+    } else {
+        let mut rows = Vec::new();
+        let mut mapped = stmt.query_map([], |row| {
+            Ok(TagRow {
+                id: row.get(0)?,
+                tag: row.get(1)?,
+                source: row.get(2)?,
+                project_name: row.get(3)?,
+                filename: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        while let Some(row) = mapped.next() {
+            rows.push(row?);
+        }
+        rows
+    };
+    Ok(rows)
+}
+
+/// Row returned by `db_list_luts`.
+#[derive(Debug, Clone)]
+pub struct LutRow {
+    pub id: i64,
+    pub title: Option<String>,
+    pub format: String,
+    pub grid_size: i64,
+    pub output_path: String,
+    pub project_name: String,
+    pub created_at: i64,
+}
+
+/// List LUT export history.
+pub fn db_list_luts(conn: &Connection) -> Result<Vec<LutRow>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.title, l.format, l.grid_size, l.output_path, p.name, l.created_at
+         FROM luts l
+         JOIN projects p ON p.id = l.project_id
+         ORDER BY l.created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LutRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            format: row.get(2)?,
+            grid_size: row.get(3)?,
+            output_path: row.get(4)?,
+            project_name: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+}
+
+/// Error returned by `db_run_query` when SQL is not a read-only SELECT.
+#[derive(Debug)]
+pub struct NonSelectError;
+
+impl std::fmt::Display for NonSelectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DB_NON_SELECT -- only SELECT queries are allowed")
+    }
+}
+
+impl std::error::Error for NonSelectError {}
+
+/// Execute a raw read-only SQL query. Returns (column_names, rows).
+/// Only SELECT statements are allowed.
+pub fn db_run_query(
+    conn: &Connection,
+    sql: &str,
+) -> Result<(Vec<String>, Vec<Vec<String>>), Box<dyn std::error::Error>> {
+    let trimmed = sql.trim();
+    if !trimmed.to_uppercase().starts_with("SELECT") {
+        return Err(Box::new(NonSelectError));
+    }
+    let mut stmt = conn.prepare(trimmed)?;
+    let col_names: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let col_count = col_names.len();
+    let rows: Vec<Vec<String>> = stmt
+        .query_map([], |row| {
+            let mut vals = Vec::with_capacity(col_count);
+            for i in 0..col_count {
+                let val: rusqlite::types::Value = row.get(i)?;
+                vals.push(match val {
+                    rusqlite::types::Value::Null => "NULL".to_string(),
+                    rusqlite::types::Value::Integer(i) => i.to_string(),
+                    rusqlite::types::Value::Real(f) => format!("{}", f),
+                    rusqlite::types::Value::Text(s) => s,
+                    rusqlite::types::Value::Blob(b) => format!("<blob {} bytes>", b.len()),
+                });
+            }
+            Ok(vals)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((col_names, rows))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +466,181 @@ mod tests {
         assert!(migrations[4].1.contains("codec"));
         assert!(migrations[5].1.contains("fingerprints"));
         assert!(migrations[7].1.contains("luts"));
+    }
+
+    /// Helper: create a temp DB with minimal schema for browsing query tests.
+    fn setup_test_db() -> Connection {
+        let dir = tempfile::tempdir().unwrap();
+        let db_file = dir.path().join("test.db");
+        let conn = Connection::open(&db_file).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                dpx_count INTEGER NOT NULL DEFAULT 0,
+                exr_count INTEGER NOT NULL DEFAULT 0,
+                mov_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                format TEXT NOT NULL CHECK(format IN ('dpx', 'exr', 'mov')),
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE fingerprints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                histogram_r TEXT NOT NULL,
+                histogram_g TEXT NOT NULL,
+                histogram_b TEXT NOT NULL,
+                luminance_mean REAL NOT NULL,
+                luminance_stddev REAL NOT NULL,
+                color_space_tag TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE luts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                fingerprint_id INTEGER REFERENCES fingerprints(id),
+                title TEXT,
+                format TEXT NOT NULL CHECK(format IN ('cube', '3dl', 'look', 'csp', 'cdl')),
+                grid_size INTEGER NOT NULL,
+                output_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint_id INTEGER NOT NULL REFERENCES fingerprints(id) ON DELETE CASCADE,
+                tag TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'ai',
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);"
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_db_list_projects_empty() {
+        let conn = setup_test_db();
+        let projects = db_list_projects(&conn).unwrap();
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn test_db_list_projects_with_data() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's2.exr', 'exr')", [])
+            .unwrap();
+
+        let projects = db_list_projects(&conn).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "film_a");
+        assert_eq!(projects[0].file_count, 2);
+    }
+
+    #[test]
+    fn test_db_list_files() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's2.exr', 'exr')", [])
+            .unwrap();
+
+        let files = db_list_files(&conn, "film_a").unwrap();
+        assert_eq!(files.len(), 2);
+        let names: Vec<&str> = files.iter().map(|f| f.filename.as_str()).collect();
+        assert!(names.contains(&"s1.dpx"));
+        assert!(names.contains(&"s2.exr"));
+
+        // Non-existent project
+        let files = db_list_files(&conn, "nope").unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_db_list_tags() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 's1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video')", [])
+            .unwrap();
+        conn.execute("INSERT INTO tags (fingerprint_id, tag, source) VALUES (1, 'warm', 'ai')", [])
+            .unwrap();
+        conn.execute("INSERT INTO tags (fingerprint_id, tag, source) VALUES (1, 'golden', 'manual')", [])
+            .unwrap();
+
+        // All tags
+        let tags = db_list_tags(&conn, None).unwrap();
+        assert_eq!(tags.len(), 2);
+
+        // Filtered by project
+        let tags = db_list_tags(&conn, Some("film_a")).unwrap();
+        assert_eq!(tags.len(), 2);
+        let tag_labels: Vec<&str> = tags.iter().map(|t| t.tag.as_str()).collect();
+        assert!(tag_labels.contains(&"warm"));
+        assert!(tag_labels.contains(&"golden"));
+        let warm = tags.iter().find(|t| t.tag == "warm").unwrap();
+        assert_eq!(warm.source, "ai");
+
+        // Non-existent project
+        let tags = db_list_tags(&conn, Some("nope")).unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_db_list_luts() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO luts (project_id, format, grid_size, output_path, title) VALUES (1, 'cube', 33, '/out/grade.cube', 'Grade v1')", [])
+            .unwrap();
+
+        let luts = db_list_luts(&conn).unwrap();
+        assert_eq!(luts.len(), 1);
+        assert_eq!(luts[0].title.as_deref(), Some("Grade v1"));
+        assert_eq!(luts[0].project_name, "film_a");
+    }
+
+    #[test]
+    fn test_db_run_query_select() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+
+        let (cols, rows) = db_run_query(&conn, "SELECT name FROM projects").unwrap();
+        assert_eq!(cols, vec!["name"]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "film_a");
+    }
+
+    #[test]
+    fn test_db_run_query_rejects_non_select() {
+        let conn = setup_test_db();
+        let result = db_run_query(&conn, "DELETE FROM projects");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("DB_NON_SELECT"));
+    }
+
+    #[test]
+    fn test_db_run_query_select_whitespace() {
+        let conn = setup_test_db();
+        // Leading whitespace + lowercase select should still work
+        let result = db_run_query(&conn, "  select 1");
+        assert!(result.is_ok());
     }
 }
