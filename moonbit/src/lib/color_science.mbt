@@ -123,10 +123,62 @@ pub fn acescg_to_rec709(r : Double, g : Double, b : Double) -> (Double, Double, 
   apply_odt_rec709(ap0_r, ap0_g, ap0_b)
 }
 
+// ---------- Inverse RRT (Newton's method) ----------
+
+/// Numerically invert the ACES RRT curve using Newton's method.
+/// Given y = rrt_curve(x), find x such that rrt_curve(x) ≈ y.
+/// Converges in 4-5 iterations to ~1e-10 precision for the monotonic RRT curve.
+fn inverse_rrt_curve(y : Double) -> Double {
+  if y <= 0.0 { return 0.0 }
+
+  let a = 2.51
+  let b = 0.03
+  let c = 2.43
+  let d = 0.59
+  let e = 0.14
+
+  // Initial guess: RRT compresses highlights, so outputs above RRT(1)≈0.8038
+  // imply inputs > 1. Use linear scaling for better convergence.
+  let mut x = if y >= 0.8 { y * 1.25 } else { y }
+
+  let mut i = 0
+  while i < 8 {
+    let ax = a * x
+    let cx = c * x
+    let num = x * (ax + b)        // x*(a*x+b)
+    let den = x * (cx + d) + e    // x*(c*x+d)+e
+    if den == 0.0 { break }
+
+    let fx = num / den
+    let residual = fx - y
+
+    // Check convergence (tolerance = 1e-10)
+    let abs_r = if residual < 0.0 { 0.0 - residual } else { residual }
+    if abs_r < 0.0000000001 { break }
+
+    // f'(x) = (N'*D - N*D') / D²
+    // N'(x) = 2*a*x + b,  D'(x) = 2*c*x + d
+    let n_prime = 2.0 * ax + b
+    let d_prime = 2.0 * cx + d
+    let fpx = (n_prime * den - num * d_prime) / (den * den)
+    if fpx == 0.0 { break }
+
+    x = x - residual / fpx
+    if x < 0.0 { x = 0.0 }
+
+    i = i + 1
+  }
+
+  x
+}
+
 // ---------- Rec.709 → ACEScg (inverse) ----------
 
 /// Convert from Rec.709 display output back to ACEScg.
-/// Chain: sRGB gamma inverse → saturate → AP0 → inverse RRT → AP1
+/// Chain: inverse sRGB gamma → AP0 → AP1 → inverse RRT
+/// Uses Newton's method for the inverse RRT step.
+/// Note: values that were clamped during the forward acescg_to_rec709
+/// (AP0 values > 1.0) cannot be recovered — round-trip is lossy for those.
 pub fn rec709_to_acescg(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
   // Step 1: Inverse gamma
   let lin_r = srgb_gamma_inverse(r)
@@ -136,10 +188,8 @@ pub fn rec709_to_acescg(r : Double, g : Double, b : Double) -> (Double, Double, 
   // Step 2: Convert AP0 to AP1
   let (ap1_r, ap1_g, ap1_b) = aces2065_to_acescg(lin_r, lin_g, lin_b)
 
-  // Note: Inverse RRT is not applied (not analytically invertible).
-  // This is an approximate inverse — round-trip through acescg_to_rec709
-  // will be lossy. For precise round-trips, Newton's method would be needed.
-  (ap1_r, ap1_g, ap1_b)
+  // Step 3: Apply inverse RRT
+  (inverse_rrt_curve(ap1_r), inverse_rrt_curve(ap1_g), inverse_rrt_curve(ap1_b))
 }
 
 // ---------- DCE prevention ----------
@@ -149,6 +199,7 @@ fn init {
   let _ = acescg_to_aces2065(0.0, 0.0, 0.0)
   let _ = acescg_to_rec709(0.18, 0.18, 0.18)
   let _ = rec709_to_acescg(0.5, 0.5, 0.5)
+  let _ = inverse_rrt_curve(0.5)
 }
 
 // ---------- FFI export ----------
@@ -360,6 +411,79 @@ test {
   let encoded = srgb_gamma(original)
   let decoded = srgb_gamma_inverse(encoded)
   assert_eq(approx_eq(decoded, 0.5), true)
+}
+
+test {
+  // Inverse RRT: rrt_curve(0) = 0, so inverse_rrt(0) = 0
+  let x = inverse_rrt_curve(0.0)
+  inspect(x, content="0")
+}
+
+test {
+  // Inverse RRT: inverse_rrt(rrt_curve(1.0)) ≈ 1.0
+  let forward = rrt_curve(1.0)
+  let back = inverse_rrt_curve(forward)
+  assert_eq(approx_eq(back, 1.0), true)
+}
+
+test {
+  // Inverse RRT: inverse_rrt(rrt_curve(0.18)) ≈ 0.18
+  let forward = rrt_curve(0.18)
+  let back = inverse_rrt_curve(forward)
+  assert_eq(approx_eq(back, 0.18), true)
+}
+
+test {
+  // Inverse RRT: inverse_rrt(rrt_curve(0.5)) ≈ 0.5
+  let forward = rrt_curve(0.5)
+  let back = inverse_rrt_curve(forward)
+  assert_eq(approx_eq(back, 0.5), true)
+}
+
+test {
+  // Inverse RRT: round-trip for a value > 1 (highlight)
+  let forward = rrt_curve(2.0)
+  let back = inverse_rrt_curve(forward)
+  assert_eq(approx_eq(back, 2.0), true)
+}
+
+test {
+  // Inverse RRT: round-trip for a small value (shadow)
+  let forward = rrt_curve(0.01)
+  let back = inverse_rrt_curve(forward)
+  assert_eq(approx_eq(back, 0.01), true)
+}
+
+test {
+  // Full round-trip: ACEScg → Rec.709 → ACEScg for mid-grey
+  let (r709, g709, b709) = acescg_to_rec709(0.18, 0.18, 0.18)
+  let (back_r, back_g, back_b) = rec709_to_acescg(r709, g709, b709)
+  assert_eq(approx_eq(back_r, 0.18), true)
+  assert_eq(approx_eq(back_g, 0.18), true)
+  assert_eq(approx_eq(back_b, 0.18), true)
+}
+
+test {
+  // Full round-trip: ACEScg → Rec.709 → ACEScg for a saturated color
+  let (r709, g709, b709) = acescg_to_rec709(0.8, 0.3, 0.1)
+  let (back_r, back_g, back_b) = rec709_to_acescg(r709, g709, b709)
+  assert_eq(approx_eq(back_r, 0.8), true)
+  assert_eq(approx_eq(back_g, 0.3), true)
+  assert_eq(approx_eq(back_b, 0.1), true)
+}
+
+test {
+  // Full round-trip: ACEScg → Rec.709 → ACEScg for black and white
+  let (r0, g0, b0) = acescg_to_rec709(0.0, 0.0, 0.0)
+  let (back0_r, back0_g, back0_b) = rec709_to_acescg(r0, g0, b0)
+  assert_eq(approx_eq(back0_r, 0.0), true)
+  assert_eq(approx_eq(back0_g, 0.0), true)
+  assert_eq(approx_eq(back0_b, 0.0), true)
+  let (r1, g1, b1) = acescg_to_rec709(1.0, 1.0, 1.0)
+  let (back1_r, back1_g, back1_b) = rec709_to_acescg(r1, g1, b1)
+  assert_eq(approx_eq(back1_r, 1.0), true)
+  assert_eq(approx_eq(back1_g, 1.0), true)
+  assert_eq(approx_eq(back1_b, 1.0), true)
 }
 
 test {

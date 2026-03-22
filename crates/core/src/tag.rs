@@ -231,6 +231,21 @@ pub fn tag_list_for_project_with_source(conn: &Connection, project_name: &str) -
     Ok(tags)
 }
 
+/// List all tags for a specific fingerprint with their source.
+pub fn tag_list_for_fingerprint_with_source(conn: &Connection, fingerprint_id: i64) -> Result<Vec<(String, String)>, TagError> {
+    let mut stmt = conn
+        .prepare("SELECT tag, source FROM tags WHERE fingerprint_id = ?1 ORDER BY tag")
+        .map_err(|e| TagError::DatabaseError(e.to_string()))?;
+
+    let tags: Vec<(String, String)> = stmt
+        .query_map([fingerprint_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| TagError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| TagError::DatabaseError(e.to_string()))?;
+
+    Ok(tags)
+}
+
 /// Rename a tag for a specific fingerprint.
 /// Preserves the `source` column value during rename.
 /// Returns `NotFound` if the old tag does not exist.

@@ -3,6 +3,7 @@ mod config;
 use unicode_width::UnicodeWidthStr;
 
 use clap::{Parser, Subcommand};
+use std::io::{self, Write, BufRead};
 use std::path::Path;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -114,8 +115,11 @@ enum Commands {
         #[arg(long, requires = "edit", conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "generate")]
         edit_new: Option<String>,
         /// Generate AI tags for all fingerprints in a project
-        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit", conflicts_with = "edit_new")]
+        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit", conflicts_with = "edit_new", conflicts_with = "ask")]
         generate: bool,
+        /// Interactive tag input: prompt for tags on each fingerprint in the project
+        #[arg(long, conflicts_with = "add", conflicts_with = "remove", conflicts_with = "list", conflicts_with = "edit", conflicts_with = "edit_new", conflicts_with = "generate")]
+        ask: bool,
     },
     /// Compare two LUT files and display differences
     #[command(name = "lut-diff")]
@@ -1268,7 +1272,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit, edit_new, generate }) => {
+        Some(Commands::Tag { result: _, project, scene: _, add, remove, list, edit, edit_new, generate, ask }) => {
             let proj_name = match project {
                 Some(ref p) => p.clone(),
                 None => {
@@ -1385,6 +1389,97 @@ fn main() {
                         } else {
                             println!("Generated {} tags for {} fingerprints in project '{}'.", tag_count, total, proj_name);
                         }
+                    } else if ask {
+                        // Interactive tag input: prompt for tags on each fingerprint
+                        let fingerprint_ids = match mengxi_core::tag::fingerprint_ids_for_project(&conn, &proj_name) {
+                            Ok(ids) => ids,
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                        if fingerprint_ids.is_empty() {
+                            println!("No fingerprints found for project '{}'.", proj_name);
+                            return;
+                        }
+
+                        // Get file paths for display
+                        let mut fingerprint_paths: Vec<(i64, String)> = Vec::new();
+                        for fp_id in &fingerprint_ids {
+                            let path_result: Result<(String, String), _> = conn.query_row(
+                                "SELECT p.path, f.filename FROM fingerprints fp
+                                 JOIN files f ON f.id = fp.file_id
+                                 JOIN projects p ON p.id = f.project_id
+                                 WHERE fp.id = ?1",
+                                [*fp_id],
+                                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                            );
+                            match path_result {
+                                Ok((base_path, filename)) => {
+                                    fingerprint_paths.push((*fp_id, format!("{}/{}", base_path, filename)));
+                                }
+                                Err(_) => continue,
+                            }
+                        }
+
+                        let total = fingerprint_paths.len();
+                        let mut total_tags = 0;
+                        let stdin = io::stdin();
+
+                        eprintln!("Project '{}': {} fingerprints to tag.", proj_name, total);
+                        eprintln!("Enter comma-separated tags, or press Enter to skip. Type 'q' to quit.\n");
+
+                        for (i, (fp_id, fpath)) in fingerprint_paths.iter().enumerate() {
+                            // Show existing tags for this fingerprint
+                            let existing_tags = mengxi_core::tag::tag_list_for_fingerprint_with_source(&conn, *fp_id)
+                                .unwrap_or_default();
+                            let existing_display: Vec<String> = existing_tags.iter()
+                                .map(|(t, s)| format!("{} ({})", t, s))
+                                .collect();
+                            let existing_str = if existing_display.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  [existing: {}]", existing_display.join(", "))
+                            };
+
+                            eprintln!("[{}/{}] {}{}", i + 1, total, fpath, existing_str);
+                            eprint!("  Tags: ");
+                            let _ = io::stderr().flush();
+
+                            let mut input = String::new();
+                            match stdin.lock().read_line(&mut input) {
+                                Ok(0) | Err(_) => break, // EOF or error → stop
+                                Ok(_) => {
+                                    let trimmed = input.trim();
+                                    if trimmed == "q" || trimmed == "quit" {
+                                        eprintln!("\nStopped. Tagged {}/{} fingerprints.", i, total);
+                                        break;
+                                    }
+                                    if trimmed.is_empty() {
+                                        continue; // skip this fingerprint
+                                    }
+                                    // Parse comma-separated tags
+                                    let new_tags: Vec<&str> = trimmed
+                                        .split(',')
+                                        .map(|t| t.trim())
+                                        .filter(|t| !t.is_empty())
+                                        .collect();
+                                    let mut added = 0;
+                                    for tag in &new_tags {
+                                        match mengxi_core::tag::tag_add_with_source(&conn, *fp_id, tag, "manual") {
+                                            Ok(()) => added += 1,
+                                            Err(_) => {} // skip duplicates
+                                        }
+                                    }
+                                    total_tags += added;
+                                    if added > 0 {
+                                        eprintln!("  → added: {}", new_tags.join(", "));
+                                    }
+                                }
+                            }
+                        }
+                        println!("Added {} manual tag(s) across project '{}'.", total_tags, proj_name);
                     } else if list {
                         // List tags for project with source indicator
                         match mengxi_core::tag::tag_list_for_project_with_source(&conn, &proj_name) {
@@ -1490,7 +1585,7 @@ fn main() {
                             }
                         }
                     } else {
-                        eprintln!("Error: TAG_MISSING_ARG -- specify --generate, --add, --remove, or --list");
+                        eprintln!("Error: TAG_MISSING_ARG -- specify --generate, --ask, --add, --remove, or --list");
                         process::exit(1);
                     }
                 }
