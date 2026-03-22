@@ -1801,6 +1801,17 @@ fn main() {
             let breakdown = analytics::get_command_breakdown(&conn, since_timestamp).unwrap_or_default();
             let recent = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
 
+            // New metrics: hit rate, calibration, vocabulary (best-effort)
+            let hit_rate = analytics::get_search_hit_rate(&conn, since_timestamp).unwrap_or_else(|_| analytics::HitRateMetrics {
+                accepted: 0, rejected: 0, total: 0, rate: 0.0,
+            });
+            let calibration = analytics::get_calibration_metrics(&conn, since_timestamp).unwrap_or_else(|_| analytics::CalibrationMetrics {
+                total_corrections: 0, project_breakdown: Vec::new(), latest_correction_at: None,
+            });
+            let vocab = analytics::get_vocabulary_metrics(&conn).unwrap_or_else(|_| analytics::VocabularyMetrics {
+                total_unique_tags: 0, new_tags_last_week: 0, top_tags: Vec::new(),
+            });
+
             if is_json {
                 let mut cmd_map = serde_json::Map::new();
                 for (cmd, count) in &breakdown {
@@ -1824,6 +1835,21 @@ fn main() {
                     "average_duration_ms": avg_duration_ms,
                     "command_breakdown": cmd_map,
                     "recent_sessions": recent_json,
+                    "search_hit_rate": {
+                        "accepted": hit_rate.accepted,
+                        "rejected": hit_rate.rejected,
+                        "total": hit_rate.total,
+                        "rate": hit_rate.rate,
+                    },
+                    "calibration": {
+                        "total_corrections": calibration.total_corrections,
+                        "project_breakdown": calibration.project_breakdown.iter().map(|(k, v)| (k.clone(), *v)).collect::<std::collections::HashMap<String, usize>>(),
+                    },
+                    "vocabulary": {
+                        "total_unique_tags": vocab.total_unique_tags,
+                        "new_tags_last_week": vocab.new_tags_last_week,
+                        "top_tags": vocab.top_tags.iter().map(|(tag, count)| serde_json::json!({"tag": tag, "count": count})).collect::<Vec<_>>(),
+                    },
                 });
                 println!("{}", serde_json::to_string_pretty(&output).unwrap());
             } else {
@@ -1844,6 +1870,40 @@ fn main() {
                         let time_str = format!("{}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, sec);
                         let status = if s.exit_code == 0 { "OK" } else { "ERROR" };
                         println!("  {:2}  {:<20} {:<10} {:<10} {}", i + 1, time_str, s.command, format_duration_ms(s.duration_ms), status);
+                    }
+                }
+
+                // Search quality metrics
+                if hit_rate.total > 0 {
+                    println!("\nSearch Quality:");
+                    println!("  Acceptance rate:  {:.1}% ({} accepted, {} rejected)",
+                        hit_rate.rate * 100.0, hit_rate.accepted, hit_rate.rejected);
+                }
+
+                // Calibration metrics
+                if calibration.total_corrections > 0 {
+                    println!("\nCalibration:");
+                    println!("  Total corrections: {}", calibration.total_corrections);
+                    if !calibration.project_breakdown.is_empty() {
+                        println!("  Top projects:");
+                        for (proj, count) in &calibration.project_breakdown {
+                            println!("    {:<20} {}", proj, count);
+                        }
+                    }
+                }
+
+                // Vocabulary metrics
+                if vocab.total_unique_tags > 0 {
+                    println!("\nVocabulary:");
+                    println!("  Unique tags:       {}", vocab.total_unique_tags);
+                    if vocab.new_tags_last_week > 0 {
+                        println!("  New this week:     {}", vocab.new_tags_last_week);
+                    }
+                    if !vocab.top_tags.is_empty() {
+                        println!("  Top tags:");
+                        for (tag, count) in &vocab.top_tags {
+                            println!("    {:<20} {}", tag, count);
+                        }
                     }
                 }
             }
