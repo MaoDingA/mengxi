@@ -5,7 +5,9 @@ use unicode_width::UnicodeWidthStr;
 use clap::{Parser, Subcommand};
 use std::path::Path;
 use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use mengxi_core::analytics;
 use mengxi_core::db;
 use mengxi_core::project;
 
@@ -159,8 +161,108 @@ enum Commands {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Session tracking helpers
+// ---------------------------------------------------------------------------
+
+/// Generate a simple session ID: timestamp + random suffix.
+fn generate_session_id() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let rand_suffix: u32 = (((ts as u64) & 0xFFFF) ^ ((ts as u64 >> 16) & 0xFFFF)) as u32;
+    format!("{}_{}", ts, rand_suffix)
+}
+
+/// Extract command name, key args as JSON, and optional search-to-export timing.
+fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
+    match &cli.command {
+        Some(Commands::Import { name, .. }) => {
+            let obj = serde_json::json!({ "name": name });
+            ("import".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::Search { project, tag, .. }) => {
+            let mut obj = serde_json::Map::new();
+            if let Some(p) = project { obj.insert("project".to_string(), serde_json::json!(p)); }
+            if let Some(t) = tag { obj.insert("tag".to_string(), serde_json::json!(t)); }
+            ("search".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::Export { result, format, output: _output, .. }) => {
+            let obj = serde_json::json!({ "result": result, "format": format });
+            // FR34: compute search-to-export timing
+            let search_to_export_ms = if let Ok(conn) = db::open_db() {
+                analytics::get_last_search_started_at(&conn).ok().flatten().map(|search_ts| {
+                    let now_ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    now_ts - search_ts
+                })
+            } else {
+                None
+            };
+            ("export".to_string(), serde_json::to_string(&obj).unwrap_or_default(), search_to_export_ms)
+        }
+        Some(Commands::Info { project, .. }) => {
+            let obj = serde_json::json!({ "project": project });
+            ("info".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::Tag { project, .. }) => {
+            let obj = serde_json::json!({ "project": project });
+            ("tag".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::LutDiff { .. }) => ("lut-diff".to_string(), "{}".to_string(), None),
+        Some(Commands::LutDep { .. }) => ("lut-dep".to_string(), "{}".to_string(), None),
+        Some(Commands::Stats { .. }) => ("stats".to_string(), "{}".to_string(), None),
+        Some(Commands::Config { .. }) => ("config".to_string(), "{}".to_string(), None),
+        None => ("help".to_string(), "{}".to_string(), None),
+    }
+}
+
+/// Record a session to the database (best-effort, never blocks CLI exit).
+fn record_session_best_effort(
+    session_id: &str,
+    command: &str,
+    args_json: &str,
+    started_at: i64,
+    ended_at: i64,
+    duration_ms: i64,
+    exit_code: i32,
+    search_to_export_ms: Option<i64>,
+) {
+    if let Ok(conn) = db::open_db() {
+        if let Err(e) = analytics::record_session(
+            &conn, session_id, command, args_json,
+            started_at, ended_at, duration_ms, exit_code, search_to_export_ms,
+        ) {
+            eprintln!("Warning: Failed to record session: {}", e);
+        }
+    }
+}
+
+/// Format milliseconds into human-readable duration string.
+fn format_duration_ms(ms: i64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let total_secs = ms / 1000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{}m {}s", mins, secs)
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    // Session tracking setup
+    let started_at = SystemTime::now();
+    let started_at_unix = started_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+    let session_id = generate_session_id();
+    let (command_name, args_json, search_to_export_ms_override) = extract_command_info(&cli);
 
     match cli.command {
         Some(Commands::Import { project, name, format }) => {
@@ -1645,9 +1747,103 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Stats { .. }) => {
-            eprintln!("Error: 'stats' command is not yet implemented");
-            process::exit(1);
+        Some(Commands::Stats { user: _user, period, format }) => {
+            // --user is a no-op placeholder (single-user tool)
+            let is_json = format.as_deref() == Some("json");
+
+            let conn = match db::open_db() {
+                Ok(c) => c,
+                Err(e) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "STATS_DB_ERROR", "message": format!("Failed to open database: {}", e) }
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: STATS_DB_ERROR — Failed to open database: {}", e);
+                    }
+                    process::exit(1);
+                }
+            };
+
+            // Parse period into since_timestamp
+            let since_timestamp: Option<i64> = match period.as_deref() {
+                Some("1day") => Some(started_at_unix - 86_400_000),
+                Some("1week") => Some(started_at_unix - 604_800_000),
+                Some("2weeks") => Some(started_at_unix - 1_209_600_000),
+                Some("1month") => Some(started_at_unix - 2_592_000_000),
+                Some(invalid) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "STATS_INVALID_PERIOD", "message": format!("Invalid period: '{}'. Use: 1day, 1week, 2weeks, 1month", invalid) }
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: STATS_INVALID_PERIOD — Invalid period: '{}'. Use: 1day, 1week, 2weeks, 1month", invalid);
+                    }
+                    process::exit(1);
+                }
+                None => None,
+            };
+
+            let period_label = match period.as_deref() {
+                Some(p) => p.to_string(),
+                None => "all time".to_string(),
+            };
+
+            let total_sessions = analytics::get_session_count(&conn, since_timestamp).unwrap_or(0);
+            let avg_duration_ms = analytics::get_average_duration_ms(&conn, since_timestamp).unwrap_or(0);
+            let breakdown = analytics::get_command_breakdown(&conn, since_timestamp).unwrap_or_default();
+            let recent = analytics::get_sessions(&conn, since_timestamp, 10).unwrap_or_default();
+
+            if is_json {
+                let mut cmd_map = serde_json::Map::new();
+                for (cmd, count) in &breakdown {
+                    cmd_map.insert(cmd.clone(), serde_json::json!(*count));
+                }
+                let recent_json: Vec<serde_json::Value> = recent.iter().map(|s| {
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("session_id".to_string(), serde_json::json!(&s.session_id));
+                    obj.insert("command".to_string(), serde_json::json!(&s.command));
+                    obj.insert("started_at".to_string(), serde_json::json!(s.started_at));
+                    obj.insert("duration_ms".to_string(), serde_json::json!(s.duration_ms));
+                    obj.insert("exit_code".to_string(), serde_json::json!(s.exit_code));
+                    if let Some(ste) = s.search_to_export_ms {
+                        obj.insert("search_to_export_ms".to_string(), serde_json::json!(ste));
+                    }
+                    serde_json::Value::Object(obj)
+                }).collect();
+                let output = serde_json::json!({
+                    "period": period_label,
+                    "total_sessions": total_sessions,
+                    "average_duration_ms": avg_duration_ms,
+                    "command_breakdown": cmd_map,
+                    "recent_sessions": recent_json,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                println!("Usage Statistics ({}):", period_label);
+                println!("  Total sessions:    {}", total_sessions);
+                println!("  Average duration:  {}", format_duration_ms(avg_duration_ms));
+                if !breakdown.is_empty() {
+                    println!("  Command breakdown:");
+                    for (cmd, count) in &breakdown {
+                        println!("    {:12} {}", cmd, count);
+                    }
+                }
+                if !recent.is_empty() {
+                    println!("\nRecent sessions:");
+                    println!("  {:2}  {:<20} {:<10} {:<10} {}", "#", "Time", "Command", "Duration", "Status");
+                    for (i, s) in recent.iter().enumerate() {
+                        let (y, m, d, h, min, sec) = seconds_to_datetime(s.started_at as u64);
+                        let time_str = format!("{}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, sec);
+                        let status = if s.exit_code == 0 { "OK" } else { "ERROR" };
+                        println!("  {:2}  {:<20} {:<10} {:<10} {}", i + 1, time_str, s.command, format_duration_ms(s.duration_ms), status);
+                    }
+                }
+            }
         }
         Some(Commands::Config { show: true, edit: false }) => {
             match config::load_or_create_config() {
@@ -1671,6 +1867,17 @@ fn main() {
             // No subcommand — clap displays help automatically
         }
     }
+
+    // Record session (best-effort, non-blocking)
+    let ended_at = SystemTime::now();
+    let ended_at_unix = ended_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+    let duration_ms = ended_at_unix - started_at_unix;
+
+    record_session_best_effort(
+        &session_id, &command_name, &args_json,
+        started_at_unix, ended_at_unix, duration_ms, 0,
+        search_to_export_ms_override,
+    );
 }
 
 /// Display search results in text table or JSON format.

@@ -1,5 +1,6 @@
 // mengxi-core: Domain logic, database, and data models
 
+pub mod analytics;
 pub mod calibration;
 pub mod color_science;
 pub mod db;
