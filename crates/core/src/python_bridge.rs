@@ -151,8 +151,29 @@ impl PythonBridge {
         }
     }
 
-    /// Find Python executable: try `python3` first, then `python`.
-    fn find_python() -> Result<&'static str, AiError> {
+    /// Find Python executable:
+    /// 1. Look for `.venv/bin/python` relative to the current executable's parent directory
+    ///    (handles `target/release/mengxi` finding `project_root/.venv/bin/python`).
+    /// 2. Fall back to `python3` / `python` on PATH.
+    fn find_python() -> Result<String, AiError> {
+        // Try .venv/bin/python relative to the executable's parent
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let venv_python = exe_dir.join(".venv").join("bin").join("python");
+                if venv_python.exists() {
+                    return Ok(venv_python.to_string_lossy().into_owned());
+                }
+                // Executable may be in target/release/ — try two levels up (project root)
+                if let Some(project_root) = exe_dir.parent().and_then(|p| p.parent()) {
+                    let venv_python = project_root.join(".venv").join("bin").join("python");
+                    if venv_python.exists() {
+                        return Ok(venv_python.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+
+        // Fall back to PATH
         if Command::new("python3")
             .arg("--version")
             .stdout(Stdio::null())
@@ -160,7 +181,7 @@ impl PythonBridge {
             .status()
             .is_ok()
         {
-            Ok("python3")
+            Ok("python3".into())
         } else if Command::new("python")
             .arg("--version")
             .stdout(Stdio::null())
@@ -168,10 +189,10 @@ impl PythonBridge {
             .status()
             .is_ok()
         {
-            Ok("python")
+            Ok("python".into())
         } else {
             Err(AiError::SubprocessNotFound(
-                "Python not found. Please install Python 3.x.".into(),
+                "Python not found. Run 'cd python && uv sync' to set up the environment.".into(),
             ))
         }
     }
@@ -198,7 +219,7 @@ impl PythonBridge {
     /// Spawn the Python subprocess.
     fn spawn(&mut self) -> Result<(), AiError> {
         let python = Self::find_python()?;
-        let subprocess = Subprocess::spawn(python)?;
+        let subprocess = Subprocess::spawn(&python)?;
         self.process = Some(subprocess);
         self.last_activity = Instant::now();
         Ok(())
