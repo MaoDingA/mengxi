@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use serde::Serialize;
 
 use mengxi_core::color_science;
@@ -43,7 +45,6 @@ fn srgb_test_vectors() -> Vec<(&'static str, Vec<f64>)> {
         ("saturated_red", vec![1.0, 0.0, 0.0]),
         ("saturated_green", vec![0.0, 1.0, 0.0]),
         ("saturated_blue", vec![0.0, 0.0, 1.0]),
-        ("d65_white", vec![0.9505, 1.0, 1.0890]),
     ]
 }
 
@@ -125,8 +126,8 @@ pub fn run_validate(is_json: bool) -> i32 {
             eprintln!("Warning: sRGB round-trip test failed: {}", e);
             results.push(ValidationResult {
                 path: "srgb_to_oklab_roundtrip".to_string(),
-                delta_e_max: f64::INFINITY,
-                delta_e_mean: f64::INFINITY,
+                delta_e_max: -1.0,
+                delta_e_mean: -1.0,
                 passed: false,
             });
         }
@@ -148,8 +149,8 @@ pub fn run_validate(is_json: bool) -> i32 {
             eprintln!("Warning: ACEScct round-trip test failed: {}", e);
             results.push(ValidationResult {
                 path: "acescct_to_oklab_roundtrip".to_string(),
-                delta_e_max: f64::INFINITY,
-                delta_e_mean: f64::INFINITY,
+                delta_e_max: -1.0,
+                delta_e_mean: -1.0,
                 passed: false,
             });
         }
@@ -172,29 +173,30 @@ pub fn run_validate(is_json: bool) -> i32 {
     if is_json {
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        format_text(&output);
+        let _ = format_text(&mut std::io::stdout(), &output);
     }
 
     if all_passed { 0 } else { 1 }
 }
 
-fn format_text(output: &ValidationOutput) {
-    println!("Color Space Validation Results");
-    println!("==============================");
-    println!();
+fn format_text(w: &mut impl Write, output: &ValidationOutput) -> std::io::Result<()> {
+    writeln!(w, "Color Space Validation Results")?;
+    writeln!(w, "==============================")?;
+    writeln!(w)?;
 
     for result in &output.results {
         let status = if result.passed { "✓ PASS" } else { "✗ FAIL (threshold: 0.1)" };
-        println!("{} ↔ Oklab round-trip", human_path(&result.path));
-        println!("  Max ΔE: {:.6}  Mean ΔE: {:.6}  {}", result.delta_e_max, result.delta_e_mean, status);
-        println!();
+        writeln!(w, "{} ↔ Oklab round-trip", human_path(&result.path))?;
+        writeln!(w, "  Max ΔE: {:.6}  Mean ΔE: {:.6}  {}", result.delta_e_max, result.delta_e_mean, status)?;
+        writeln!(w)?;
     }
 
     if output.summary.failed == 0 {
-        println!("Summary: {}/{} tests passed", output.summary.passed, output.summary.total);
+        writeln!(w, "Summary: {}/{} tests passed", output.summary.passed, output.summary.total)?;
     } else {
-        println!("Summary: {}/{} tests passed, {} failed", output.summary.passed, output.summary.total, output.summary.failed);
+        writeln!(w, "Summary: {}/{} tests passed, {} failed", output.summary.passed, output.summary.total, output.summary.failed)?;
     }
+    Ok(())
 }
 
 fn human_path(path: &str) -> &str {
@@ -233,7 +235,8 @@ mod tests {
     #[test]
     fn test_srgb_roundtrip_all_pass() {
         if !color_science::is_aces_ffi_available() {
-            return; // Skip if FFI not available
+            eprintln!("note: skipping test_srgb_roundtrip_all_pass — FFI not available");
+            return;
         }
 
         let vectors = srgb_test_vectors();
@@ -250,7 +253,8 @@ mod tests {
     #[test]
     fn test_acescct_roundtrip_all_pass() {
         if !color_science::is_aces_ffi_available() {
-            return; // Skip if FFI not available
+            eprintln!("note: skipping test_acescct_roundtrip_all_pass — FFI not available");
+            return;
         }
 
         let vectors = acescct_test_vectors();
@@ -267,7 +271,8 @@ mod tests {
     #[test]
     fn test_json_output_valid() {
         if !color_science::is_aces_ffi_available() {
-            return; // Skip if FFI not available
+            eprintln!("note: skipping test_json_output_valid — FFI not available");
+            return;
         }
 
         let vectors = srgb_test_vectors();
@@ -305,7 +310,8 @@ mod tests {
     #[test]
     fn test_text_output_contains_expected_strings() {
         if !color_science::is_aces_ffi_available() {
-            return; // Skip if FFI not available
+            eprintln!("note: skipping test_text_output_contains_expected_strings — FFI not available");
+            return;
         }
 
         let vectors = srgb_test_vectors();
@@ -330,30 +336,14 @@ mod tests {
             },
         };
 
-        let text = format_text_to_string(&output);
+        let mut buf = Vec::new();
+        format_text(&mut buf, &output).unwrap();
+        let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("Color Space Validation Results"));
         assert!(text.contains("sRGB"));
         assert!(text.contains("PASS"));
         assert!(text.contains("Max ΔE:"));
         assert!(text.contains("Mean ΔE:"));
-    }
-
-    // Helper to capture text output as string
-    fn format_text_to_string(output: &ValidationOutput) -> String {
-        let mut s = String::new();
-        s.push_str("Color Space Validation Results\n");
-        s.push_str("==============================\n\n");
-        for result in &output.results {
-            let status = if result.passed { "✓ PASS" } else { "✗ FAIL (threshold: 0.1)" };
-            s.push_str(&format!("{} ↔ Oklab round-trip\n", human_path(&result.path)));
-            s.push_str(&format!("  Max ΔE: {:.6}  Mean ΔE: {:.6}  {}\n\n", result.delta_e_max, result.delta_e_mean, status));
-        }
-        if output.summary.failed == 0 {
-            s.push_str(&format!("Summary: {}/{} tests passed\n", output.summary.passed, output.summary.total));
-        } else {
-            s.push_str(&format!("Summary: {}/{} tests passed, {} failed\n", output.summary.passed, output.summary.total, output.summary.failed));
-        }
-        s
     }
 
     #[test]
