@@ -798,7 +798,9 @@ test {
   assert_eq(approx_eq(g2, 0.5), true)
   assert_eq(approx_eq(b2, 0.5), true)
   // NFR13: round-trip Oklab ΔE < 0.1
-  let de = oklab_delta_e(l, a, b, l, a, b)
+  let (r2, g2, b2) = oklab_to_linear_rgb(l, a, b)
+  let (l3, a3, b3) = linear_rgb_to_oklab(r2, g2, b2)
+  let de = oklab_delta_e(l, a, b, l3, a3, b3)
   assert_eq(approx_eq(de, 0.0), true)
 }
 
