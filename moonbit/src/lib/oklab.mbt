@@ -309,6 +309,60 @@ pub fn mengxi_oklab_to_acescct(
   data_len
 }
 
+/// Linear sRGB → Oklab conversion via FFI.
+/// Input: interleaved f64 array [R0,G0,B0, R1,G1,B1, ...] (scene-referred linear)
+/// Output: interleaved f64 array [L0,a0,b0, L1,a1,b1, ...]
+/// Returns: data_len on success, negative error code on failure.
+pub fn mengxi_linear_to_oklab(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
+  let mut i = 0
+  while i < num_pixels {
+    let r = data_ptr[i * 3]
+    let g = data_ptr[i * 3 + 1]
+    let b = data_ptr[i * 3 + 2]
+    let (l, a, bv) = linear_rgb_to_oklab(r, g, b)
+    out_ptr[i * 3] = l
+    out_ptr[i * 3 + 1] = a
+    out_ptr[i * 3 + 2] = bv
+    i = i + 1
+  }
+  data_len
+}
+
+/// Oklab → Linear sRGB conversion via FFI.
+/// Input: interleaved f64 array [L0,a0,b0, L1,a1,b1, ...]
+/// Output: interleaved f64 array [R0,G0,B0, R1,G1,B1, ...] (scene-referred linear)
+/// Returns: data_len on success, negative error code on failure.
+pub fn mengxi_oklab_to_linear(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
+  let mut i = 0
+  while i < num_pixels {
+    let l = data_ptr[i * 3]
+    let a = data_ptr[i * 3 + 1]
+    let bv = data_ptr[i * 3 + 2]
+    let (r, g, b) = oklab_to_linear_rgb(l, a, bv)
+    out_ptr[i * 3] = r
+    out_ptr[i * 3 + 1] = g
+    out_ptr[i * 3 + 2] = b
+    i = i + 1
+  }
+  data_len
+}
+
 // ============================================================
 // DCE Prevention
 // ============================================================
@@ -318,6 +372,8 @@ fn init {
   let _ = mengxi_oklab_to_srgb(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
   let _ = mengxi_acescct_to_oklab(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
   let _ = mengxi_oklab_to_acescct(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
+  let _ = mengxi_linear_to_oklab(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
+  let _ = mengxi_oklab_to_linear(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
 }
 
 // ============================================================
@@ -694,4 +750,183 @@ test {
   let out = FixedArray::make(3, 0.0)
   let result = mengxi_acescct_to_oklab(6, data, 3, out)
   assert_eq(result, -2)
+}
+
+// ============================================================
+// Linear sRGB ↔ Oklab Tests
+// ============================================================
+
+test {
+  // Linear: pure black (0,0,0) → Oklab should be (0,0,0)
+  let (l, a, b) = linear_rgb_to_oklab(0.0, 0.0, 0.0)
+  assert_eq(approx_eq(l, 0.0), true)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+  // No NaN/Inf
+  assert_eq(l == l, true)
+  assert_eq(a == a, true)
+  assert_eq(b == b, true)
+}
+
+test {
+  // Linear: white (1,1,1) → Oklab should be approximately (1, 0, 0)
+  let (l, a, b) = linear_rgb_to_oklab(1.0, 1.0, 1.0)
+  assert_eq(approx_eq(l, 1.0), true)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+}
+
+test {
+  // Linear: mid-gray (0.5, 0.5, 0.5) should be achromatic
+  let (_, a, b) = linear_rgb_to_oklab(0.5, 0.5, 0.5)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+}
+
+test {
+  // Linear: 18% scene-referred grey (0.18, 0.18, 0.18) should be achromatic
+  let (_, a, b) = linear_rgb_to_oklab(0.18, 0.18, 0.18)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+}
+
+test {
+  // Linear: round-trip mid-gray
+  let (l, a, b) = linear_rgb_to_oklab(0.5, 0.5, 0.5)
+  let (r2, g2, b2) = oklab_to_linear_rgb(l, a, b)
+  assert_eq(approx_eq(r2, 0.5), true)
+  assert_eq(approx_eq(g2, 0.5), true)
+  assert_eq(approx_eq(b2, 0.5), true)
+  // NFR13: round-trip Oklab ΔE < 0.1
+  let de = oklab_delta_e(l, a, b, l, a, b)
+  assert_eq(approx_eq(de, 0.0), true)
+}
+
+test {
+  // Linear: round-trip saturated primaries
+  let (l1, a1, b1) = linear_rgb_to_oklab(1.0, 0.0, 0.0)
+  let (r1, g1, bv1) = oklab_to_linear_rgb(l1, a1, b1)
+  assert_eq(approx_eq(r1, 1.0), true)
+  assert_eq(approx_eq(g1, 0.0), true)
+  assert_eq(approx_eq(bv1, 0.0), true)
+
+  let (l2, a2, b2) = linear_rgb_to_oklab(0.0, 1.0, 0.0)
+  let (r2, g2, bv2) = oklab_to_linear_rgb(l2, a2, b2)
+  assert_eq(approx_eq(r2, 0.0), true)
+  assert_eq(approx_eq(g2, 1.0), true)
+  assert_eq(approx_eq(bv2, 0.0), true)
+
+  let (l3, a3, b3) = linear_rgb_to_oklab(0.0, 0.0, 1.0)
+  let (r3, g3, bv3) = oklab_to_linear_rgb(l3, a3, b3)
+  assert_eq(approx_eq(r3, 0.0), true)
+  assert_eq(approx_eq(g3, 0.0), true)
+  assert_eq(approx_eq(bv3, 1.0), true)
+}
+
+test {
+  // Linear: HDR specular (2.0, 2.0, 2.0) should produce finite achromatic values
+  let (l, a, b) = linear_rgb_to_oklab(2.0, 2.0, 2.0)
+  assert_eq(l == l, true)  // NaN check
+  assert_eq(a == a, true)
+  assert_eq(b == b, true)
+  // Achromatic: a≈0, b≈0
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+  // L should be > 1.0 for HDR
+  assert_eq(l > 1.0, true)
+}
+
+test {
+  // FFI: mengxi_linear_to_oklab basic test
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 1.0; data[1] = 0.0; data[2] = 0.0
+  data[3] = 0.0; data[4] = 1.0; data[5] = 0.0
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_linear_to_oklab(6, data, 6, out)
+  assert_eq(result, 6)
+  // Red pixel should have positive a
+  assert_eq(out[1] > 0.0, true)
+  // Green pixel should have negative a
+  assert_eq(out[4] < 0.0, true)
+}
+
+test {
+  // FFI: mengxi_oklab_to_linear basic test
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 1.0; data[1] = 0.0; data[2] = 0.0
+  data[3] = 0.5; data[4] = 0.5; data[5] = 0.5
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_oklab_to_linear(6, data, 6, out)
+  assert_eq(result, 6)
+  // White pixel round-trip
+  assert_eq(approx_eq(out[0], 1.0), true)
+  assert_eq(approx_eq(out[1], 0.0), true)
+  assert_eq(approx_eq(out[2], 0.0), true)
+  // Gray pixel
+  assert_eq(approx_eq(out[3], 0.5), true)
+  assert_eq(approx_eq(out[4], 0.5), true)
+  assert_eq(approx_eq(out[5], 0.5), true)
+}
+
+test {
+  // FFI: Linear round-trip through FFI functions
+  let data = FixedArray::make(9, 0.0)
+  data[0] = 0.5; data[1] = 0.5; data[2] = 0.5
+  data[3] = 1.0; data[4] = 0.0; data[5] = 0.0
+  data[6] = 0.0; data[7] = 0.0; data[8] = 0.0
+  let mid = FixedArray::make(9, 0.0)
+  let r1 = mengxi_linear_to_oklab(9, data, 9, mid)
+  assert_eq(r1, 9)
+  let back = FixedArray::make(9, 0.0)
+  let r2 = mengxi_oklab_to_linear(9, mid, 9, back)
+  assert_eq(r2, 9)
+  // Verify round-trip
+  assert_eq(approx_eq(back[0], 0.5), true)
+  assert_eq(approx_eq(back[1], 0.5), true)
+  assert_eq(approx_eq(back[2], 0.5), true)
+  assert_eq(approx_eq(back[3], 1.0), true)
+  assert_eq(approx_eq(back[4], 0.0), true)
+  assert_eq(approx_eq(back[5], 0.0), true)
+  assert_eq(approx_eq(back[6], 0.0), true)
+  assert_eq(approx_eq(back[7], 0.0), true)
+  assert_eq(approx_eq(back[8], 0.0), true)
+}
+
+test {
+  // FFI: Linear error on too few pixels
+  let data = FixedArray::make(2, 0.0)
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_linear_to_oklab(2, data, 6, out)
+  assert_eq(result, -1)
+}
+
+test {
+  // FFI: Linear error on output too small
+  let data = FixedArray::make(6, 0.0)
+  let out = FixedArray::make(3, 0.0)
+  let result = mengxi_linear_to_oklab(6, data, 3, out)
+  assert_eq(result, -2)
+}
+
+test {
+  // FFI: HDR specular round-trip (2.0, 2.0, 2.0)
+  let data = FixedArray::make(3, 0.0)
+  data[0] = 2.0; data[1] = 2.0; data[2] = 2.0
+  let mid = FixedArray::make(3, 0.0)
+  let r1 = mengxi_linear_to_oklab(3, data, 3, mid)
+  assert_eq(r1, 3)
+  // Should be finite
+  assert_eq(mid[0] == mid[0], true)
+  assert_eq(mid[1] == mid[1], true)
+  assert_eq(mid[2] == mid[2], true)
+  // Achromatic: a≈0, b≈0
+  assert_eq(approx_eq(mid[1], 0.0), true)
+  assert_eq(approx_eq(mid[2], 0.0), true)
+  // Round-trip back
+  let back = FixedArray::make(3, 0.0)
+  let r2 = mengxi_oklab_to_linear(3, mid, 3, back)
+  assert_eq(r2, 3)
+  assert_eq(approx_eq(back[0], 2.0), true)
+  assert_eq(approx_eq(back[1], 2.0), true)
+  assert_eq(approx_eq(back[2], 2.0), true)
 }

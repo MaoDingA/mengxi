@@ -113,6 +113,20 @@ extern "C" {
         out_len: i32,
         out_ptr: *mut f64,
     ) -> i32;
+
+    fn mengxi_linear_to_oklab(
+        data_len: i32,
+        data_ptr: *const f64,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
+
+    fn mengxi_oklab_to_linear(
+        data_len: i32,
+        data_ptr: *const f64,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
 }
 
 /// Apply ACES color space transform to interleaved RGB pixel data.
@@ -447,6 +461,112 @@ pub fn oklab_to_acescct(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceErro
         return Err(ColorScienceError::FfiError(
             result,
             "oklab_to_acescct".to_string(),
+        ));
+    }
+
+    Ok(output)
+}
+
+/// Convert Linear sRGB pixel data to Oklab color space via FFI.
+///
+/// # Arguments
+/// * `pixel_data` — Interleaved Linear sRGB values [R0,G0,B0, R1,G1,B1, ...], length divisible by 3.
+///
+/// # Returns
+/// * `Ok(Vec<f64>)` with interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...].
+/// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+pub fn linear_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    if pixel_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "pixel data must contain at least 3 values (1 pixel)".to_string(),
+        ));
+    }
+    if pixel_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "pixel data too large for FFI ({} elements, max {})",
+                pixel_data.len(),
+                i32::MAX
+            ),
+        ));
+    }
+    if pixel_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "pixel data length must be divisible by 3 (RGB)".to_string(),
+        ));
+    }
+
+    let mut output = vec![0.0_f64; pixel_data.len()];
+
+    let result = unsafe {
+        mengxi_linear_to_oklab(
+            pixel_data.len() as i32,
+            pixel_data.as_ptr(),
+            output.len() as i32,
+            output.as_mut_ptr(),
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            "linear_to_oklab".to_string(),
+        ));
+    }
+
+    Ok(output)
+}
+
+/// Convert Oklab pixel data to Linear sRGB color space via FFI.
+///
+/// # Arguments
+/// * `oklab_data` — Interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...], length divisible by 3.
+///
+/// # Returns
+/// * `Ok(Vec<f64>)` with interleaved Linear sRGB values [R0,G0,B0, R1,G1,B1, ...].
+/// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    if oklab_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab data must contain at least 3 values (1 pixel)".to_string(),
+        ));
+    }
+    if oklab_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "oklab data too large for FFI ({} elements, max {})",
+                oklab_data.len(),
+                i32::MAX
+            ),
+        ));
+    }
+    if oklab_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab data length must be divisible by 3 (L,a,b)".to_string(),
+        ));
+    }
+
+    let mut output = vec![0.0_f64; oklab_data.len()];
+
+    let result = unsafe {
+        mengxi_oklab_to_linear(
+            oklab_data.len() as i32,
+            oklab_data.as_ptr(),
+            output.len() as i32,
+            output.as_mut_ptr(),
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            "oklab_to_linear".to_string(),
         ));
     }
 
@@ -889,5 +1009,160 @@ mod tests {
         // Achromatic: a and b should be near zero
         assert!(result[1].abs() < 1e-3, "Min code value a should be near 0");
         assert!(result[2].abs() < 1e-3, "Min code value b should be near 0");
+    }
+
+    // -- Linear sRGB ↔ Oklab tests --
+
+    #[test]
+    fn test_linear_to_oklab_white() {
+        let data = [1.0_f64, 1.0, 1.0];
+        let result = linear_to_oklab(&data).unwrap();
+        assert!((result[0] - 1.0).abs() < 1e-4, "L should be ~1.0, got {}", result[0]);
+        assert!(result[1].abs() < 1e-4, "a should be ~0.0, got {}", result[1]);
+        assert!(result[2].abs() < 1e-4, "b should be ~0.0, got {}", result[2]);
+    }
+
+    #[test]
+    fn test_linear_to_oklab_black() {
+        let data = [0.0_f64, 0.0, 0.0];
+        let result = linear_to_oklab(&data).unwrap();
+        assert!(result[0].is_finite(), "L should be finite");
+        assert!(result[1].is_finite(), "a should be finite");
+        assert!(result[2].is_finite(), "b should be finite");
+        assert!(result[0].abs() < 1e-10, "L should be ~0 for black");
+    }
+
+    #[test]
+    fn test_linear_to_oklab_achromatic() {
+        // 18% scene-referred grey
+        let data = [0.18_f64, 0.18, 0.18];
+        let result = linear_to_oklab(&data).unwrap();
+        assert!(result[1].abs() < 1e-3, "a should be near 0 for achromatic, got {}", result[1]);
+        assert!(result[2].abs() < 1e-3, "b should be near 0 for achromatic, got {}", result[2]);
+    }
+
+    #[test]
+    fn test_linear_to_oklab_red() {
+        let data = [1.0_f64, 0.0, 0.0];
+        let result = linear_to_oklab(&data).unwrap();
+        assert!(result[1] > 0.0, "Red should have positive a, got {}", result[1]);
+    }
+
+    #[test]
+    fn test_linear_to_oklab_green() {
+        let data = [0.0_f64, 1.0, 0.0];
+        let result = linear_to_oklab(&data).unwrap();
+        assert!(result[1] < 0.0, "Green should have negative a, got {}", result[1]);
+    }
+
+    #[test]
+    fn test_linear_roundtrip() {
+        let colors = [
+            [0.5_f64, 0.5, 0.5],     // mid-gray
+            [1.0_f64, 0.0, 0.0],     // saturated red
+            [0.0_f64, 1.0, 0.0],     // saturated green
+            [0.0_f64, 0.0, 1.0],     // saturated blue
+            [1.0_f64, 1.0, 1.0],     // white
+            [0.0_f64, 0.0, 0.0],     // black
+            [0.18_f64, 0.18, 0.18],  // 18% grey
+            [0.2_f64, 0.4, 0.8],     // arbitrary color
+        ];
+        for color in &colors {
+            let oklab = linear_to_oklab(color).unwrap();
+            let back = oklab_to_linear(&oklab).unwrap();
+            for i in 0..3 {
+                assert!(
+                    (back[i] - color[i]).abs() < 1e-4,
+                    "Linear round-trip failed for {:?}: channel {} = {} vs {}",
+                    color, i, back[i], color[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_linear_hdr_specular() {
+        // HDR specular highlight (2.0, 2.0, 2.0) should produce finite achromatic values
+        let data = [2.0_f64, 2.0, 2.0];
+        let oklab = linear_to_oklab(&data).unwrap();
+        for (i, &val) in oklab.iter().enumerate() {
+            assert!(val.is_finite(), "HDR specular channel {} should be finite, got {}", i, val);
+        }
+        // Achromatic: a≈0, b≈0
+        assert!(oklab[1].abs() < 1e-3, "HDR specular a should be near 0");
+        assert!(oklab[2].abs() < 1e-3, "HDR specular b should be near 0");
+        // L should be > 1.0 for HDR
+        assert!(oklab[0] > 1.0, "HDR specular L should be > 1.0, got {}", oklab[0]);
+        // Round-trip should preserve HDR values
+        let back = oklab_to_linear(&oklab).unwrap();
+        for i in 0..3 {
+            assert!(
+                (back[i] - 2.0).abs() < 1e-4,
+                "HDR round-trip channel {} = {} vs 2.0",
+                i, back[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_linear_to_oklab_multi_pixel() {
+        let data = [1.0_f64, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let result = linear_to_oklab(&data).unwrap();
+        assert_eq!(result.len(), 6);
+        assert!(result[1] > 0.0, "Red pixel a should be positive");
+        assert!(result[4] < 0.0, "Green pixel a should be negative");
+    }
+
+    #[test]
+    fn test_linear_to_oklab_too_few_pixels() {
+        let result = linear_to_oklab(&[0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_linear_to_oklab_not_divisible_by_3() {
+        let result = linear_to_oklab(&[0.5, 0.5, 0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_oklab_to_linear_too_few_pixels() {
+        let result = oklab_to_linear(&[0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_oklab_to_linear_not_divisible_by_3() {
+        let result = oklab_to_linear(&[0.5, 0.5, 0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_linear_roundtrip_preserves_black() {
+        let data = [0.0_f64, 0.0, 0.0];
+        let oklab = linear_to_oklab(&data).unwrap();
+        let back = oklab_to_linear(&oklab).unwrap();
+        for i in 0..3 {
+            assert!(
+                back[i].is_finite(),
+                "Black round-trip channel {} should be finite, got {}",
+                i, back[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_linear_all_ones() {
+        // All 1.0 input should produce Oklab ~(1, 0, 0)
+        let data = [1.0_f64, 1.0, 1.0];
+        let oklab = linear_to_oklab(&data).unwrap();
+        let back = oklab_to_linear(&oklab).unwrap();
+        for i in 0..3 {
+            assert!(
+                (back[i] - 1.0).abs() < 1e-4,
+                "All-ones round-trip channel {} = {} vs 1.0",
+                i, back[i]
+            );
+        }
     }
 }
