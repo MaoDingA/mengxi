@@ -110,16 +110,17 @@ pub fn mengxi_srgb_to_oklab(
 ) -> Int {
   if data_len < 3 { return -1 }
   if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
   let mut i = 0
-  while i < data_len {
-    let r = data_ptr[i]
-    let g = data_ptr[i + 1]
-    let b = data_ptr[i + 2]
+  while i < num_pixels {
+    let r = data_ptr[i * 3]
+    let g = data_ptr[i * 3 + 1]
+    let b = data_ptr[i * 3 + 2]
     let (l, a, bv) = srgb_to_oklab(r, g, b)
-    out_ptr[i] = l
-    out_ptr[i + 1] = a
-    out_ptr[i + 2] = bv
-    i = i + 3
+    out_ptr[i * 3] = l
+    out_ptr[i * 3 + 1] = a
+    out_ptr[i * 3 + 2] = bv
+    i = i + 1
   }
   data_len
 }
@@ -136,16 +137,17 @@ pub fn mengxi_oklab_to_srgb(
 ) -> Int {
   if data_len < 3 { return -1 }
   if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
   let mut i = 0
-  while i < data_len {
-    let l = data_ptr[i]
-    let a = data_ptr[i + 1]
-    let bv = data_ptr[i + 2]
+  while i < num_pixels {
+    let l = data_ptr[i * 3]
+    let a = data_ptr[i * 3 + 1]
+    let bv = data_ptr[i * 3 + 2]
     let (r, g, b) = oklab_to_srgb(l, a, bv)
-    out_ptr[i] = r
-    out_ptr[i + 1] = g
-    out_ptr[i + 2] = b
-    i = i + 3
+    out_ptr[i * 3] = r
+    out_ptr[i * 3 + 1] = g
+    out_ptr[i * 3 + 2] = b
+    i = i + 1
   }
   data_len
 }

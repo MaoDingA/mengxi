@@ -242,6 +242,16 @@ pub fn srgb_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> 
             "pixel data must contain at least 3 values (1 pixel)".to_string(),
         ));
     }
+    if pixel_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "pixel data too large for FFI ({} elements, max {})",
+                pixel_data.len(),
+                i32::MAX
+            ),
+        ));
+    }
     if pixel_data.len() % 3 != 0 {
         return Err(ColorScienceError::FfiError(
             -1,
@@ -283,6 +293,16 @@ pub fn oklab_to_srgb(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> 
         return Err(ColorScienceError::FfiError(
             -1,
             "oklab data must contain at least 3 values (1 pixel)".to_string(),
+        ));
+    }
+    if oklab_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "oklab data too large for FFI ({} elements, max {})",
+                oklab_data.len(),
+                i32::MAX
+            ),
         ));
     }
     if oklab_data.len() % 3 != 0 {

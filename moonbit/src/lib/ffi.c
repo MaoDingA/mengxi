@@ -201,6 +201,8 @@ int32_t mengxi_srgb_to_oklab(
 ) {
   ensure_runtime_init();
 
+  if (data_len <= 0) return -1;
+
   double* mb_data = moonbit_make_double_array(data_len, 0.0);
   if (!mb_data) return -3;
 
@@ -236,6 +238,8 @@ int32_t mengxi_oklab_to_srgb(
   double* out_ptr
 ) {
   ensure_runtime_init();
+
+  if (data_len <= 0) return -1;
 
   double* mb_data = moonbit_make_double_array(data_len, 0.0);
   if (!mb_data) return -3;
