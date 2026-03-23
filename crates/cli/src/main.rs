@@ -1,4 +1,5 @@
 mod config;
+mod validate;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -163,6 +164,12 @@ enum Commands {
         #[arg(long)]
         edit: bool,
     },
+    /// Validate color space conversion precision
+    Validate {
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
     /// Browse and query the database
     Db {
         #[command(subcommand)]
@@ -265,6 +272,7 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
         Some(Commands::LutDep { .. }) => ("lut-dep".to_string(), "{}".to_string(), None),
         Some(Commands::Stats { .. }) => ("stats".to_string(), "{}".to_string(), None),
         Some(Commands::Config { .. }) => ("config".to_string(), "{}".to_string(), None),
+        Some(Commands::Validate { .. }) => ("validate".to_string(), "{}".to_string(), None),
         Some(Commands::Db { .. }) => ("db".to_string(), "{}".to_string(), None),
         None => ("help".to_string(), "{}".to_string(), None),
     }
@@ -2157,6 +2165,11 @@ fn main() {
         | Some(Commands::Config { show: true, edit: true }) => {
             eprintln!("Error: Specify --show or --edit");
             process::exit(1);
+        }
+        Some(Commands::Validate { format }) => {
+            let is_json = format == "json";
+            let exit_code = validate::run_validate(is_json);
+            process::exit(exit_code);
         }
         Some(Commands::Db { command }) => {
             let conn = match db::open_db() {
