@@ -85,6 +85,20 @@ extern "C" {
         out_ptr: *mut f64,
         out_len: i32,
     ) -> i32;
+
+    fn mengxi_srgb_to_oklab(
+        data_len: i32,
+        data_ptr: *const f64,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
+
+    fn mengxi_oklab_to_srgb(
+        data_len: i32,
+        data_ptr: *const f64,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
 }
 
 /// Apply ACES color space transform to interleaved RGB pixel data.
@@ -207,6 +221,92 @@ pub fn generate_lut(
         return Err(ColorScienceError::FfiError(
             result,
             format!("generate_lut grid_size={} {:?} -> {:?}", grid_size, src, dst),
+        ));
+    }
+
+    Ok(output)
+}
+
+/// Convert sRGB pixel data to Oklab color space via FFI.
+///
+/// # Arguments
+/// * `pixel_data` — Interleaved sRGB values [R0,G0,B0, R1,G1,B1, ...], length divisible by 3.
+///
+/// # Returns
+/// * `Ok(Vec<f64>)` with interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...].
+/// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+pub fn srgb_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    if pixel_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "pixel data must contain at least 3 values (1 pixel)".to_string(),
+        ));
+    }
+    if pixel_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "pixel data length must be divisible by 3 (RGB)".to_string(),
+        ));
+    }
+
+    let mut output = vec![0.0_f64; pixel_data.len()];
+
+    let result = unsafe {
+        mengxi_srgb_to_oklab(
+            pixel_data.len() as i32,
+            pixel_data.as_ptr(),
+            output.len() as i32,
+            output.as_mut_ptr(),
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            "srgb_to_oklab".to_string(),
+        ));
+    }
+
+    Ok(output)
+}
+
+/// Convert Oklab pixel data to sRGB color space via FFI.
+///
+/// # Arguments
+/// * `oklab_data` — Interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...], length divisible by 3.
+///
+/// # Returns
+/// * `Ok(Vec<f64>)` with interleaved sRGB values [R0,G0,B0, R1,G1,B1, ...].
+/// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+pub fn oklab_to_srgb(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    if oklab_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab data must contain at least 3 values (1 pixel)".to_string(),
+        ));
+    }
+    if oklab_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab data length must be divisible by 3 (L,a,b)".to_string(),
+        ));
+    }
+
+    let mut output = vec![0.0_f64; oklab_data.len()];
+
+    let result = unsafe {
+        mengxi_oklab_to_srgb(
+            oklab_data.len() as i32,
+            oklab_data.as_ptr(),
+            output.len() as i32,
+            output.as_mut_ptr(),
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            "oklab_to_srgb".to_string(),
         ));
     }
 
@@ -421,5 +521,115 @@ mod tests {
         for &val in &v {
             assert!(val.is_finite(), "LUT value is not finite: {}", val);
         }
+    }
+
+    // -- sRGB ↔ Oklab tests --
+
+    #[test]
+    fn test_srgb_to_oklab_white() {
+        let data = [1.0_f64, 1.0, 1.0];
+        let result = srgb_to_oklab(&data).unwrap();
+        assert!((result[0] - 1.0).abs() < 1e-4, "L should be ~1.0, got {}", result[0]);
+        assert!(result[1].abs() < 1e-4, "a should be ~0.0, got {}", result[1]);
+        assert!(result[2].abs() < 1e-4, "b should be ~0.0, got {}", result[2]);
+    }
+
+    #[test]
+    fn test_srgb_to_oklab_black() {
+        let data = [0.0_f64, 0.0, 0.0];
+        let result = srgb_to_oklab(&data).unwrap();
+        assert!(result[0].is_finite(), "L should be finite");
+        assert!(result[1].is_finite(), "a should be finite");
+        assert!(result[2].is_finite(), "b should be finite");
+    }
+
+    #[test]
+    fn test_srgb_to_oklab_red() {
+        let data = [1.0_f64, 0.0, 0.0];
+        let result = srgb_to_oklab(&data).unwrap();
+        assert!(result[1] > 0.0, "Red should have positive a, got {}", result[1]);
+    }
+
+    #[test]
+    fn test_srgb_to_oklab_green() {
+        let data = [0.0_f64, 1.0, 0.0];
+        let result = srgb_to_oklab(&data).unwrap();
+        assert!(result[1] < 0.0, "Green should have negative a, got {}", result[1]);
+    }
+
+    #[test]
+    fn test_oklab_to_srgb_roundtrip() {
+        let colors = [
+            [0.5_f64, 0.5, 0.5],
+            [1.0_f64, 0.0, 0.0],
+            [0.0_f64, 1.0, 0.0],
+            [0.0_f64, 0.0, 1.0],
+            [1.0_f64, 1.0, 1.0],
+            [0.0_f64, 0.0, 0.0],
+            [0.2_f64, 0.4, 0.8],
+        ];
+        for color in &colors {
+            let oklab = srgb_to_oklab(color).unwrap();
+            let back = oklab_to_srgb(&oklab).unwrap();
+            for i in 0..3 {
+                assert!(
+                    (back[i] - color[i]).abs() < 1e-4,
+                    "Round-trip failed for {:?}: channel {} = {} vs {}",
+                    color,
+                    i,
+                    back[i],
+                    color[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_srgb_to_oklab_multi_pixel() {
+        let data = [1.0_f64, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let result = srgb_to_oklab(&data).unwrap();
+        assert_eq!(result.len(), 6);
+        assert!(result[1] > 0.0, "Red pixel a should be positive");
+        assert!(result[4] < 0.0, "Green pixel a should be negative");
+    }
+
+    #[test]
+    fn test_srgb_to_oklab_too_few_pixels() {
+        let result = srgb_to_oklab(&[0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_srgb_to_oklab_not_divisible_by_3() {
+        let result = srgb_to_oklab(&[0.5, 0.5, 0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_oklab_to_srgb_too_few_pixels() {
+        let result = oklab_to_srgb(&[0.5, 0.5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_oklab_to_srgb_roundtrip_preserves_black() {
+        let data = [0.0_f64, 0.0, 0.0];
+        let oklab = srgb_to_oklab(&data).unwrap();
+        let back = oklab_to_srgb(&oklab).unwrap();
+        for i in 0..3 {
+            assert!(
+                back[i].is_finite(),
+                "Black round-trip channel {} should be finite, got {}",
+                i,
+                back[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_oklab_to_srgb_white_identity() {
+        let data = [1.0_f64, 0.0, 0.0];
+        let back = oklab_to_srgb(&data).unwrap();
+        assert!((back[0] - 1.0).abs() < 1e-4, "White should round-trip");
     }
 }

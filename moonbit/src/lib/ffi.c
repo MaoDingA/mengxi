@@ -41,6 +41,18 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib21mengxi__generate__lut(
   double*,
   int32_t
 );
+extern int32_t _M0FP216mengxi_2dmoonbit3lib23mengxi__srgb__to__oklab(
+  int32_t,
+  double*,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib23mengxi__oklab__to__srgb(
+  int32_t,
+  double*,
+  int32_t,
+  double*
+);
 
 static atomic_int runtime_initialized = 0;
 
@@ -175,6 +187,78 @@ int32_t mengxi_aces_transform(
   }
 
   /* Free MoonBit arrays */
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_data);
+
+  return result;
+}
+
+int32_t mengxi_srgb_to_oklab(
+  int32_t data_len,
+  double* data_ptr,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  double* mb_data = moonbit_make_double_array(data_len, 0.0);
+  if (!mb_data) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_data);
+    return -3;
+  }
+
+  memcpy(mb_data, data_ptr, data_len * sizeof(double));
+
+  Moonbit_object_header(mb_data)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib23mengxi__srgb__to__oklab(
+    data_len, mb_data, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_data);
+
+  return result;
+}
+
+int32_t mengxi_oklab_to_srgb(
+  int32_t data_len,
+  double* data_ptr,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  double* mb_data = moonbit_make_double_array(data_len, 0.0);
+  if (!mb_data) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_data);
+    return -3;
+  }
+
+  memcpy(mb_data, data_ptr, data_len * sizeof(double));
+
+  Moonbit_object_header(mb_data)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib23mengxi__oklab__to__srgb(
+    data_len, mb_data, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
   moonbit_drop_object(mb_out);
   moonbit_drop_object(mb_data);
 
