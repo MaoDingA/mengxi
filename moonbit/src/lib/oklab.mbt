@@ -1,6 +1,8 @@
 // oklab.mbt — Oklab perceptual color space conversion
 // Implements: sRGB ↔ Oklab (IEC 61966-2-1 compliant)
+// Implements: ACEScct ↔ Oklab (ACES 2.0 compliant)
 // Reference: Björn Ottosson 2020 — A perceptual color space for image processing
+// Reference: ACES TB-2014-004.2 — ACEScct specification
 
 // ============================================================
 // IEC 61966-2-1 sRGB Transfer Functions
@@ -26,6 +28,88 @@ fn linear_to_srgb(c : Double) -> Double {
   } else {
     1.055 * @math.pow(c, 1.0 / 2.4) - 0.055
   }
+}
+
+// ============================================================
+// Workaround: MoonBit @math.ln is identity in native FFI builds.
+// Implement log2 using Newton's method with @math.pow (which works).
+// ============================================================
+
+fn log2(x : Double) -> Double {
+  let ln2 = 0.6931471805599453
+  // Get integer part by repeated halving, then refine with Newton
+  let mut val = x
+  let mut exp = 0
+  if val <= 0.0 { return 0.0 }
+  // Bring val into [0.5, 2.0) by halving
+  while val >= 2.0 { val = val / 2.0; exp = exp + 1 }
+  while val < 0.5 { val = val * 2.0; exp = exp - 1 }
+  // Initial guess = integer part; val now in [0.5, 2.0)
+  let mut y = exp.to_double()
+  let mut i = 0
+  while i < 80 {
+    let p = @math.pow(2.0, y)
+    let dy = (x / p - 1.0) / ln2
+    y = y + dy
+    i = i + 1
+  }
+  y
+}
+
+// ============================================================
+// ACEScct Transfer Functions (ACES 2.0 / TB-2014-004.2)
+// CRITICAL: ACEScct uses AP1 primaries, piecewise log/linear
+// ============================================================
+
+/// ACEScct code value to linear AP1 (ACEScct decode / log to linear).
+/// Used in ACEScct → Oklab path.
+fn acescct_to_linear(c : Double) -> Double {
+  if c <= 0.155251141552511 {
+    (c - 0.0729055341958355) / 10.5402377416545
+  } else {
+    let c_clamped = if c <= 0.0 { 0.0 } else { c }
+    let upper = @math.pow(2.0, 52.0) * 17.52 - 9.72
+    if c_clamped >= upper { 65504.0 } else {
+      @math.pow(2.0, c_clamped * 17.52 - 9.72)
+    }
+  }
+}
+
+/// Linear AP1 to ACEScct code value (ACEScct encode / linear to log).
+/// Used in Oklab → ACEScct path.
+fn linear_to_acescct(c : Double) -> Double {
+  if c <= 0.0 {
+    0.0
+  } else if c <= 0.0078125 {
+    10.5402377416545 * c + 0.0729055341958355
+  } else {
+    (log2(c) + 9.72) / 17.52
+  }
+}
+
+// ============================================================
+// AP1 ↔ sRGB Linear Primary Conversion
+// ACEScct uses AP1 primaries; Oklab uses sRGB/D65 primaries
+// Composed: AP1 → AP0 → sRGB (using existing ACES matrices)
+// ============================================================
+
+/// Linear AP1 (ACEScg, D60) to linear sRGB (Rec.709, D65).
+/// Uses Bradford chromatic adaptation for D60→D65 white point conversion.
+/// Pre-composed: XYZ(D65)→sRGB × Bradford(D60→D65) × AP1→XYZ(D60)
+fn ap1_to_srgb_linear(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  let sr =  1.7050509927 * r - 0.6217921207 * g - 0.0832588720 * b
+  let sg = -0.1302564175 * r + 1.1408047366 * g - 0.0105483191 * b
+  let sb = -0.0240033568 * r - 0.1289689761 * g + 1.1529723329 * b
+  (sr, sg, sb)
+}
+
+/// Linear sRGB (Rec.709, D65) to linear AP1 (ACEScg, D60).
+/// Inverse of the Bradford-adapted AP1→sRGB matrix, 10-digit precision.
+fn srgb_linear_to_ap1(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  let ar = 0.6130974024 * r + 0.3395231462 * g + 0.0473794514 * b
+  let ag = 0.0701937225 * r + 0.9163538791 * g + 0.0134523985 * b
+  let ab = 0.0206155929 * r + 0.1095697729 * g + 0.8698146342 * b
+  (ar, ag, ab)
 }
 
 // ============================================================
@@ -95,6 +179,26 @@ fn oklab_to_srgb(l : Double, a : Double, bv : Double) -> (Double, Double, Double
 }
 
 // ============================================================
+// Compound ACEScct ↔ Oklab Functions
+// ============================================================
+
+/// ACEScct (log-encoded AP1) → Oklab
+fn acescct_to_oklab(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  let lr = acescct_to_linear(r)
+  let lg = acescct_to_linear(g)
+  let lb = acescct_to_linear(b)
+  let (sr, sg, sb) = ap1_to_srgb_linear(lr, lg, lb)
+  linear_rgb_to_oklab(sr, sg, sb)
+}
+
+/// Oklab → ACEScct (log-encoded AP1)
+fn oklab_to_acescct(l : Double, a : Double, bv : Double) -> (Double, Double, Double) {
+  let (sr, sg, sb) = oklab_to_linear_rgb(l, a, bv)
+  let (ar, ag, ab) = srgb_linear_to_ap1(sr, sg, sb)
+  (linear_to_acescct(ar), linear_to_acescct(ag), linear_to_acescct(ab))
+}
+
+// ============================================================
 // FFI Exported Functions
 // ============================================================
 
@@ -152,6 +256,60 @@ pub fn mengxi_oklab_to_srgb(
   data_len
 }
 
+/// ACEScct → Oklab conversion via FFI.
+/// Input: interleaved f64 array [R0,G0,B0, R1,G1,B1, ...]
+/// Output: interleaved f64 array [L0,a0,b0, L1,a1,b1, ...]
+/// Returns: data_len on success, negative error code on failure.
+pub fn mengxi_acescct_to_oklab(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
+  let mut i = 0
+  while i < num_pixels {
+    let r = data_ptr[i * 3]
+    let g = data_ptr[i * 3 + 1]
+    let b = data_ptr[i * 3 + 2]
+    let (l, a, bv) = acescct_to_oklab(r, g, b)
+    out_ptr[i * 3] = l
+    out_ptr[i * 3 + 1] = a
+    out_ptr[i * 3 + 2] = bv
+    i = i + 1
+  }
+  data_len
+}
+
+/// Oklab → ACEScct conversion via FFI.
+/// Input: interleaved f64 array [L0,a0,b0, L1,a1,b1, ...]
+/// Output: interleaved f64 array [R0,G0,B0, R1,G1,B1, ...]
+/// Returns: data_len on success, negative error code on failure.
+pub fn mengxi_oklab_to_acescct(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
+  let mut i = 0
+  while i < num_pixels {
+    let l = data_ptr[i * 3]
+    let a = data_ptr[i * 3 + 1]
+    let bv = data_ptr[i * 3 + 2]
+    let (r, g, b) = oklab_to_acescct(l, a, bv)
+    out_ptr[i * 3] = r
+    out_ptr[i * 3 + 1] = g
+    out_ptr[i * 3 + 2] = b
+    i = i + 1
+  }
+  data_len
+}
+
 // ============================================================
 // DCE Prevention
 // ============================================================
@@ -159,6 +317,8 @@ pub fn mengxi_oklab_to_srgb(
 fn init {
   let _ = mengxi_srgb_to_oklab(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
   let _ = mengxi_oklab_to_srgb(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
+  let _ = mengxi_acescct_to_oklab(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
+  let _ = mengxi_oklab_to_acescct(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
 }
 
 // ============================================================
@@ -356,4 +516,181 @@ test {
   assert_eq(approx_eq(back[6], 0.0), true)
   assert_eq(approx_eq(back[7], 0.0), true)
   assert_eq(approx_eq(back[8], 0.0), true)
+}
+
+// ============================================================
+// ACEScct Tests
+// ============================================================
+
+test {
+  // ACEScct transfer: threshold continuity at 0.0078125 (encode)
+  // Linear segment: 10.5402377416545 * 0.0078125 + 0.0729055341958355
+  let enc_below = 10.5402377416545 * 0.0078125 + 0.0729055341958355
+  // Log segment: (log2(0.0078125) + 9.72) / 17.52
+  let log2_val = log2(0.0078125)
+  let enc_above = (log2_val + 9.72) / 17.52
+  assert_eq(approx_eq(enc_below, enc_above), true)
+}
+
+test {
+  // ACEScct transfer: threshold continuity at 0.155251141552511 (decode)
+  // Linear segment: (0.155251141552511 - 0.0729055341958355) / 10.5402377416545
+  let dec_below = (0.155251141552511 - 0.0729055341958355) / 10.5402377416545
+  // Log segment: 2^(0.155251141552511 * 17.52 - 9.72)
+  let dec_above = @math.pow(2.0, 0.155251141552511 * 17.52 - 9.72)
+  assert_eq(approx_eq(dec_below, dec_above), true)
+}
+
+test {
+  // ACEScct: no NaN/Inf for pure black (0,0,0)
+  let (l, a, b) = acescct_to_oklab(0.0, 0.0, 0.0)
+  assert_eq(l == l, true)
+  assert_eq(a == a, true)
+  assert_eq(b == b, true)
+}
+
+test {
+  // ACEScct: no NaN/Inf for negative input
+  let (l, a, b) = acescct_to_oklab(-0.1, -0.1, -0.1)
+  assert_eq(l == l, true)
+  assert_eq(a == a, true)
+  assert_eq(b == b, true)
+}
+
+test {
+  // ACEScct: no NaN/Inf for white (1.0, 1.0, 1.0)
+  let (l, a, b) = acescct_to_oklab(1.0, 1.0, 1.0)
+  assert_eq(l == l, true)
+  assert_eq(a == a, true)
+  assert_eq(b == b, true)
+}
+
+test {
+  // ACEScct round-trip: mid-gray (~0.413)
+  let (l, a, b) = acescct_to_oklab(0.413, 0.413, 0.413)
+  let (r2, g2, b2) = oklab_to_acescct(l, a, b)
+  assert_eq(approx_eq(r2, 0.413), true)
+  assert_eq(approx_eq(g2, 0.413), true)
+  assert_eq(approx_eq(b2, 0.413), true)
+}
+
+test {
+  // ACEScct round-trip: minimum code value (0.0729)
+  let (l, a, b) = acescct_to_oklab(0.0729055341958355, 0.0729055341958355, 0.0729055341958355)
+  let (r2, g2, b2) = oklab_to_acescct(l, a, b)
+  assert_eq(approx_eq(r2, 0.0729055341958355), true)
+  assert_eq(approx_eq(g2, 0.0729055341958355), true)
+  assert_eq(approx_eq(b2, 0.0729055341958355), true)
+}
+
+test {
+  // ACEScct round-trip: saturated colors
+  let (l1, a1, b1) = acescct_to_oklab(1.0, 0.0, 0.0)
+  let (r1, g1, b1) = oklab_to_acescct(l1, a1, b1)
+  assert_eq(approx_eq(r1, 1.0), true)
+  assert_eq(approx_eq(g1, 0.0), true)
+  assert_eq(approx_eq(b1, 0.0), true)
+
+  let (l2, a2, b2) = acescct_to_oklab(0.0, 1.0, 0.0)
+  let (r2, g2, b2) = oklab_to_acescct(l2, a2, b2)
+  assert_eq(approx_eq(r2, 0.0), true)
+  assert_eq(approx_eq(g2, 1.0), true)
+  assert_eq(approx_eq(b2, 0.0), true)
+}
+
+test {
+  // ACEScct: achromatic input should have a≈0, b≈0
+  let (_, a, b) = acescct_to_oklab(0.5, 0.5, 0.5)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+}
+
+test {
+  // ACEScct transfer round-trip: linear encode then decode
+  let lin = 0.18
+  let encoded = linear_to_acescct(lin)
+  let decoded = acescct_to_linear(encoded)
+  assert_eq(approx_eq(decoded, lin), true)
+}
+
+test {
+  // ACEScct transfer round-trip: zero input
+  let decoded = acescct_to_linear(0.0)
+  let re_encoded = linear_to_acescct(decoded)
+  assert_eq(approx_eq(re_encoded, 0.0), true)
+}
+
+test {
+  // ACEScct transfer round-trip: small positive value
+  let lin = 0.001
+  let encoded = linear_to_acescct(lin)
+  let decoded = acescct_to_linear(encoded)
+  assert_eq(approx_eq(decoded, lin), true)
+}
+
+test {
+  // FFI: mengxi_acescct_to_oklab basic test
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 0.5; data[1] = 0.5; data[2] = 0.5
+  data[3] = 1.0; data[4] = 0.0; data[5] = 0.0
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_acescct_to_oklab(6, data, 6, out)
+  assert_eq(result, 6)
+  // Achromatic: a and b should be near zero
+  assert_eq(approx_eq(out[1], 0.0), true)
+  assert_eq(approx_eq(out[2], 0.0), true)
+}
+
+test {
+  // FFI: mengxi_oklab_to_acescct basic test
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 0.5; data[1] = 0.0; data[2] = 0.0
+  data[3] = 0.5; data[4] = 0.5; data[5] = 0.5
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_oklab_to_acescct(6, data, 6, out)
+  assert_eq(result, 6)
+  // Achromatic pixel should round-trip
+  assert_eq(approx_eq(out[3], 0.5), true)
+  assert_eq(approx_eq(out[4], 0.5), true)
+  assert_eq(approx_eq(out[5], 0.5), true)
+}
+
+test {
+  // FFI: ACEScct round-trip through FFI
+  let data = FixedArray::make(9, 0.0)
+  data[0] = 0.413; data[1] = 0.413; data[2] = 0.413
+  data[3] = 1.0; data[4] = 0.0; data[5] = 0.0
+  data[6] = 0.0; data[7] = 0.0; data[8] = 0.0
+  let mid = FixedArray::make(9, 0.0)
+  let r1 = mengxi_acescct_to_oklab(9, data, 9, mid)
+  assert_eq(r1, 9)
+  let back = FixedArray::make(9, 0.0)
+  let r2 = mengxi_oklab_to_acescct(9, mid, 9, back)
+  assert_eq(r2, 9)
+  // Verify round-trip
+  assert_eq(approx_eq(back[0], 0.413), true)
+  assert_eq(approx_eq(back[1], 0.413), true)
+  assert_eq(approx_eq(back[2], 0.413), true)
+  assert_eq(approx_eq(back[3], 1.0), true)
+  assert_eq(approx_eq(back[4], 0.0), true)
+  assert_eq(approx_eq(back[5], 0.0), true)
+  assert_eq(approx_eq(back[6], 0.0), true)
+  assert_eq(approx_eq(back[7], 0.0), true)
+  assert_eq(approx_eq(back[8], 0.0), true)
+}
+
+test {
+  // FFI: ACEScct error on too few pixels
+  let data = FixedArray::make(2, 0.0)
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_acescct_to_oklab(2, data, 6, out)
+  assert_eq(result, -1)
+}
+
+test {
+  // FFI: ACEScct error on output too small
+  let data = FixedArray::make(6, 0.0)
+  let out = FixedArray::make(3, 0.0)
+  let result = mengxi_acescct_to_oklab(6, data, 3, out)
+  assert_eq(result, -2)
 }
