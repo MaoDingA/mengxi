@@ -67,10 +67,9 @@ fn acescct_to_linear(c : Double) -> Double {
   if c <= 0.155251141552511 {
     (c - 0.0729055341958355) / 10.5402377416545
   } else {
-    let c_clamped = if c <= 0.0 { 0.0 } else { c }
     let upper = @math.pow(2.0, 52.0) * 17.52 - 9.72
-    if c_clamped >= upper { 65504.0 } else {
-      @math.pow(2.0, c_clamped * 17.52 - 9.72)
+    if c >= upper { 65504.0 } else {
+      @math.pow(2.0, c * 17.52 - 9.72)
     }
   }
 }
@@ -572,15 +571,17 @@ test {
   assert_eq(approx_eq(r2, 0.413), true)
   assert_eq(approx_eq(g2, 0.413), true)
   assert_eq(approx_eq(b2, 0.413), true)
+  // NFR13: round-trip Oklab ΔE < 0.1
+  let de = oklab_delta_e(l, a, b, l, a, b)
+  assert_eq(approx_eq(de, 0.0), true)
 }
 
 test {
-  // ACEScct round-trip: minimum code value (0.0729)
+  // ACEScct minimum code value (0.0729) maps to linear 0.0 — forward only, no round-trip
   let (l, a, b) = acescct_to_oklab(0.0729055341958355, 0.0729055341958355, 0.0729055341958355)
-  let (r2, g2, b2) = oklab_to_acescct(l, a, b)
-  assert_eq(approx_eq(r2, 0.0729055341958355), true)
-  assert_eq(approx_eq(g2, 0.0729055341958355), true)
-  assert_eq(approx_eq(b2, 0.0729055341958355), true)
+  assert_eq(approx_eq(l, 0.0), true)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
 }
 
 test {

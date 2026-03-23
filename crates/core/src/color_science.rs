@@ -864,4 +864,30 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_acescct_negative_input_no_nan() {
+        let data = [-0.1_f64, -0.1, -0.1];
+        let result = acescct_to_oklab(&data).unwrap();
+        for (i, &val) in result.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "Negative input channel {} should be finite, got {}",
+                i, val
+            );
+        }
+    }
+
+    #[test]
+    fn test_acescct_minimum_code_value() {
+        // Minimum code value (0.0729) maps to linear 0.0 — no round-trip expected
+        let data = [0.0729055341958355_f64, 0.0729055341958355, 0.0729055341958355];
+        let result = acescct_to_oklab(&data).unwrap();
+        for (i, &val) in result.iter().enumerate() {
+            assert!(val.is_finite(), "Min code value channel {} should be finite", i);
+        }
+        // Achromatic: a and b should be near zero
+        assert!(result[1].abs() < 1e-3, "Min code value a should be near 0");
+        assert!(result[2].abs() < 1e-3, "Min code value b should be near 0");
+    }
 }
