@@ -1,5 +1,7 @@
 // color_science.rs — FFI bridge to MoonBit ACES color science engine
 
+pub use crate::grading_features::GradingFeatures;
+
 /// ACES color space identifiers for FFI boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ACESColorSpace {
@@ -45,6 +47,8 @@ pub enum ColorScienceError {
     LogDataRequiresConversion(String),
     /// Unsupported color space transform.
     UnsupportedTransform(String),
+    /// Failed to deserialize grading features BLOB.
+    GradingFeatureDecodeError(String),
 }
 
 impl std::fmt::Display for ColorScienceError {
@@ -61,6 +65,9 @@ impl std::fmt::Display for ColorScienceError {
             }
             ColorScienceError::UnsupportedTransform(msg) => {
                 write!(f, "COLOR_SCIENCE_UNSUPPORTED -- {}", msg)
+            }
+            ColorScienceError::GradingFeatureDecodeError(msg) => {
+                write!(f, "GRADING_FEATURE_DECODE_ERROR -- {}", msg)
             }
         }
     }
@@ -583,26 +590,6 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
     }
 
     Ok(output)
-}
-
-/// Grading features extracted from Oklab pixel data: histograms and color moments.
-#[derive(Debug, Clone)]
-pub struct GradingFeatures {
-    /// L-channel histogram (64 bins, range [0.0, 1.0]).
-    pub hist_l: Vec<f64>,
-    /// a-channel histogram (64 bins, range [-0.5, 0.5]).
-    pub hist_a: Vec<f64>,
-    /// b-channel histogram (64 bins, range [-0.5, 0.5]).
-    pub hist_b: Vec<f64>,
-    /// Color moments: [L_mean, L_std, a_mean, a_std, b_mean, b_std].
-    pub moments: [f64; 6],
-}
-
-impl GradingFeatures {
-    /// Number of histogram bins per channel (must match MoonBit constant).
-    pub const HIST_BINS: usize = 64;
-    /// Number of moments: mean + stddev for each of L, a, b.
-    pub const MOMENTS_COUNT: usize = 6;
 }
 
 /// Extract grading features (histograms + color moments) from Oklab pixel data via FFI.

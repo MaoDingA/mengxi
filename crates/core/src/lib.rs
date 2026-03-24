@@ -3,6 +3,7 @@
 pub mod analytics;
 pub mod calibration;
 pub mod color_science;
+pub mod grading_features;
 pub mod db;
 pub mod feedback;
 pub mod fingerprint;
