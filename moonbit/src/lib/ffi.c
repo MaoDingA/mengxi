@@ -487,12 +487,12 @@ int32_t mengxi_extract_grading_features(
   double* mb_hist_len = moonbit_make_double_array(1, 0.0);
   double* mb_moments_len = moonbit_make_double_array(1, 0.0);
   if (!mb_hist_l || !mb_hist_a || !mb_hist_b || !mb_moments || !mb_hist_len || !mb_moments_len) {
-    moonbit_drop_object(mb_moments_len);
-    moonbit_drop_object(mb_hist_len);
-    moonbit_drop_object(mb_moments);
-    moonbit_drop_object(mb_hist_b);
-    moonbit_drop_object(mb_hist_a);
-    moonbit_drop_object(mb_hist_l);
+    if (mb_moments_len) moonbit_drop_object(mb_moments_len);
+    if (mb_hist_len) moonbit_drop_object(mb_hist_len);
+    if (mb_moments) moonbit_drop_object(mb_moments);
+    if (mb_hist_b) moonbit_drop_object(mb_hist_b);
+    if (mb_hist_a) moonbit_drop_object(mb_hist_a);
+    if (mb_hist_l) moonbit_drop_object(mb_hist_l);
     moonbit_drop_object(mb_pixels);
     return -3;
   }

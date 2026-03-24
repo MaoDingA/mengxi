@@ -12,6 +12,14 @@ fn gf_approx_eq(actual : Double, expected : Double) -> Bool {
   abs_diff < 0.0001
 }
 
+/// Check if a Double value is finite (not NaN, not Inf, not -Inf).
+/// Uses the IEEE 754 property: x * 0.0 == 0.0 only for finite x.
+/// NaN * 0.0 = NaN, Inf * 0.0 = NaN — both fail the equality check.
+fn gf_is_finite(v : Double) -> Bool {
+  let product = v * 0.0
+  product == 0.0
+}
+
 // ============================================================
 // Histogram Computation
 // ============================================================
@@ -261,6 +269,45 @@ test {
 }
 
 test {
+  // mengxi_extract_grading_features: NaN input returns error
+  let pixel = FixedArray::make(3, 0.0)
+  pixel[0] = 0.0 / 0.0  // NaN via division by zero (produces NaN in MoonBit)
+  pixel[1] = 0.0
+  pixel[2] = 0.0
+  let hist_l = FixedArray::make(64, 0.0)
+  let hist_a = FixedArray::make(64, 0.0)
+  let hist_b = FixedArray::make(64, 0.0)
+  let moments = FixedArray::make(6, 0.0)
+  let hist_len = FixedArray::make(1, 0.0)
+  let moments_len = FixedArray::make(1, 0.0)
+  let result = mengxi_extract_grading_features(
+    pixel, 3, 0,
+    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+  )
+  assert_eq(result, -3)
+}
+
+test {
+  // mengxi_extract_grading_features: mixed valid + NaN pixels, only valid counted
+  let pixel = FixedArray::make(6, 0.0)
+  pixel[0] = 0.5; pixel[1] = 0.0; pixel[2] = 0.0   // valid
+  pixel[3] = 0.0 / 0.0; pixel[4] = 0.0; pixel[5] = 0.0  // NaN pixel
+  let hist_l = FixedArray::make(64, 0.0)
+  let hist_a = FixedArray::make(64, 0.0)
+  let hist_b = FixedArray::make(64, 0.0)
+  let moments = FixedArray::make(6, 0.0)
+  let hist_len = FixedArray::make(1, 0.0)
+  let moments_len = FixedArray::make(1, 0.0)
+  let result = mengxi_extract_grading_features(
+    pixel, 6, 0,
+    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+  )
+  assert_eq(result, 0)
+  // Only 1 valid pixel: L=0.5, a=0.0, b=0.0
+  assert_eq(gf_approx_eq(moments[0], 0.5), true)   // L_mean
+  assert_eq(gf_approx_eq(moments[1], 0.0), true)   // L_std (single pixel)
+}
+test {
   // compute_histogram: values clamped to bin range
   // Values outside [0.0, 1.0] should go to edge bins
   let data = FixedArray::make(4, 0.0)
@@ -453,33 +500,44 @@ pub fn mengxi_extract_grading_features(
   let num_pixels = pixel_len / 3
   let bin_count = 64
 
-  // Extract L, a, b channels from interleaved input
+  // Extract L, a, b channels from interleaved input, filtering non-finite values
   let l_data = FixedArray::make(num_pixels, 0.0)
   let a_data = FixedArray::make(num_pixels, 0.0)
   let b_data = FixedArray::make(num_pixels, 0.0)
 
+  let mut valid_count = 0
   let mut i = 0
   while i < num_pixels {
-    l_data[i] = pixel_ptr[i * 3]
-    a_data[i] = pixel_ptr[i * 3 + 1]
-    b_data[i] = pixel_ptr[i * 3 + 2]
+    let l = pixel_ptr[i * 3]
+    let a = pixel_ptr[i * 3 + 1]
+    let b = pixel_ptr[i * 3 + 2]
+    // Skip pixels with any non-finite channel (NaN/Inf)
+    if gf_is_finite(l) && gf_is_finite(a) && gf_is_finite(b) {
+      l_data[valid_count] = l
+      a_data[valid_count] = a
+      b_data[valid_count] = b
+      valid_count = valid_count + 1
+    }
     i = i + 1
   }
 
+  // All pixels were non-finite — cannot compute features
+  if valid_count < 1 { return -3 }
+
   // Compute L-channel histogram with range [0.0, 1.0]
-  let l_result = compute_histogram(l_data, num_pixels, bin_count, hist_l_ptr, 0.0, 1.0)
+  let l_result = compute_histogram(l_data, valid_count, bin_count, hist_l_ptr, 0.0, 1.0)
   if l_result < 0 { return l_result }
 
   // Compute a-channel histogram with range [-0.5, 0.5]
-  let a_result = compute_histogram(a_data, num_pixels, bin_count, hist_a_ptr, -0.5, 0.5)
+  let a_result = compute_histogram(a_data, valid_count, bin_count, hist_a_ptr, -0.5, 0.5)
   if a_result < 0 { return a_result }
 
   // Compute b-channel histogram with range [-0.5, 0.5]
-  let b_result = compute_histogram(b_data, num_pixels, bin_count, hist_b_ptr, -0.5, 0.5)
+  let b_result = compute_histogram(b_data, valid_count, bin_count, hist_b_ptr, -0.5, 0.5)
   if b_result < 0 { return b_result }
 
   // Compute color moments
-  let m_result = compute_color_moments(l_data, a_data, b_data, num_pixels, moments_ptr)
+  let m_result = compute_color_moments(l_data, a_data, b_data, valid_count, moments_ptr)
   if m_result < 0 { return m_result }
 
   // Write output sizes

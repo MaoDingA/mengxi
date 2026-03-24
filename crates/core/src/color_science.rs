@@ -595,7 +595,7 @@ pub struct GradingFeatures {
     /// b-channel histogram (64 bins, range [-0.5, 0.5]).
     pub hist_b: Vec<f64>,
     /// Color moments: [L_mean, L_std, a_mean, a_std, b_mean, b_std].
-    pub moments: Vec<f64>,
+    pub moments: [f64; 6],
 }
 
 impl GradingFeatures {
@@ -641,10 +641,19 @@ pub fn extract_grading_features(
         ));
     }
 
+    // Reject NaN/Inf input at the Rust boundary — MoonBit computation would
+    // produce NaN moments and unpredictable histogram bins for non-finite values.
+    if !oklab_data.iter().all(|v| v.is_finite()) {
+        return Err(ColorScienceError::FfiError(
+            -3,
+            "oklab data contains NaN or Inf values".to_string(),
+        ));
+    }
+
     let mut hist_l = vec![0.0_f64; GradingFeatures::HIST_BINS];
     let mut hist_a = vec![0.0_f64; GradingFeatures::HIST_BINS];
     let mut hist_b = vec![0.0_f64; GradingFeatures::HIST_BINS];
-    let mut moments = vec![0.0_f64; GradingFeatures::MOMENTS_COUNT];
+    let mut moments = [0.0_f64; GradingFeatures::MOMENTS_COUNT];
     let mut out_hist_len = [0.0_f64; 1];
     let mut out_moments_len = [0.0_f64; 1];
 
@@ -1461,5 +1470,21 @@ mod tests {
             "L histogram sum should be 1000.0, got {}",
             l_sum
         );
+    }
+
+    #[test]
+    fn test_extract_grading_features_nan_input_rejected() {
+        // NaN input should be rejected by the FFI function (returns -3)
+        let oklab_data = [f64::NAN, 0.0, 0.0];
+        let result = extract_grading_features(&oklab_data, 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_grading_features_mixed_nan_rejected() {
+        // Any NaN in the input causes rejection (safer than silently dropping pixels)
+        let oklab_data = [0.5_f64, 0.0, 0.0, f64::NAN, 0.0, 0.0];
+        let result = extract_grading_features(&oklab_data, 2);
+        assert!(result.is_err());
     }
 }
