@@ -399,7 +399,7 @@ pub fn register_project(
                                 Ok(features) => {
                                     let blob = features.to_blob();
                                     if let Err(e) = conn.execute(
-                                        "UPDATE fingerprints SET grading_features = ?1 WHERE file_id = ?2",
+                                        "UPDATE fingerprints SET grading_features = ?1, feature_status = 'fresh' WHERE file_id = ?2",
                                         params![blob, file_id],
                                     ) {
                                         eprintln!("Warning: failed to store grading features for {}: {}", filename, e);
@@ -575,6 +575,7 @@ mod tests {
                 luminance_stddev REAL NOT NULL,
                 color_space_tag TEXT NOT NULL,
                 grading_features BLOB,
+                feature_status TEXT,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )

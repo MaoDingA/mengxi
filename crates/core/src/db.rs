@@ -643,4 +643,260 @@ mod tests {
         let result = db_run_query(&conn, "  select 1");
         assert!(result.is_ok());
     }
+
+    // -- Migration 018: feature_status column tests --
+
+    /// Helper: create a temp DB with schema up to migration 017 and insert test data.
+    /// Returns (temp_dir, conn) so the DB persists for the test.
+    fn setup_test_db_with_grading_features(
+        with_grading_features: bool,
+    ) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_file = dir.path().join("test.db");
+        let conn = Connection::open(&db_file).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+
+        // Set up schema_version at 17 (all migrations through 017 applied)
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL PRIMARY KEY);
+             INSERT INTO schema_version (version) VALUES (17);
+             CREATE TABLE projects (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL UNIQUE,
+                 path TEXT NOT NULL,
+                 dpx_count INTEGER NOT NULL DEFAULT 0,
+                 exr_count INTEGER NOT NULL DEFAULT 0,
+                 mov_count INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE files (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 filename TEXT NOT NULL,
+                 format TEXT NOT NULL CHECK(format IN ('dpx', 'exr', 'mov')),
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE fingerprints (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                 histogram_r TEXT NOT NULL,
+                 histogram_g TEXT NOT NULL,
+                 histogram_b TEXT NOT NULL,
+                 luminance_mean REAL NOT NULL,
+                 luminance_stddev REAL NOT NULL,
+                 color_space_tag TEXT NOT NULL,
+                 grading_features BLOB,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );",
+        )
+        .unwrap();
+
+        // Insert test data
+        conn.execute("INSERT INTO projects (name, path) VALUES ('test_proj', '/tmp/test')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'test.dpx', 'dpx')", [])
+            .unwrap();
+
+        if with_grading_features {
+            // Insert fingerprint WITH grading_features BLOB
+            let blob_data: Vec<u8> = vec![0u8; 64]; // dummy BLOB
+            conn.execute(
+                "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, grading_features) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video', ?1)",
+                [blob_data],
+            ).unwrap();
+        } else {
+            // Insert fingerprint WITHOUT grading_features (NULL)
+            conn.execute(
+                "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video')",
+                [],
+            ).unwrap();
+        }
+
+        (dir, conn)
+    }
+
+    #[test]
+    fn test_migration_018_adds_feature_status_column() {
+        let (_dir, conn) = setup_test_db_with_grading_features(true);
+        run_migrations(&conn).unwrap();
+
+        // Verify column exists by querying it
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT feature_status FROM fingerprints WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // Should be 'stale' because grading_features IS NOT NULL
+        assert_eq!(status.as_deref(), Some("stale"));
+    }
+
+    #[test]
+    fn test_migration_018_stale_marking_with_grading_features() {
+        let (_dir, conn) = setup_test_db_with_grading_features(true);
+        run_migrations(&conn).unwrap();
+
+        let status: String = conn
+            .query_row(
+                "SELECT feature_status FROM fingerprints WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "stale");
+    }
+
+    #[test]
+    fn test_migration_018_null_preservation_without_grading_features() {
+        let (_dir, conn) = setup_test_db_with_grading_features(false);
+        run_migrations(&conn).unwrap();
+
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT feature_status FROM fingerprints WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // Should remain NULL because grading_features IS NULL
+        assert!(status.is_none());
+    }
+
+    #[test]
+    fn test_migration_018_idempotency() {
+        let (_dir, conn) = setup_test_db_with_grading_features(true);
+        run_migrations(&conn).unwrap();
+
+        // Verify state after first run
+        let status_after_first: String = conn
+            .query_row(
+                "SELECT feature_status FROM fingerprints WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status_after_first, "stale");
+
+        let version_after_first: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+
+        // Run migrations again — should be a no-op (version 18 already recorded)
+        run_migrations(&conn).unwrap();
+
+        let status_after_second: String = conn
+            .query_row(
+                "SELECT feature_status FROM fingerprints WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status_after_second, "stale");
+
+        let version_after_second: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version_after_second, version_after_first);
+    }
+
+    #[test]
+    fn test_migration_018_creates_index() {
+        let (_dir, conn) = setup_test_db_with_grading_features(true);
+        run_migrations(&conn).unwrap();
+
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_fingerprints_feature_status')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(index_exists);
+    }
+
+    #[test]
+    fn test_migration_018_mixed_stale_and_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_file = dir.path().join("test.db");
+        let conn = Connection::open(&db_file).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+
+        // Set up schema at version 17
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL PRIMARY KEY);
+             INSERT INTO schema_version (version) VALUES (17);
+             CREATE TABLE projects (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL UNIQUE,
+                 path TEXT NOT NULL,
+                 dpx_count INTEGER NOT NULL DEFAULT 0,
+                 exr_count INTEGER NOT NULL DEFAULT 0,
+                 mov_count INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE files (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 filename TEXT NOT NULL,
+                 format TEXT NOT NULL CHECK(format IN ('dpx', 'exr', 'mov')),
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE fingerprints (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                 histogram_r TEXT NOT NULL,
+                 histogram_g TEXT NOT NULL,
+                 histogram_b TEXT NOT NULL,
+                 luminance_mean REAL NOT NULL,
+                 luminance_stddev REAL NOT NULL,
+                 color_space_tag TEXT NOT NULL,
+                 grading_features BLOB,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );",
+        )
+        .unwrap();
+
+        conn.execute("INSERT INTO projects (name, path) VALUES ('test_proj', '/tmp/test')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'a.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'b.dpx', 'dpx')", [])
+            .unwrap();
+
+        // Row 1: WITH grading_features → should become 'stale'
+        let blob: Vec<u8> = vec![0u8; 64];
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, grading_features) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video', ?1)",
+            [blob],
+        ).unwrap();
+
+        // Row 2: WITHOUT grading_features → should remain NULL
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (2, '[]', '[]', '[]', 0.3, 0.2, 'linear')",
+            [],
+        ).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        // Verify mixed states
+        let stale_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fingerprints WHERE feature_status = 'stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let null_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fingerprints WHERE feature_status IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale_count, 1);
+        assert_eq!(null_count, 1);
+    }
 }
