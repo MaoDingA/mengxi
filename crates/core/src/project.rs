@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+use crate::color_science;
+use crate::downsample::{self, MAX_DIMENSION};
 use crate::fingerprint::{self, FingerprintError};
 use mengxi_format::dpx;
 use mengxi_format::exr as exr_format;
@@ -49,6 +51,7 @@ pub struct VariantBreakdown {
     pub skipped_count: usize,
     pub skipped_files: Vec<String>,
     pub fingerprint_count: usize,
+    pub grading_feature_count: usize,
     pub resumed_count: usize,
 }
 
@@ -342,7 +345,16 @@ pub fn register_project(
             };
 
             if let Ok(pixel_data) = pixel_result {
-                match fingerprint::extract_fingerprint(&pixel_data, &color_tag) {
+                // Downsample for feature extraction (NFR2: 4K → ~512, ~34x reduction)
+                let w = width.unwrap_or(0) as usize;
+                let h = height.unwrap_or(0) as usize;
+                let (downsampled_data, _, _) = if w > 0 && h > 0 {
+                    downsample::downsample_rgb(&pixel_data, w, h, MAX_DIMENSION)
+                } else {
+                    (pixel_data.clone(), w, h)
+                };
+
+                match fingerprint::extract_fingerprint(&downsampled_data, &color_tag) {
                     Ok(fp) => {
                         let hist_r = fp.histogram_r.iter()
                             .map(|v| v.to_string())
@@ -364,6 +376,34 @@ pub fn register_project(
                             eprintln!("Warning: failed to store fingerprint for {}: {}", filename, e);
                         } else {
                             breakdown.fingerprint_count += 1;
+
+                            // Extract Oklab grading features from downsampled data
+                            let color_space_tag_int = match color_tag.as_str() {
+                                "linear" => 0,
+                                "log" => 1,
+                                "video" => 2,
+                                _ => 0,
+                            };
+                            match color_science::rgb_to_oklab_batch(&downsampled_data, &color_tag)
+                                .and_then(|oklab_data| {
+                                    color_science::extract_grading_features(&oklab_data, color_space_tag_int)
+                                })
+                            {
+                                Ok(features) => {
+                                    let blob = features.to_blob();
+                                    if let Err(e) = conn.execute(
+                                        "UPDATE fingerprints SET grading_features = ?1 WHERE file_id = ?2",
+                                        params![blob, file_id],
+                                    ) {
+                                        eprintln!("Warning: failed to store grading features for {}: {}", filename, e);
+                                    } else {
+                                        breakdown.grading_feature_count += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: grading feature extraction failed for {}: {}", filename, e);
+                                }
+                            }
                         }
                     }
                     Err(FingerprintError::FfiUnavailable) => {

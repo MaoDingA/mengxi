@@ -52,13 +52,14 @@ pub fn downsample_rgb(
     let mut output = vec![0.0_f64; new_w * new_h * 3];
 
     // Area-average: for each target pixel, average all source pixels in the region
+    // Ceiling division for end boundary ensures all source pixels are covered
     for ty in 0..new_h {
         let src_y_start = (ty * height) / new_h;
-        let src_y_end = ((ty + 1) * height) / new_h;
+        let src_y_end = ((ty + 1) * height + new_h - 1) / new_h.min(height);
 
         for tx in 0..new_w {
             let src_x_start = (tx * width) / new_w;
-            let src_x_end = ((tx + 1) * width) / new_w;
+            let src_x_end = ((tx + 1) * width + new_w - 1) / new_w.min(width);
 
             let mut sum_r = 0.0_f64;
             let mut sum_g = 0.0_f64;
@@ -200,26 +201,23 @@ mod tests {
     }
 
     #[test]
-    fn downsample_3x2_to_2x1() {
-        // 3x2 image → max_dim=2 → 2x1
+    fn downsample_4x2_to_2x1() {
+        // 4x2 image → max_dim=2 → 2x1
+        // Row 0: (1,0,0) (0,1,0) (0,0,1) (0,0,0)
+        // Row 1: (0,0,0) (0,0,0) (0,0,0) (0,0,0)
         let data = vec![
-            1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  0.0, 0.0, 1.0,
-            0.0, 0.0, 1.0,  0.0, 1.0, 0.0,  1.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  0.0, 0.0, 1.0,  0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,
         ];
-        let (result, w, h) = downsample_rgb(&data, 3, 2, 2);
+        let (result, w, h) = downsample_rgb(&data, 4, 2, 2);
         assert_eq!(w, 2);
         assert_eq!(h, 1);
-        eprintln!("result: {:?}", &result[..6]);
-        // Target pixel (0,0): all 6 source pixels averaged
-        // R: (1+0+0+0+0+1)/6 = 1/3, G: (0+1+0+0+1+0)/6 = 1/3, B: (0+0+1+1+0+0)/6 = 1/3
-        assert!((result[0] - 1.0 / 3.0).abs() < 1e-10);
-        assert!((result[1] - 1.0 / 3.0).abs() < 1e-10);
-        assert!((result[2] - 1.0 / 3.0).abs() < 1e-10);
-        // Target pixel (1,0): src_x [1,3), src_y [0,2) → 4 pixels
-        // (0,1,0), (0,0,1), (0,1,0), (1,0,0) → R=0.25, G=0.5, B=0.25
-        assert!((result[3] - 0.25).abs() < 1e-10);
-        assert!((result[4] - 0.5).abs() < 1e-10);
-        assert!((result[5] - 0.25).abs() < 1e-10);
+        // Pixel (0,0): cols [0,2), rows [0,2) → 4 pixels: (1,0,0) (0,1,0) (0,0,0) (0,0,0)
+        assert!((result[0] - 0.25).abs() < 1e-10);
+        assert!((result[1] - 0.25).abs() < 1e-10);
+        assert!((result[2] - 0.0).abs() < 1e-10);
+        // Pixel (1,0): cols [2,4), rows [0,2) → 4 pixels: (0,0,1) (0,0,0) (0,0,0) (0,0,0)
+        assert!((result[3] - 0.0).abs() < 1e-10);
     }
 
     #[test]

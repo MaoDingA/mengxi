@@ -677,6 +677,34 @@ pub fn extract_grading_features(
     })
 }
 
+/// Convert interleaved RGB f64 pixel data to Oklab color space based on color space tag.
+///
+/// Dispatches to the appropriate conversion function:
+/// - `"linear"` → `linear_to_oklab()`
+/// - `"log"` → `acescct_to_oklab()`
+/// - `"video"` → `srgb_to_oklab()`
+///
+/// # Arguments
+/// * `pixel_data` - Interleaved RGB f64 pixel data, length must be divisible by 3
+/// * `color_space_tag` - Color space identifier: "linear", "log", or "video"
+///
+/// # Errors
+/// Returns `UNSUPPORTED_TRANSFORM` if `color_space_tag` is not one of the supported values.
+pub fn rgb_to_oklab_batch(
+    pixel_data: &[f64],
+    color_space_tag: &str,
+) -> Result<Vec<f64>, ColorScienceError> {
+    match color_space_tag {
+        "linear" => linear_to_oklab(pixel_data),
+        "log" => acescct_to_oklab(pixel_data),
+        "video" => srgb_to_oklab(pixel_data),
+        other => Err(ColorScienceError::UnsupportedTransform(format!(
+            "unsupported color space tag '{}' for Oklab conversion",
+            other
+        ))),
+    }
+}
+
 /// Check if MoonBit ACES FFI is available by testing a trivial transform.
 pub fn is_aces_ffi_available() -> bool {
     let data = [0.5_f64, 0.5, 0.5];
@@ -1473,5 +1501,59 @@ mod tests {
         let oklab_data = [0.5_f64, 0.0, 0.0, f64::NAN, 0.0, 0.0];
         let result = extract_grading_features(&oklab_data, 2);
         assert!(result.is_err());
+    }
+
+    // === rgb_to_oklab_batch tests ===
+
+    #[test]
+    fn test_rgb_to_oklab_batch_linear() {
+        let pixel = [0.5_f64, 0.5, 0.5];
+        let result = rgb_to_oklab_batch(&pixel, "linear").unwrap();
+        assert_eq!(result.len(), 3);
+        // Linear 0.5 → Oklab L near 0.794 (sqrt(0.5^3) per Oklab formula)
+        assert!((result[0] - 0.7937).abs() < 0.01, "L={}", result[0]);
+    }
+
+    #[test]
+    fn test_rgb_to_oklab_batch_video() {
+        let pixel = [0.5_f64, 0.5, 0.5];
+        let result = rgb_to_oklab_batch(&pixel, "video").unwrap();
+        assert_eq!(result.len(), 3);
+        // sRGB 0.5 → Oklab L near 0.598
+        assert!((result[0] - 0.5982).abs() < 0.01, "L={}", result[0]);
+    }
+
+    #[test]
+    fn test_rgb_to_oklab_batch_log() {
+        let pixel = [0.5_f64, 0.5, 0.5];
+        let result = rgb_to_oklab_batch(&pixel, "log").unwrap();
+        assert_eq!(result.len(), 3);
+        // ACEScct 0.5 → Oklab L should be positive
+        assert!(result[0] > 0.0, "L={}", result[0]);
+    }
+
+    #[test]
+    fn test_rgb_to_oklab_batch_empty_returns_error() {
+        // FFI functions require at least 1 pixel (3 values)
+        let result = rgb_to_oklab_batch(&[], "linear");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rgb_to_oklab_batch_single_pixel() {
+        let pixel = [0.25_f64, 0.5, 0.75];
+        for tag in &["linear", "video", "log"] {
+            let result = rgb_to_oklab_batch(&pixel, tag).unwrap();
+            assert_eq!(result.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_rgb_to_oklab_batch_invalid_tag() {
+        let pixel = [0.5_f64, 0.5, 0.5];
+        let result = rgb_to_oklab_batch(&pixel, "unknown");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("COLOR_SCIENCE_UNSUPPORTED"), "error: {}", err);
     }
 }
