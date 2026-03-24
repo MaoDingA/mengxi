@@ -346,12 +346,19 @@ pub fn register_project(
 
             if let Ok(pixel_data) = pixel_result {
                 // Downsample for feature extraction (NFR2: 4K → ~512, ~34x reduction)
-                let w = width.unwrap_or(0) as usize;
-                let h = height.unwrap_or(0) as usize;
-                let (downsampled_data, _, _) = if w > 0 && h > 0 {
-                    downsample::downsample_rgb(&pixel_data, w, h, MAX_DIMENSION)
-                } else {
-                    (pixel_data.clone(), w, h)
+                let w = width.and_then(|v| if v > 0 { Some(v as usize) } else { None });
+                let h = height.and_then(|v| if v > 0 { Some(v as usize) } else { None });
+                let (downsampled_data, _, _) = match (w, h) {
+                    (Some(w), Some(h)) => {
+                        match downsample::downsample_rgb(&pixel_data, w, h, MAX_DIMENSION) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                eprintln!("Warning: downsampling failed for {}: {}", filename, e);
+                                continue;
+                            }
+                        }
+                    }
+                    _ => (pixel_data.clone(), 0usize, 0usize),
                 };
 
                 match fingerprint::extract_fingerprint(&downsampled_data, &color_tag) {
@@ -567,6 +574,7 @@ mod tests {
                 luminance_mean REAL NOT NULL,
                 luminance_stddev REAL NOT NULL,
                 color_space_tag TEXT NOT NULL,
+                grading_features BLOB,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )
