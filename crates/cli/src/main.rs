@@ -169,6 +169,9 @@ enum Commands {
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
+        /// Run extended numerical safety tests
+        #[arg(long)]
+        full: bool,
     },
     /// Browse and query the database
     Db {
@@ -2166,9 +2169,9 @@ fn main() {
             eprintln!("Error: Specify --show or --edit");
             process::exit(1);
         }
-        Some(Commands::Validate { format }) => {
+        Some(Commands::Validate { format, full }) => {
             let is_json = format == "json";
-            let exit_code = validate::run_validate(is_json);
+            let exit_code = validate::run_validate(is_json, full);
             process::exit(exit_code);
         }
         Some(Commands::Db { command }) => {
