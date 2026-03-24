@@ -575,7 +575,7 @@ mod tests {
                 luminance_stddev REAL NOT NULL,
                 color_space_tag TEXT NOT NULL,
                 grading_features BLOB,
-                feature_status TEXT,
+                feature_status TEXT CHECK(feature_status IS NULL OR feature_status IN ('stale', 'fresh')),
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )

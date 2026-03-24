@@ -4,7 +4,7 @@
 -- Rows without grading_features keep feature_status IS NULL.
 -- New features from the import pipeline will be marked 'fresh' (Story 2.3 pipeline change).
 
-ALTER TABLE fingerprints ADD COLUMN feature_status TEXT;
+ALTER TABLE fingerprints ADD COLUMN feature_status TEXT CHECK(feature_status IS NULL OR feature_status IN ('stale', 'fresh'));
 
 UPDATE fingerprints SET feature_status = 'stale' WHERE grading_features IS NOT NULL;
 
