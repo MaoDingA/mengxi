@@ -127,6 +127,18 @@ extern "C" {
         out_len: i32,
         out_ptr: *mut f64,
     ) -> i32;
+
+    fn mengxi_extract_grading_features(
+        pixel_len: i32,
+        pixel_ptr: *const f64,
+        color_space_tag: i32,
+        hist_l_ptr: *mut f64,
+        hist_a_ptr: *mut f64,
+        hist_b_ptr: *mut f64,
+        moments_ptr: *mut f64,
+        out_hist_len: *mut f64,
+        out_moments_len: *mut f64,
+    ) -> i32;
 }
 
 /// Apply ACES color space transform to interleaved RGB pixel data.
@@ -571,6 +583,102 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
     }
 
     Ok(output)
+}
+
+/// Grading features extracted from Oklab pixel data: histograms and color moments.
+#[derive(Debug, Clone)]
+pub struct GradingFeatures {
+    /// L-channel histogram (64 bins, range [0.0, 1.0]).
+    pub hist_l: Vec<f64>,
+    /// a-channel histogram (64 bins, range [-0.5, 0.5]).
+    pub hist_a: Vec<f64>,
+    /// b-channel histogram (64 bins, range [-0.5, 0.5]).
+    pub hist_b: Vec<f64>,
+    /// Color moments: [L_mean, L_std, a_mean, a_std, b_mean, b_std].
+    pub moments: Vec<f64>,
+}
+
+impl GradingFeatures {
+    /// Number of histogram bins per channel (must match MoonBit constant).
+    pub const HIST_BINS: usize = 64;
+    /// Number of moments: mean + stddev for each of L, a, b.
+    pub const MOMENTS_COUNT: usize = 6;
+}
+
+/// Extract grading features (histograms + color moments) from Oklab pixel data via FFI.
+///
+/// # Arguments
+/// * `oklab_data` — Interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...], length divisible by 3.
+/// * `color_space_tag` — Source color space tag (0=Linear, 1=Log/ACEScct, 2=Video/sRGB).
+///
+/// # Returns
+/// * `Ok(GradingFeatures)` with 3 histograms (64 bins each) and 6 moments.
+/// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+pub fn extract_grading_features(
+    oklab_data: &[f64],
+    color_space_tag: i32,
+) -> Result<GradingFeatures, ColorScienceError> {
+    if oklab_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab data must contain at least 3 values (1 pixel)".to_string(),
+        ));
+    }
+    if oklab_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "oklab data too large for FFI ({} elements, max {})",
+                oklab_data.len(),
+                i32::MAX
+            ),
+        ));
+    }
+    if oklab_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab data length must be divisible by 3 (L,a,b)".to_string(),
+        ));
+    }
+
+    let mut hist_l = vec![0.0_f64; GradingFeatures::HIST_BINS];
+    let mut hist_a = vec![0.0_f64; GradingFeatures::HIST_BINS];
+    let mut hist_b = vec![0.0_f64; GradingFeatures::HIST_BINS];
+    let mut moments = vec![0.0_f64; GradingFeatures::MOMENTS_COUNT];
+    let mut out_hist_len = [0.0_f64; 1];
+    let mut out_moments_len = [0.0_f64; 1];
+
+    let result = unsafe {
+        mengxi_extract_grading_features(
+            oklab_data.len() as i32,
+            oklab_data.as_ptr(),
+            color_space_tag,
+            hist_l.as_mut_ptr(),
+            hist_a.as_mut_ptr(),
+            hist_b.as_mut_ptr(),
+            moments.as_mut_ptr(),
+            out_hist_len.as_mut_ptr(),
+            out_moments_len.as_mut_ptr(),
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            format!(
+                "extract_grading_features pixels={} color_space_tag={}",
+                oklab_data.len() / 3,
+                color_space_tag
+            ),
+        ));
+    }
+
+    Ok(GradingFeatures {
+        hist_l,
+        hist_a,
+        hist_b,
+        moments,
+    })
 }
 
 /// Check if MoonBit ACES FFI is available by testing a trivial transform.
@@ -1164,5 +1272,194 @@ mod tests {
                 i, back[i]
             );
         }
+    }
+
+    // -- extract_grading_features tests --
+
+    #[test]
+    fn test_extract_grading_features_pure_black() {
+        // Pure black in Oklab: L=0, a=0, b=0
+        let oklab_data = [0.0_f64; 9]; // 3 pixels, all black
+        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        assert_eq!(result.hist_l.len(), 64);
+        assert_eq!(result.hist_a.len(), 64);
+        assert_eq!(result.hist_b.len(), 64);
+        assert_eq!(result.moments.len(), 6);
+        // All black: L histogram should have all counts in bin 0 (L=0.0)
+        assert_eq!(result.hist_l[0], 3.0, "All 3 black pixels in L bin 0");
+        // a and b at 0.0 map to middle bin (32 in range [-0.5, 0.5])
+        assert_eq!(result.hist_a[32], 3.0, "All 3 black pixels in a bin 32");
+        assert_eq!(result.hist_b[32], 3.0, "All 3 black pixels in b bin 32");
+        // Moments: L_mean=0.0, L_std=0.0
+        assert!(result.moments[0].abs() < 1e-10, "L_mean should be 0 for black");
+        assert!(result.moments[1].abs() < 1e-10, "L_std should be 0 for black");
+    }
+
+    #[test]
+    fn test_extract_grading_features_solid_color() {
+        // Solid color: all pixels are L=0.5, a=0.1, b=-0.1
+        let pixels: [f64; 6] = [0.5, 0.1, -0.1, 0.5, 0.1, -0.1]; // 2 identical pixels
+        let result = extract_grading_features(&pixels, 2).unwrap();
+        // Moments: mean should match input, std should be 0
+        assert!(
+            (result.moments[0] - 0.5).abs() < 1e-10,
+            "L_mean should be 0.5, got {}",
+            result.moments[0]
+        );
+        assert!(
+            (result.moments[2] - 0.1).abs() < 1e-10,
+            "a_mean should be 0.1, got {}",
+            result.moments[2]
+        );
+        assert!(
+            (result.moments[4] - (-0.1)).abs() < 1e-10,
+            "b_mean should be -0.1, got {}",
+            result.moments[4]
+        );
+        // Std should be 0 for solid color
+        assert!(result.moments[1].abs() < 1e-10, "L_std should be 0 for solid");
+        assert!(result.moments[3].abs() < 1e-10, "a_std should be 0 for solid");
+        assert!(result.moments[5].abs() < 1e-10, "b_std should be 0 for solid");
+    }
+
+    #[test]
+    fn test_extract_grading_features_single_pixel() {
+        let oklab_data = [0.75_f64, 0.0, 0.0]; // bright achromatic
+        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        assert_eq!(result.moments.len(), 6);
+        // Single pixel: mean = value, std = 0
+        assert!(
+            (result.moments[0] - 0.75).abs() < 1e-10,
+            "L_mean should be 0.75"
+        );
+        assert!(result.moments[1].abs() < 1e-10, "L_std should be 0 for single pixel");
+    }
+
+    #[test]
+    fn test_extract_grading_features_multi_pixel() {
+        // 4 pixels: two different colors
+        let oklab_data = [
+            0.2_f64, 0.0, 0.0,  // dark achromatic
+            0.8_f64, 0.0, 0.0,  // bright achromatic
+            0.2_f64, 0.0, 0.0,  // dark achromatic
+            0.8_f64, 0.0, 0.0,  // bright achromatic
+        ];
+        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        // L_mean = (0.2 + 0.8 + 0.2 + 0.8) / 4 = 0.5
+        assert!(
+            (result.moments[0] - 0.5).abs() < 1e-10,
+            "L_mean should be 0.5, got {}",
+            result.moments[0]
+        );
+        // L_std should be > 0 (pixels have different L values)
+        assert!(
+            result.moments[1] > 0.0,
+            "L_std should be > 0 for varied pixels, got {}",
+            result.moments[1]
+        );
+        // a_mean and b_mean should be 0 (all achromatic)
+        assert!(result.moments[2].abs() < 1e-10, "a_mean should be 0 for achromatic");
+        assert!(result.moments[4].abs() < 1e-10, "b_mean should be 0 for achromatic");
+    }
+
+    #[test]
+    fn test_extract_grading_features_histogram_sums() {
+        // Histogram bin counts should sum to pixel count
+        let oklab_data = [
+            0.1_f64, 0.05, -0.05,
+            0.3_f64, 0.1, -0.1,
+            0.5_f64, 0.2, -0.2,
+            0.7_f64, -0.1, 0.1,
+            0.9_f64, -0.2, 0.2,
+        ];
+        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let l_sum: f64 = result.hist_l.iter().sum();
+        let a_sum: f64 = result.hist_a.iter().sum();
+        let b_sum: f64 = result.hist_b.iter().sum();
+        assert!(
+            (l_sum - 5.0).abs() < 1e-10,
+            "L histogram sum should be 5.0 (pixel count), got {}",
+            l_sum
+        );
+        assert!(
+            (a_sum - 5.0).abs() < 1e-10,
+            "a histogram sum should be 5.0, got {}",
+            a_sum
+        );
+        assert!(
+            (b_sum - 5.0).abs() < 1e-10,
+            "b histogram sum should be 5.0, got {}",
+            b_sum
+        );
+    }
+
+    #[test]
+    fn test_extract_grading_features_too_few_pixels() {
+        let result = extract_grading_features(&[0.5, 0.5], 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_grading_features_not_divisible_by_3() {
+        let result = extract_grading_features(&[0.5, 0.5, 0.5, 0.5], 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_grading_features_all_finite() {
+        // All output values should be finite (no NaN/Inf)
+        let oklab_data = [
+            0.0_f64, 0.0, 0.0,
+            1.0_f64, 0.0, 0.0,
+            0.5_f64, 0.3, -0.2,
+            0.5_f64, -0.3, 0.2,
+            0.5_f64, 0.0, 0.0,
+            0.1_f64, 0.001, -0.001,
+        ];
+        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        for (i, &val) in result.hist_l.iter().enumerate() {
+            assert!(val.is_finite(), "hist_l[{}] should be finite, got {}", i, val);
+        }
+        for (i, &val) in result.hist_a.iter().enumerate() {
+            assert!(val.is_finite(), "hist_a[{}] should be finite, got {}", i, val);
+        }
+        for (i, &val) in result.hist_b.iter().enumerate() {
+            assert!(val.is_finite(), "hist_b[{}] should be finite, got {}", i, val);
+        }
+        for (i, &val) in result.moments.iter().enumerate() {
+            assert!(val.is_finite(), "moments[{}] should be finite, got {}", i, val);
+        }
+    }
+
+    #[test]
+    fn test_extract_grading_features_large_dataset() {
+        // 1000 pixels with varied values
+        let mut oklab_data = Vec::with_capacity(3000);
+        for i in 0..1000 {
+            let l = (i as f64) / 999.0;
+            let a = 0.3 * ((i as f64) / 999.0 * 2.0 - 1.0);
+            let b = -0.3 * ((i as f64) / 999.0 * 2.0 - 1.0);
+            oklab_data.push(l);
+            oklab_data.push(a);
+            oklab_data.push(b);
+        }
+        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        assert_eq!(result.hist_l.len(), 64);
+        assert_eq!(result.moments.len(), 6);
+        // L_mean should be ~0.5
+        assert!(
+            (result.moments[0] - 0.5).abs() < 0.01,
+            "L_mean should be ~0.5, got {}",
+            result.moments[0]
+        );
+        // L_std should be > 0 (values range from 0 to 1)
+        assert!(result.moments[1] > 0.1, "L_std should be large for spread");
+        // Histogram sums to 1000
+        let l_sum: f64 = result.hist_l.iter().sum();
+        assert!(
+            (l_sum - 1000.0).abs() < 1e-10,
+            "L histogram sum should be 1000.0, got {}",
+            l_sum
+        );
     }
 }
