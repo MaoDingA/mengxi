@@ -397,10 +397,13 @@ pub fn register_project(
                                 })
                             {
                                 Ok(features) => {
-                                    let blob = features.to_blob();
+                                    let hist_l_blob = features.hist_l_blob();
+                                    let hist_a_blob = features.hist_a_blob();
+                                    let hist_b_blob = features.hist_b_blob();
+                                    let moments_blob = features.moments_blob();
                                     if let Err(e) = conn.execute(
-                                        "UPDATE fingerprints SET grading_features = ?1, feature_status = 'fresh' WHERE file_id = ?2",
-                                        params![blob, file_id],
+                                        "UPDATE fingerprints SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, feature_status = 'fresh' WHERE file_id = ?5",
+                                        params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, file_id],
                                     ) {
                                         eprintln!("Warning: failed to store grading features for {}: {}", filename, e);
                                     } else {
@@ -576,6 +579,10 @@ mod tests {
                 color_space_tag TEXT NOT NULL,
                 grading_features BLOB,
                 feature_status TEXT CHECK(feature_status IS NULL OR feature_status IN ('stale', 'fresh')),
+                oklab_hist_l BLOB,
+                oklab_hist_a BLOB,
+                oklab_hist_b BLOB,
+                color_moments BLOB,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );",
         )

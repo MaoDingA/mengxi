@@ -446,7 +446,7 @@ mod tests {
             .unwrap()
             .join("migrations");
         let migrations = discover_migrations_from_dir(&project_root).unwrap();
-        assert!(migrations.len() >= 15);
+        assert!(migrations.len() >= 19);
         assert_eq!(migrations[0].0, 1); // 001_create_projects.sql
         assert_eq!(migrations[1].0, 2); // 002_create_files.sql
         assert_eq!(migrations[2].0, 3); // 003_add_file_metadata.sql
@@ -898,5 +898,211 @@ mod tests {
             .unwrap();
         assert_eq!(stale_count, 1);
         assert_eq!(null_count, 1);
+    }
+
+    // --- Migration 019 tests ---
+
+    /// Create a test DB at schema version 18 (with grading_features + feature_status columns).
+    /// If `with_grading_features` is true, inserts a real 1584-byte BLOB; otherwise NULL.
+    fn setup_test_db_at_version_18(with_grading_features: bool) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_file = dir.path().join("test.db");
+        let conn = Connection::open(&db_file).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL PRIMARY KEY);
+             INSERT INTO schema_version (version) VALUES (18);
+             CREATE TABLE projects (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL UNIQUE,
+                 path TEXT NOT NULL,
+                 dpx_count INTEGER NOT NULL DEFAULT 0,
+                 exr_count INTEGER NOT NULL DEFAULT 0,
+                 mov_count INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE files (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 filename TEXT NOT NULL,
+                 format TEXT NOT NULL CHECK(format IN ('dpx', 'exr', 'mov')),
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE fingerprints (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                 histogram_r TEXT NOT NULL,
+                 histogram_g TEXT NOT NULL,
+                 histogram_b TEXT NOT NULL,
+                 luminance_mean REAL NOT NULL,
+                 luminance_stddev REAL NOT NULL,
+                 color_space_tag TEXT NOT NULL,
+                 grading_features BLOB,
+                 feature_status TEXT CHECK(feature_status IS NULL OR feature_status IN ('stale', 'fresh')),
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );",
+        )
+        .unwrap();
+
+        conn.execute("INSERT INTO projects (name, path) VALUES ('test_proj', '/tmp/test')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'test.dpx', 'dpx')", [])
+            .unwrap();
+
+        if with_grading_features {
+            // Create a real 1584-byte BLOB with known pattern
+            let mut blob = Vec::with_capacity(1584);
+            // hist_l: 64 f64 values (0.0, 1.0, 2.0, ...)
+            for i in 0..64u32 {
+                blob.extend_from_slice(&(i as f64).to_le_bytes());
+            }
+            // hist_a: 64 f64 values (64.0, 65.0, ...)
+            for i in 0..64u32 {
+                blob.extend_from_slice(&((64 + i) as f64).to_le_bytes());
+            }
+            // hist_b: 64 f64 values (128.0, 129.0, ...)
+            for i in 0..64u32 {
+                blob.extend_from_slice(&((128 + i) as f64).to_le_bytes());
+            }
+            // moments: 6 f64 values (200.0, 201.0, ...)
+            for i in 0..6u32 {
+                blob.extend_from_slice(&((200 + i) as f64).to_le_bytes());
+            }
+            assert_eq!(blob.len(), 1584);
+            conn.execute(
+                "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, grading_features, feature_status) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video', ?1, 'stale')",
+                [blob],
+            ).unwrap();
+        } else {
+            conn.execute(
+                "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video')",
+                [],
+            ).unwrap();
+        }
+
+        (dir, conn)
+    }
+
+    #[test]
+    fn test_migration_019_adds_new_columns() {
+        let (_dir, conn) = setup_test_db_at_version_18(true);
+        run_migrations(&conn).unwrap();
+
+        // Verify all 4 new columns exist by querying them
+        let hist_l: Option<Vec<u8>> = conn
+            .query_row("SELECT oklab_hist_l FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(hist_l.is_some());
+        assert!(!hist_l.unwrap().is_empty());
+
+        let hist_a: Option<Vec<u8>> = conn
+            .query_row("SELECT oklab_hist_a FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(hist_a.is_some());
+
+        let hist_b: Option<Vec<u8>> = conn
+            .query_row("SELECT oklab_hist_b FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(hist_b.is_some());
+
+        let moments: Option<Vec<u8>> = conn
+            .query_row("SELECT color_moments FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(moments.is_some());
+    }
+
+    #[test]
+    fn test_migration_019_migrates_existing_blob_data() {
+        let (_dir, conn) = setup_test_db_at_version_18(true);
+        run_migrations(&conn).unwrap();
+
+        // Verify the split data matches the original BLOB via substr comparison
+        let oklab_hist_l: Vec<u8> = conn
+            .query_row("SELECT oklab_hist_l FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        let grading_features: Vec<u8> = conn
+            .query_row("SELECT grading_features FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+
+        // oklab_hist_l should be first 512 bytes of grading_features
+        assert_eq!(oklab_hist_l, grading_features[0..512]);
+        assert_eq!(oklab_hist_l.len(), 512);
+
+        // Verify each channel has correct size
+        let oklab_hist_a: Vec<u8> = conn
+            .query_row("SELECT oklab_hist_a FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(oklab_hist_a, grading_features[512..1024]);
+        assert_eq!(oklab_hist_a.len(), 512);
+
+        let oklab_hist_b: Vec<u8> = conn
+            .query_row("SELECT oklab_hist_b FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(oklab_hist_b, grading_features[1024..1536]);
+        assert_eq!(oklab_hist_b.len(), 512);
+
+        let color_moments: Vec<u8> = conn
+            .query_row("SELECT color_moments FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(color_moments, grading_features[1536..1584]);
+        assert_eq!(color_moments.len(), 48);
+    }
+
+    #[test]
+    fn test_migration_019_preserves_null_rows() {
+        let (_dir, conn) = setup_test_db_at_version_18(false);
+        run_migrations(&conn).unwrap();
+
+        // All 4 new columns should be NULL for rows without grading_features
+        let oklab_hist_l: Option<Vec<u8>> = conn
+            .query_row("SELECT oklab_hist_l FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(oklab_hist_l.is_none());
+
+        let color_moments: Option<Vec<u8>> = conn
+            .query_row("SELECT color_moments FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(color_moments.is_none());
+    }
+
+    #[test]
+    fn test_migration_019_idempotency() {
+        let (_dir, conn) = setup_test_db_at_version_18(true);
+        run_migrations(&conn).unwrap();
+
+        // Capture state after first run
+        let oklab_hist_l_first: Vec<u8> = conn
+            .query_row("SELECT oklab_hist_l FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        let version_first: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+
+        // Run migrations again — should be a no-op
+        run_migrations(&conn).unwrap();
+
+        let oklab_hist_l_second: Vec<u8> = conn
+            .query_row("SELECT oklab_hist_l FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        let version_second: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(oklab_hist_l_first, oklab_hist_l_second);
+        assert_eq!(version_first, version_second);
+    }
+
+    #[test]
+    fn test_migration_019_preserves_old_column() {
+        let (_dir, conn) = setup_test_db_at_version_18(true);
+        run_migrations(&conn).unwrap();
+
+        // Old grading_features column should still exist and be unchanged
+        let grading_features: Vec<u8> = conn
+            .query_row("SELECT grading_features FROM fingerprints WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(grading_features.len(), 1584);
     }
 }
