@@ -5,6 +5,7 @@ pub mod calibration;
 pub mod color_science;
 pub mod downsample;
 pub mod grading_features;
+pub mod hybrid_scoring;
 pub mod db;
 pub mod feedback;
 pub mod fingerprint;

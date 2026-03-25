@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::color_science::{bhattacharyya_distance, GradingFeatures};
 use crate::fingerprint::BINS_PER_CHANNEL;
+use crate::hybrid_scoring::{self, HybridSearchResult, SignalWeights};
 use crate::python_bridge::{AiError, PythonBridge};
 
 // ---------------------------------------------------------------------------
@@ -909,7 +910,7 @@ pub fn bhattacharyya_search(
 }
 
 /// Load grading features for a file from DB, returning GradingFeatures.
-fn load_grading_features(
+pub(crate) fn load_grading_features(
     conn: &Connection,
     file_id: i64,
 ) -> Result<GradingFeatures, SearchError> {
@@ -938,6 +939,198 @@ fn load_grading_features(
             file_id, e
         ))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid search (three-signal weighted scoring)
+// ---------------------------------------------------------------------------
+
+/// Hybrid search using weighted combination of grading, CLIP, and tag signals.
+///
+/// Loads query and candidate features from DB, computes per-signal similarities,
+/// resolves weights with graceful degradation for missing signals, and returns
+/// results ranked by hybrid score descending.
+pub fn hybrid_search(
+    conn: &Connection,
+    query_file_id: i64,
+    weights: &SignalWeights,
+    options: &SearchOptions,
+) -> Result<Vec<HybridSearchResult>, SearchError> {
+    // Load query grading features
+    let query_features = load_grading_features(conn, query_file_id)?;
+
+    // Load query CLIP embedding
+    let query_embedding: Option<Vec<f64>> = conn
+        .query_row(
+            "SELECT embedding FROM fingerprints WHERE file_id = ?1",
+            rusqlite::params![query_file_id],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .ok()
+        .and_then(|blob_opt| blob_opt.map(|b| deserialize_embedding(&b)))
+        .and_then(|opt| opt);
+
+    // Load query tags
+    let query_fp_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM fingerprints WHERE file_id = ?1 LIMIT 1",
+            rusqlite::params![query_file_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok();
+    let query_tags: Vec<String> = match query_fp_id {
+        Some(fp_id) => {
+            let sql = "SELECT t.tag FROM tags t WHERE t.fingerprint_id = ?1";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+            let rows: Vec<String> = stmt
+                .query_map(rusqlite::params![fp_id], |row| row.get::<_, String>(0))
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+            rows
+        }
+        None => vec![],
+    };
+
+    // Load all candidates with grading features
+    let mut sql = String::from(
+        "SELECT fp.id, fp.file_id, p.name, f.filename, f.format,
+                fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments,
+                fp.embedding
+         FROM fingerprints fp
+         JOIN files f ON f.id = fp.file_id
+         JOIN projects p ON p.id = f.project_id
+         WHERE fp.oklab_hist_l IS NOT NULL AND fp.oklab_hist_a IS NOT NULL
+               AND fp.oklab_hist_b IS NOT NULL AND fp.color_moments IS NOT NULL
+               AND fp.file_id != ?1"
+    );
+
+    if options.project.is_some() {
+        sql.push_str(" AND p.name = ?2");
+    }
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(query_file_id)];
+    if let Some(ref proj) = options.project {
+        params.push(Box::new(proj.clone()));
+    }
+
+    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>)> =
+        stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,   // fp.id
+                row.get::<_, i64>(1)?,   // fp.file_id
+                row.get::<_, String>(2)?, // p.name
+                row.get::<_, String>(3)?, // f.filename
+                row.get::<_, String>(4)?, // f.format
+                row.get::<_, Vec<u8>>(5)?, // oklab_hist_l
+                row.get::<_, Vec<u8>>(6)?, // oklab_hist_a
+                row.get::<_, Vec<u8>>(7)?, // oklab_hist_b
+                row.get::<_, Vec<u8>>(8)?, // color_moments
+                row.get::<_, Option<Vec<u8>>>(9)?, // embedding
+            ))
+        })
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    if rows.is_empty() {
+        if options.project.is_some() {
+            return Err(SearchError::ProjectNotFound(options.project.clone().unwrap()));
+        }
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Collect fingerprint IDs and load tags in batch
+    let fp_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let tags_map = hybrid_scoring::load_tags_batch(conn, &fp_ids);
+
+    // Score each candidate
+    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String)> = Vec::new();
+
+    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob) in rows {
+        // Deserialize grading features
+        let candidate_features = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments) {
+            Ok(gf) => gf,
+            Err(e) => {
+                eprintln!("warning: skipping candidate {} ({}): grading feature decode failed: {}", project_name, filename, e);
+                continue;
+            }
+        };
+
+        // Compute grading similarity
+        let grading_sim = match bhattacharyya_distance(&query_features, &candidate_features) {
+            Ok(score) => Some(score),
+            Err(e) => {
+                eprintln!("warning: skipping candidate {} ({}): bhattacharyya_distance failed: {}", project_name, filename, e);
+                continue;
+            }
+        };
+
+        // Compute CLIP similarity (if both embeddings available)
+        let clip_sim = match (&query_embedding, &embedding_blob) {
+            (Some(ref q_emb), Some(ref c_blob)) => {
+                if let Some(c_emb) = deserialize_embedding(c_blob) {
+                    if q_emb.len() == c_emb.len() {
+                        match hybrid_scoring::clip_similarity(q_emb, &c_emb) {
+                            Ok(sim) => Some(sim),
+                            Err(_) => None, // Skip on dimension mismatch
+                        }
+                    } else {
+                        None // Dimension mismatch, skip CLIP signal
+                    }
+                } else {
+                    None // Malformed blob, skip CLIP signal
+                }
+            }
+            _ => None, // Missing embedding on either side
+        };
+
+        // Compute tag similarity
+        let candidate_tags = tags_map.get(&_fp_id).cloned().unwrap_or_default();
+        let tag_sim = if query_tags.is_empty() || candidate_tags.is_empty() {
+            None
+        } else {
+            let sim = hybrid_scoring::tag_similarity(&query_tags, &candidate_tags);
+            if sim > 0.0 {
+                Some(sim)
+            } else {
+                None
+            }
+        };
+
+        // Compute hybrid score
+        match hybrid_scoring::compute_hybrid_score(grading_sim, clip_sim, tag_sim, weights) {
+            Ok(hybrid) => scored.push((hybrid.final_score, hybrid, project_name, filename, format)),
+            Err(_) => continue,
+        }
+    }
+
+    if scored.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Sort by score descending
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(options.limit);
+
+    let results: Vec<HybridSearchResult> = scored
+        .into_iter()
+        .enumerate()
+        .map(|(i, (score, hybrid, project_name, file_path, file_format))| HybridSearchResult {
+            rank: i + 1,
+            project_name,
+            file_path,
+            file_format,
+            score,
+            score_breakdown: hybrid.breakdown,
+        })
+        .collect();
+
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -1584,6 +1777,306 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].project_name, "film_a");
+    }
+
+    // --- Hybrid search tests ---
+
+    #[test]
+    fn test_hybrid_search_all_signals() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Query fingerprint with grading features and embedding
+        let query_emb = serialize_embedding(&vec![0.1, 0.2, 0.3, 0.4]);
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, embedding, embedding_model) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, ?, 'test-model')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m, query_emb],
+        ).unwrap();
+
+        // Candidate with grading features, embedding, and tags
+        let cand_emb = serialize_embedding(&vec![0.1, 0.2, 0.3, 0.4]);
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, embedding, embedding_model) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, ?, 'test-model')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m, cand_emb],
+        ).unwrap();
+        // Add tags to candidate
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (2, 'warm')", [])
+            .unwrap();
+
+        let weights = SignalWeights {
+            grading: 0.6,
+            clip: 0.3,
+            tag: 0.1,
+        };
+
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 10 },
+        ).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rank, 1);
+        assert!(results[0].score > 0.0);
+        // With identical features, grading_sim ~ 1.0
+        assert!(results[0].score_breakdown.grading > 0.9);
+        // CLIP: identical embeddings -> cos_sim = 1.0 -> normalized = 1.0
+        assert!(results[0].score_breakdown.clip.is_some());
+        assert!((results[0].score_breakdown.clip.unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hybrid_search_missing_clip() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Query without embedding
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Candidate without embedding but with tags
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute("INSERT INTO tags (fingerprint_id, tag) VALUES (2, 'warm')", [])
+            .unwrap();
+
+        let weights = SignalWeights {
+            grading: 0.6,
+            clip: 0.3,
+            tag: 0.1,
+        };
+
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 10 },
+        ).unwrap();
+
+        assert_eq!(results.len(), 1);
+        // CLIP should be None (omitted)
+        assert_eq!(results[0].score_breakdown.clip, None);
+        // Grading should be present (identical features)
+        assert!(results[0].score_breakdown.grading > 0.9);
+    }
+
+    #[test]
+    fn test_hybrid_search_missing_clip_and_tag() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Both without embedding or tags
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights {
+            grading: 0.6,
+            clip: 0.3,
+            tag: 0.1,
+        };
+
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 10 },
+        ).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].score_breakdown.clip, None);
+        assert_eq!(results[0].score_breakdown.tag, None);
+        // Only grading, weight = 1.0, identical features → score ~ 1.0
+        assert!(results[0].score > 0.9);
+    }
+
+    #[test]
+    fn test_hybrid_search_ranking() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'near.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'far.dpx', 'dpx')", [])
+            .unwrap();
+
+        // Query: uniform features
+        let query_gf = GradingFeatures {
+            hist_l: vec![50.0; 64],
+            hist_a: vec![25.0; 64],
+            hist_b: vec![25.0; 64],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+        };
+        let (qhl, qha, qhb, qm) = (query_gf.hist_l_blob(), query_gf.hist_a_blob(), query_gf.hist_b_blob(), query_gf.moments_blob());
+
+        // Near: similar features
+        let near_gf = GradingFeatures {
+            hist_l: vec![55.0; 64],
+            hist_a: vec![27.0; 64],
+            hist_b: vec![27.0; 64],
+            moments: [0.52, 0.11, 0.01, 0.05, 0.01, 0.05],
+        };
+        let (nhl, nha, nhb, nm) = (near_gf.hist_l_blob(), near_gf.hist_a_blob(), near_gf.hist_b_blob(), near_gf.moments_blob());
+
+        // Far: very different features
+        let far_gf = GradingFeatures {
+            hist_l: vec![1000.0; 64],
+            hist_a: vec![1.0; 64],
+            hist_b: vec![1.0; 64],
+            moments: [0.9, 0.01, 0.0, 0.01, 0.0, 0.01],
+        };
+        let (fhl, fha, fhb, fm) = (far_gf.hist_l_blob(), far_gf.hist_a_blob(), far_gf.hist_b_blob(), far_gf.moments_blob());
+
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), qhl, qha, qhb, qm],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.3, 0.2, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), nhl, nha, nhb, nm],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (3, ?, ?, ?, 0.1, 0.3, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), fhl, fha, fhb, fm],
+        ).unwrap();
+
+        let weights = SignalWeights {
+            grading: 0.6,
+            clip: 0.3,
+            tag: 0.1,
+        };
+
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 10 },
+        ).unwrap();
+
+        assert_eq!(results.len(), 2);
+        // "near" should rank higher than "far"
+        assert!(results[0].score >= results[1].score,
+            "Expected near (score={}) >= far (score={})", results[0].score, results[1].score);
+    }
+
+    #[test]
+    fn test_hybrid_search_limit() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Add 5 identical candidates
+        for i in 0..5 {
+            conn.execute(
+                &format!("INSERT INTO files (project_id, filename, format) VALUES (1, 'c{}.dpx', 'dpx')", i),
+                [],
+            ).unwrap();
+            conn.execute(
+                &format!("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES ({}, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)", i + 2),
+                rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+            ).unwrap();
+        }
+
+        let weights = SignalWeights {
+            grading: 0.6,
+            clip: 0.3,
+            tag: 0.1,
+        };
+
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 2 },
+        ).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_hybrid_search_project_scoped() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_b', '/tmp/b')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'c1.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (2, 'c2.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (3, ?, ?, ?, 0.3, 0.2, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights {
+            grading: 0.6,
+            clip: 0.3,
+            tag: 0.1,
+        };
+
+        // Search within film_a only
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: Some("film_a".to_string()), limit: 10 },
+        ).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].project_name, "film_a");
     }
