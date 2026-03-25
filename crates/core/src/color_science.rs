@@ -135,6 +135,14 @@ extern "C" {
         out_ptr: *mut f64,
     ) -> i32;
 
+    fn mengxi_bhattacharyya_distance(
+        query_hist: *const f64,
+        candidate_hist: *const f64,
+        hist_len: i32,
+        channels: i32,
+        out_score: *mut f64,
+    ) -> i32;
+
     fn mengxi_extract_grading_features(
         pixel_len: i32,
         pixel_ptr: *const f64,
@@ -675,6 +683,96 @@ pub fn extract_grading_features(
         hist_b,
         moments,
     })
+}
+
+/// Compute Bhattacharyya similarity between two grading feature sets.
+///
+/// Normalizes histograms to probability distributions, then delegates to MoonBit FFI.
+///
+/// # Arguments
+/// * `query` — Query grading features (histograms + moments).
+/// * `candidate` — Candidate grading features (histograms + moments).
+///
+/// # Returns
+/// * `Ok(f64)` similarity score in [0.0, 1.0] where 1.0 = identical distributions.
+/// * `Err(ColorScienceError)` if normalization fails or FFI fails.
+pub fn bhattacharyya_distance(
+    query: &GradingFeatures,
+    candidate: &GradingFeatures,
+) -> Result<f64, ColorScienceError> {
+    let hist_len = GradingFeatures::HIST_BINS;
+    let channels = 3;
+
+    // Normalize each histogram to probability distribution
+    let normalize = |hist: &[f64]| -> Result<Vec<f64>, ColorScienceError> {
+        let sum: f64 = hist.iter().sum();
+        if sum <= 0.0 {
+            // Zero-sum histogram: return uniform distribution (no similarity signal)
+            let uniform = vec![1.0 / hist_len as f64; hist_len];
+            return Ok(uniform);
+        }
+        if !sum.is_finite() {
+            return Err(ColorScienceError::FfiError(
+                -4,
+                "histogram sum is not finite".to_string(),
+            ));
+        }
+        Ok(hist.iter().map(|&v| v / sum).collect())
+    };
+
+    let q_l = normalize(&query.hist_l)?;
+    let q_a = normalize(&query.hist_a)?;
+    let q_b = normalize(&query.hist_b)?;
+    let c_l = normalize(&candidate.hist_l)?;
+    let c_a = normalize(&candidate.hist_a)?;
+    let c_b = normalize(&candidate.hist_b)?;
+
+    // Interleave into flat arrays: [L0..L63, a0..a63, b0..b63]
+    let total_len = hist_len * channels;
+    let mut query_flat = Vec::with_capacity(total_len);
+    query_flat.extend_from_slice(&q_l);
+    query_flat.extend_from_slice(&q_a);
+    query_flat.extend_from_slice(&q_b);
+
+    let mut candidate_flat = Vec::with_capacity(total_len);
+    candidate_flat.extend_from_slice(&c_l);
+    candidate_flat.extend_from_slice(&c_a);
+    candidate_flat.extend_from_slice(&c_b);
+
+    // Reject NaN/Inf after normalization
+    if !query_flat.iter().all(|v| v.is_finite()) {
+        return Err(ColorScienceError::FfiError(
+            -4,
+            "normalized query histogram contains NaN or Inf".to_string(),
+        ));
+    }
+    if !candidate_flat.iter().all(|v| v.is_finite()) {
+        return Err(ColorScienceError::FfiError(
+            -4,
+            "normalized candidate histogram contains NaN or Inf".to_string(),
+        ));
+    }
+
+    let mut out_score = [0.0_f64; 1];
+
+    let result = unsafe {
+        mengxi_bhattacharyya_distance(
+            query_flat.as_ptr(),
+            candidate_flat.as_ptr(),
+            hist_len as i32,
+            channels as i32,
+            out_score.as_mut_ptr(),
+        )
+    };
+
+    if result < 0 {
+        return Err(ColorScienceError::FfiError(
+            result,
+            "bhattacharyya_distance".to_string(),
+        ));
+    }
+
+    Ok(out_score[0])
 }
 
 /// Convert interleaved RGB f64 pixel data to Oklab color space based on color space tag.
@@ -1503,7 +1601,72 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // === rgb_to_oklab_batch tests ===
+    // --- rgb_to_oklab_batch tests ---
+
+    #[test]
+    fn test_bhattacharyya_distance_identical() {
+        let gf = GradingFeatures {
+            hist_l: vec![10.0; 64],
+            hist_a: vec![5.0; 64],
+            hist_b: vec![5.0; 64],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+        };
+        let score = bhattacharyya_distance(&gf, &gf).unwrap();
+        assert!((score - 1.0).abs() < 1e-10, "Identical features should score 1.0, got {}", score);
+    }
+
+    #[test]
+    fn test_bhattacharyya_distance_orthogonal() {
+        let mut q_l = vec![0.0; 64];
+        let mut c_l = vec![0.0; 64];
+        q_l[0] = 100.0;  // All mass in bin 0
+        c_l[63] = 100.0; // All mass in last bin
+        let query = GradingFeatures {
+            hist_l: q_l,
+            hist_a: vec![1.0; 64],
+            hist_b: vec![1.0; 64],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+        };
+        let candidate = GradingFeatures {
+            hist_l: c_l,
+            hist_a: vec![1.0; 64],
+            hist_b: vec![1.0; 64],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+        };
+        let score = bhattacharyya_distance(&query, &candidate).unwrap();
+        // L channel: no overlap → BC_L ≈ 0
+        // a, b channels: identical → BC = 1.0
+        // Average ≈ (0 + 1.0 + 1.0) / 3 ≈ 0.667
+        assert!(score < 0.7, "L-orthogonal should score < 0.7, got {}", score);
+        assert!(score > 0.6, "a/b identical should score > 0.6, got {}", score);
+    }
+
+    #[test]
+    fn test_bhattacharyya_distance_all_zeros() {
+        let gf = GradingFeatures {
+            hist_l: vec![0.0; 64],
+            hist_a: vec![0.0; 64],
+            hist_b: vec![0.0; 64],
+            moments: [0.0; 6],
+        };
+        // Zero-sum histograms → uniform normalization → identical → score 1.0
+        let score = bhattacharyya_distance(&gf, &gf).unwrap();
+        assert!((score - 1.0).abs() < 1e-10, "Both zero should normalize to uniform, got {}", score);
+    }
+
+    #[test]
+    fn test_bhattacharyya_distance_with_nan_rejected() {
+        let mut hist_l = vec![10.0; 64];
+        hist_l[0] = f64::NAN;
+        let gf = GradingFeatures {
+            hist_l,
+            hist_a: vec![5.0; 64],
+            hist_b: vec![5.0; 64],
+            moments: [0.0; 6],
+        };
+        let result = bhattacharyya_distance(&gf, &gf);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_rgb_to_oklab_batch_linear() {

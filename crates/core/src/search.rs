@@ -2,6 +2,7 @@
 
 use rusqlite::Connection;
 
+use crate::color_science::{bhattacharyya_distance, GradingFeatures};
 use crate::fingerprint::BINS_PER_CHANNEL;
 use crate::python_bridge::{AiError, PythonBridge};
 
@@ -800,6 +801,146 @@ pub fn search_histograms(
 }
 
 // ---------------------------------------------------------------------------
+// Bhattacharyya distance search (grading features)
+// ---------------------------------------------------------------------------
+
+/// Search by grading feature similarity using Bhattacharyya distance.
+///
+/// Loads query grading features from DB, then computes Bhattacharyya similarity
+/// against all candidates with grading features. Results are sorted by
+/// similarity descending (1.0 = identical).
+pub fn bhattacharyya_search(
+    conn: &Connection,
+    query_file_id: i64,
+    options: &SearchOptions,
+) -> Result<Vec<SearchResult>, SearchError> {
+    // Load query grading features
+    let query_features = load_grading_features(conn, query_file_id)?;
+
+    // Load all candidates with grading features
+    let mut sql = String::from(
+        "SELECT fp.file_id, p.name, f.filename, f.format,
+                fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments
+         FROM fingerprints fp
+         JOIN files f ON f.id = fp.file_id
+         JOIN projects p ON p.id = f.project_id
+         WHERE fp.oklab_hist_l IS NOT NULL AND fp.oklab_hist_a IS NOT NULL
+               AND fp.oklab_hist_b IS NOT NULL AND fp.color_moments IS NOT NULL
+               AND fp.file_id != ?1"
+    );
+
+    if options.project.is_some() {
+        sql.push_str(" AND p.name = ?2");
+    }
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(query_file_id)];
+    if let Some(ref proj) = options.project {
+        params.push(Box::new(proj.clone()));
+    }
+
+    let rows: Vec<(i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+                row.get::<_, Vec<u8>>(7)?,
+            ))
+        })
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+    if rows.is_empty() {
+        if options.project.is_some() {
+            return Err(SearchError::ProjectNotFound(options.project.clone().unwrap()));
+        }
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Score each candidate
+    let mut scored: Vec<(f64, String, String, String)> = Vec::new();
+
+    for (_file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments) in rows {
+        let candidate = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments) {
+            Ok(gf) => gf,
+            Err(e) => {
+                eprintln!("warning: skipping candidate {} ({}): grading feature decode failed: {}", project_name, filename, e);
+                continue;
+            }
+        };
+
+        match bhattacharyya_distance(&query_features, &candidate) {
+            Ok(score) => scored.push((score, project_name, filename, format)),
+            Err(e) => {
+                eprintln!("warning: skipping candidate {} ({}): bhattacharyya_distance failed: {}", project_name, filename, e);
+                continue;
+            }
+        }
+    }
+
+    if scored.is_empty() {
+        return Err(SearchError::NoFingerprints);
+    }
+
+    // Sort by score descending
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(options.limit);
+
+    let results: Vec<SearchResult> = scored
+        .into_iter()
+        .enumerate()
+        .map(|(i, (score, project_name, file_path, file_format))| SearchResult {
+            rank: i + 1,
+            project_name,
+            file_path,
+            file_format,
+            score,
+        })
+        .collect();
+
+    Ok(results)
+}
+
+/// Load grading features for a file from DB, returning GradingFeatures.
+fn load_grading_features(
+    conn: &Connection,
+    file_id: i64,
+) -> Result<GradingFeatures, SearchError> {
+    let sql = "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments
+               FROM fingerprints
+               WHERE file_id = ?1 AND oklab_hist_l IS NOT NULL
+               LIMIT 1";
+
+    let result = conn.query_row(sql, rusqlite::params![file_id], |row| {
+        Ok((
+            row.get::<_, Option<Vec<u8>>>(0)?,
+            row.get::<_, Option<Vec<u8>>>(1)?,
+            row.get::<_, Option<Vec<u8>>>(2)?,
+            row.get::<_, Option<Vec<u8>>>(3)?,
+        ))
+    });
+
+    match result {
+        Ok((Some(hist_l), Some(hist_a), Some(hist_b), Some(moments))) => {
+            GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments)
+                .map_err(|e| SearchError::DatabaseError(format!("grading feature decode: {}", e)))
+        }
+        Ok(_) => Err(SearchError::NoFingerprints),
+        Err(e) => Err(SearchError::DatabaseError(format!(
+            "query grading features for file_id {}: {}",
+            file_id, e
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -886,7 +1027,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, embedding BLOB, embedding_model TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, embedding BLOB, embedding_model TEXT, oklab_hist_l BLOB, oklab_hist_a BLOB, oklab_hist_b BLOB, color_moments BLOB, feature_status TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_id INTEGER NOT NULL REFERENCES fingerprints(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);",
         )
@@ -1445,5 +1586,179 @@ mod tests {
         .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].project_name, "film_a");
+    }
+
+    // --- Bhattacharyya search tests ---
+
+    /// Helper to create grading feature BLOBs for test data (uniform histograms).
+    fn make_grading_features_blob() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let gf = GradingFeatures {
+            hist_l: vec![100.0; 64],
+            hist_a: vec![50.0; 64],
+            hist_b: vec![50.0; 64],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+        };
+        (gf.hist_l_blob(), gf.hist_a_blob(), gf.hist_b_blob(), gf.moments_blob())
+    }
+
+    #[test]
+    fn test_bhattacharyya_search_identical_features() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Both query and candidate have identical grading features
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let results = bhattacharyya_search(
+            &conn,
+            1,
+            &SearchOptions { project: None, limit: 10 },
+        ).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!((results[0].score - 1.0).abs() < 0.01, "Identical features should score near 1.0, got {}", results[0].score);
+    }
+
+    #[test]
+    fn test_bhattacharyya_search_no_grading_features() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'q.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'c.dpx', 'dpx')", [])
+            .unwrap();
+        // Insert fingerprints without grading features (oklab_hist_l is NULL)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (2, ?, ?, ?, 0.3, 0.2, 'acescg')",
+            [make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625)],
+        ).unwrap();
+
+        let result = bhattacharyya_search(
+            &conn,
+            1,
+            &SearchOptions { project: None, limit: 10 },
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SearchError::NoFingerprints | SearchError::DatabaseError(_) => {}
+            other => panic!("Expected NoFingerprints or DatabaseError, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bhattacharyya_search_ranking_order() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'near.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'far.dpx', 'dpx')", [])
+            .unwrap();
+
+        // Query: bright image
+        let query_gf = GradingFeatures {
+            hist_l: vec![50.0; 64],
+            hist_a: vec![25.0; 64],
+            hist_b: vec![25.0; 64],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+        };
+        let (qhl, qha, qhb, qm) = (query_gf.hist_l_blob(), query_gf.hist_a_blob(), query_gf.hist_b_blob(), query_gf.moments_blob());
+
+        // Near candidate: similar features (same shape, slightly different counts)
+        let near_gf = GradingFeatures {
+            hist_l: vec![55.0; 64],
+            hist_a: vec![27.0; 64],
+            hist_b: vec![27.0; 64],
+            moments: [0.52, 0.11, 0.01, 0.05, 0.01, 0.05],
+        };
+        let (nhl, nha, nhb, nm) = (near_gf.hist_l_blob(), near_gf.hist_a_blob(), near_gf.hist_b_blob(), near_gf.moments_blob());
+
+        // Far candidate: very different features
+        let far_gf = GradingFeatures {
+            hist_l: vec![1000.0; 64], // Concentrated in one bin
+            hist_a: vec![1.0; 64],
+            hist_b: vec![1.0; 64],
+            moments: [0.9, 0.01, 0.0, 0.01, 0.0, 0.01],
+        };
+        let (fhl, fha, fhb, fm) = (far_gf.hist_l_blob(), far_gf.hist_a_blob(), far_gf.hist_b_blob(), far_gf.moments_blob());
+
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), qhl, qha, qhb, qm],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.3, 0.2, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), nhl, nha, nhb, nm],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (3, ?, ?, ?, 0.1, 0.3, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), fhl, fha, fhb, fm],
+        ).unwrap();
+
+        let results = bhattacharyya_search(
+            &conn,
+            1,
+            &SearchOptions { project: None, limit: 10 },
+        ).unwrap();
+
+        assert_eq!(results.len(), 2);
+        // "near" candidate should rank higher than "far"
+        assert!(results[0].score >= results[1].score,
+            "Expected near (score={}) >= far (score={})", results[0].score, results[1].score);
+    }
+
+    #[test]
+    fn test_bhattacharyya_search_limit() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Add 5 identical candidates
+        for i in 0..5 {
+            conn.execute(
+                &format!("INSERT INTO files (project_id, filename, format) VALUES (1, 'c{}.dpx', 'dpx')", i),
+                [],
+            ).unwrap();
+            conn.execute(
+                &format!("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES ({}, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)", i + 2),
+                rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+            ).unwrap();
+        }
+
+        let results = bhattacharyya_search(
+            &conn,
+            1,
+            &SearchOptions { project: None, limit: 2 },
+        ).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

@@ -88,6 +88,13 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib34mengxi__extract__grading__features(
   double*,   /* hist_len_ptr */
   double*    /* moments_len_ptr */
 );
+extern int32_t _M0FP216mengxi_2dmoonbit3lib31mengxi__bhattacharyya__distance(
+  double*,
+  double*,
+  int32_t,
+  int32_t,
+  double*
+);
 
 static atomic_int runtime_initialized = 0;
 
@@ -536,6 +543,70 @@ int32_t mengxi_extract_grading_features(
   moonbit_drop_object(mb_hist_a);
   moonbit_drop_object(mb_hist_l);
   moonbit_drop_object(mb_pixels);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_bhattacharyya_distance — Bhattacharyya similarity
+ *
+ * Story 3.1: Bhattacharyya Distance Candidate Ranking
+ * Pattern follows mengxi_extract_grading_features (lines 464-541)
+ * ============================================================ */
+
+int32_t mengxi_bhattacharyya_distance(
+  double* query_hist,
+  double* candidate_hist,
+  int32_t hist_len,
+  int32_t channels,
+  double* out_score
+) {
+  ensure_runtime_init();
+
+  if (hist_len <= 0 || channels <= 0) return -1;
+
+  int32_t total_len = hist_len * channels;
+
+  /* Allocate MoonBit-managed arrays */
+  double* mb_query = moonbit_make_double_array(total_len, 0.0);
+  if (!mb_query) return -3;
+
+  double* mb_candidate = moonbit_make_double_array(total_len, 0.0);
+  if (!mb_candidate) {
+    moonbit_drop_object(mb_query);
+    return -3;
+  }
+
+  double* mb_out = moonbit_make_double_array(1, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_candidate);
+    moonbit_drop_object(mb_query);
+    return -3;
+  }
+
+  /* Copy input data */
+  memcpy(mb_query, query_hist, total_len * sizeof(double));
+  memcpy(mb_candidate, candidate_hist, total_len * sizeof(double));
+
+  /* Bump ref counts to survive MoonBit's incref/decref */
+  Moonbit_object_header(mb_query)->rc += 8;
+  Moonbit_object_header(mb_candidate)->rc += 8;
+  Moonbit_object_header(mb_out)->rc += 8;
+
+  /* Call MoonBit function */
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__bhattacharyya__distance(
+    mb_query, mb_candidate, hist_len, channels, mb_out
+  );
+
+  /* Copy output back to Rust buffer */
+  if (result >= 0) {
+    memcpy(out_score, mb_out, 1 * sizeof(double));
+  }
+
+  /* Free MoonBit arrays (reverse order) */
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_candidate);
+  moonbit_drop_object(mb_query);
 
   return result;
 }
