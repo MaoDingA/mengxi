@@ -754,12 +754,13 @@ fn main() {
                                             println!(
                                                 "+------+------------------+--------------------------+-------+------------------------------------------+"
                                             );
+                                            let all_warnings: Vec<&str> = results.iter()
+                                                .flat_map(|r| r.match_warnings.iter().map(|s| s.as_str()))
+                                                .collect();
+
                                             for r in &results {
                                                 let score_pct = format!("{:.1}%", r.score * 100.0);
                                                 let breakdown = format_breakdown(&r.score_breakdown);
-                                                for w in &r.match_warnings {
-                                                    eprintln!("warning: {}", w);
-                                                }
                                                 println!(
                                                     "| {:<4} | {:<16} | {:<24} | {:<5} | {:<40} |",
                                                     r.rank,
@@ -772,6 +773,9 @@ fn main() {
                                             println!(
                                                 "+------+------------------+--------------------------+-------+------------------------------------------+"
                                             );
+                                            for w in &all_warnings {
+                                                eprintln!("warning: {}", w);
+                                            }
                                         }
                                     }
                                 }

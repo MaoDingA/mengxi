@@ -304,10 +304,10 @@ fn display_name(cs_tag: &str) -> std::borrow::Cow<'_, str> {
 
 /// Determine the color space family for a given tag.
 fn color_space_family(cs_tag: &str) -> &'static str {
-    match cs_tag {
-        "video" | "srgb" | "rec709" | "Video" | "sRGB" | "Rec709" => "video",
-        "acescct" | "acescg" | "log" | "ACEScct" | "ACEScg" | "Log" => "log",
-        "linear" | "Linear" => "linear",
+    match cs_tag.to_lowercase().as_str() {
+        "video" | "srgb" | "rec709" => "video",
+        "acescct" | "acescg" | "log" => "log",
+        "linear" => "linear",
         _ => "unknown",
     }
 }

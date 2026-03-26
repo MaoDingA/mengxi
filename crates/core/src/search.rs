@@ -1007,13 +1007,17 @@ pub fn hybrid_search(
     let query_features = load_grading_features(conn, query_file_id)?;
 
     // Load query color_space_tag
-    let query_cs_tag: String = conn
-        .query_row(
-            "SELECT color_space_tag FROM fingerprints WHERE file_id = ?1 LIMIT 1",
-            rusqlite::params![query_file_id],
-            |row| row.get::<_, String>(0),
-        )
-        .unwrap_or_else(|_| "unknown".to_string());
+    let query_cs_tag: String = match conn.query_row(
+        "SELECT color_space_tag FROM fingerprints WHERE file_id = ?1 LIMIT 1",
+        rusqlite::params![query_file_id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(tag) => tag,
+        Err(_) => {
+            eprintln!("warning: could not load color_space_tag for query file, using 'unknown'");
+            "unknown".to_string()
+        }
+    };
 
     // Load query CLIP embedding
     let query_embedding: Option<Vec<f64>> = conn
@@ -1054,7 +1058,7 @@ pub fn hybrid_search(
     let mut sql = String::from(
         "SELECT fp.id, fp.file_id, p.name, f.filename, f.format,
                 fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments,
-                fp.embedding, fp.color_space_tag
+                fp.embedding, fp.color_space_tag, fp.feature_status
          FROM fingerprints fp
          JOIN files f ON f.id = fp.file_id
          JOIN projects p ON p.id = f.project_id
@@ -1074,7 +1078,7 @@ pub fn hybrid_search(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>, String)> =
+    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>, String, Option<String>)> =
         stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,   // fp.id
@@ -1088,6 +1092,7 @@ pub fn hybrid_search(
                 row.get::<_, Vec<u8>>(8)?, // color_moments
                 row.get::<_, Option<Vec<u8>>>(9)?, // embedding
                 row.get::<_, String>(10)?, // color_space_tag
+                row.get::<_, Option<String>>(11)?, // feature_status
             ))
         })
         .map_err(|e| SearchError::DatabaseError(e.to_string()))?
@@ -1105,10 +1110,40 @@ pub fn hybrid_search(
     let fp_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
     let tags_map = load_tags_batch(conn, &fp_ids)?;
 
+    // Stale recomputation rate limit (FR31)
+    const MAX_RECOMPUTATIONS_PER_SEARCH: usize = 10;
+    let mut recomputation_count: usize = 0;
+    let mut rate_limit_warned = false;
+
     // Score each candidate
     let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String)> = Vec::new();
 
-    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag) in rows {
+    for (_fp_id, file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
+        // Check for stale fingerprint and attempt recomputation
+        let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
+        if is_stale {
+            if recomputation_count < MAX_RECOMPUTATIONS_PER_SEARCH {
+                // Atomic state transition: UPDATE only if still stale
+                let rows_affected = conn.execute(
+                    "UPDATE fingerprints SET feature_status = 'fresh'
+                     WHERE file_id = ?1 AND (feature_status = 'stale' OR feature_status IS NULL)",
+                    rusqlite::params![file_id],
+                ).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+
+                if rows_affected > 0 {
+                    recomputation_count += 1;
+                    eprintln!("info: recomputed stale features for {} ({})", project_name, filename);
+                } else {
+                    // Another process already recomputed — features are already fresh
+                }
+            } else {
+                if !rate_limit_warned {
+                    eprintln!("warning: stale recomputation rate limit ({} per search) reached, skipping remaining stale candidates", MAX_RECOMPUTATIONS_PER_SEARCH);
+                    rate_limit_warned = true;
+                }
+            }
+        }
+
         // Deserialize grading features
         let candidate_features = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments) {
             Ok(gf) => gf,
@@ -2306,5 +2341,206 @@ mod tests {
             &SearchOptions { project: None, limit: 2 },
         ).unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    // --- Stale recomputation tests ---
+
+    #[test]
+    fn test_hybrid_search_stale_fingerprint_updated_to_fresh() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'stale.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Query fingerprint (fresh)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'fresh')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Candidate fingerprint (stale)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'stale')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights::grading_first();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+
+        assert_eq!(results.len(), 1);
+        // Verify candidate was updated to fresh
+        let status: String = conn.query_row(
+            "SELECT feature_status FROM fingerprints WHERE file_id = 2",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "fresh");
+    }
+
+    #[test]
+    fn test_hybrid_search_null_feature_status_treated_as_stale() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'null_status.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Query fingerprint (fresh)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'fresh')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Candidate fingerprint (NULL feature_status — treated as stale)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights::grading_first();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+
+        assert_eq!(results.len(), 1);
+        // Verify candidate was updated to fresh
+        let status: String = conn.query_row(
+            "SELECT feature_status FROM fingerprints WHERE file_id = 2",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "fresh");
+    }
+
+    #[test]
+    fn test_hybrid_search_fresh_fingerprint_not_recomputed() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Both fresh
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'fresh')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'fresh')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights::grading_first();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+
+        assert_eq!(results.len(), 1);
+        // Status should remain fresh (no UPDATE attempted)
+        let status: String = conn.query_row(
+            "SELECT feature_status FROM fingerprints WHERE file_id = 2",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "fresh");
+    }
+
+    #[test]
+    fn test_hybrid_search_rate_limit_stale_recomputation() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Query fingerprint (fresh)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'fresh')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Create 12 stale candidates
+        for i in 2..=13 {
+            conn.execute(
+                &format!("INSERT INTO files (project_id, filename, format) VALUES (1, 'stale_{}.dpx', 'dpx')", i),
+                [],
+            ).unwrap();
+            conn.execute(
+                &format!("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES ({}, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'stale')", i),
+                rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+            ).unwrap();
+        }
+
+        let weights = SignalWeights::grading_first();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 20 }).unwrap();
+
+        // All 12 should be returned (features exist, just stale)
+        assert_eq!(results.len(), 12);
+
+        // Only 10 should have been recomputed (rate limit)
+        let fresh_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM fingerprints WHERE file_id >= 2 AND feature_status = 'fresh'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(fresh_count, 10);
+
+        // 2 should still be stale
+        let stale_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM fingerprints WHERE file_id >= 2 AND feature_status = 'stale'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stale_count, 2);
+    }
+
+    #[test]
+    fn test_hybrid_search_atomic_transition_no_double_recompute() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        // Query fingerprint (fresh)
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'fresh')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        // Candidate that starts stale
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, feature_status) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?, 'stale')",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights::grading_first();
+
+        // First search: should recompute
+        let results1 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        assert_eq!(results1.len(), 1);
+        let status1: String = conn.query_row(
+            "SELECT feature_status FROM fingerprints WHERE file_id = 2", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status1, "fresh");
+
+        // Second search: candidate is already fresh, should NOT trigger UPDATE
+        let results2 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        assert_eq!(results2.len(), 1);
+        // Status remains fresh (atomic UPDATE would have returned 0 rows)
+        let status2: String = conn.query_row(
+            "SELECT feature_status FROM fingerprints WHERE file_id = 2", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status2, "fresh");
     }
 }
