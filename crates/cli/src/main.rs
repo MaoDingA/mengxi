@@ -58,6 +58,12 @@ enum Commands {
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
+        /// Search mode preset (grading-first, balanced)
+        #[arg(long, value_parser = ["grading-first", "balanced"])]
+        search_mode: Option<String>,
+        /// Override signal weights (e.g., grading=0.6,clip=0.3,tag=0.1)
+        #[arg(long)]
+        weights: Option<String>,
     },
     /// Export a matching style as a LUT file
     Export {
@@ -240,10 +246,12 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
             let obj = serde_json::json!({ "name": name });
             ("import".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
         }
-        Some(Commands::Search { project, tag, .. }) => {
+        Some(Commands::Search { project, tag, search_mode, weights, .. }) => {
             let mut obj = serde_json::Map::new();
             if let Some(p) = project { obj.insert("project".to_string(), serde_json::json!(p)); }
             if let Some(t) = tag { obj.insert("tag".to_string(), serde_json::json!(t)); }
+            if let Some(m) = search_mode { obj.insert("search_mode".to_string(), serde_json::json!(m)); }
+            if let Some(w) = weights { obj.insert("weights".to_string(), serde_json::json!(w)); }
             ("search".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
         }
         Some(Commands::Export { result, format, output: _output, .. }) => {
@@ -622,8 +630,15 @@ fn main() {
             accept,
             reject,
             format,
+            search_mode,
+            weights,
         }) => {
             let is_json = format == "json";
+
+            // F-07: warn when --search-mode/--weights used without --image
+            if image.is_none() && (search_mode.is_some() || weights.is_some()) {
+                eprintln!("warning: --search-mode and --weights require --image, flags ignored");
+            }
 
             // --image: embedding-based search (optionally combined with --tag)
             if let Some(ref img_path) = image {
@@ -651,6 +666,124 @@ fn main() {
                             limit: limit_val as usize,
                         };
 
+                        // Hybrid search: --image + (--search-mode or --weights)
+                        let use_hybrid = search_mode.is_some() || weights.is_some();
+
+                        if use_hybrid {
+                            // F-06: warn when --tag is provided but hybrid mode ignores it
+                            if tag.is_some() {
+                                eprintln!("warning: --tag is ignored in hybrid search mode (use --search-mode or --weights without --tag)");
+                            }
+
+                            // Resolve weights
+                            let resolved_weights = match resolve_hybrid_weights(search_mode.as_deref(), weights.as_deref()) {
+                                Ok(w) => w,
+                                Err(e) => {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "error",
+                                            "error": { "code": "SEARCH_WEIGHT_ERROR", "message": e }
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        eprintln!("Error: {}", e);
+                                    }
+                                    process::exit(1);
+                                }
+                            };
+
+                            // Resolve image path to file_id
+                            let file_id = match resolve_image_to_file_id(&conn, img_path, project.as_deref()) {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "error",
+                                            "error": { "code": "SEARCH_IMAGE_ERROR", "message": e }
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        eprintln!("Error: {}", e);
+                                    }
+                                    process::exit(1);
+                                }
+                            };
+
+                            match mengxi_core::search::hybrid_search(&conn, file_id, &resolved_weights, &options) {
+                                Ok(results) => {
+                                    if is_json {
+                                        let json_results: Vec<serde_json::Value> = results
+                                            .iter()
+                                            .map(|r| {
+                                                let mut bd = serde_json::Map::new();
+                                                bd.insert("oklab_histogram".to_string(), serde_json::json!(r.score_breakdown.grading));
+                                                if let Some(clip) = r.score_breakdown.clip {
+                                                    bd.insert("clip_semantic".to_string(), serde_json::json!(clip));
+                                                }
+                                                if let Some(tag) = r.score_breakdown.tag {
+                                                    bd.insert("tag_match".to_string(), serde_json::json!(tag));
+                                                }
+                                                serde_json::json!({
+                                                    "rank": r.rank,
+                                                    "project": r.project_name,
+                                                    "file": r.file_path,
+                                                    "score": r.score,
+                                                    "score_breakdown": bd,
+                                                })
+                                            })
+                                            .collect();
+
+                                        let output = serde_json::json!({
+                                            "status": "ok",
+                                            "results": json_results,
+                                        });
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        if results.is_empty() {
+                                            println!("No results found.");
+                                        } else {
+                                            println!(
+                                                "+------+------------------+--------------------------+-------+------------------------------------------+"
+                                            );
+                                            println!(
+                                                "| Rank | Project          | File                     | Score | Breakdown                                |"
+                                            );
+                                            println!(
+                                                "+------+------------------+--------------------------+-------+------------------------------------------+"
+                                            );
+                                            for r in &results {
+                                                let score_pct = format!("{:.1}%", r.score * 100.0);
+                                                let breakdown = format_breakdown(&r.score_breakdown);
+                                                println!(
+                                                    "| {:<4} | {:<16} | {:<24} | {:<5} | {:<40} |",
+                                                    r.rank,
+                                                    truncate_str(&r.project_name, 16),
+                                                    truncate_str(&r.file_path, 24),
+                                                    score_pct,
+                                                    truncate_str(&breakdown, 40),
+                                                );
+                                            }
+                                            println!(
+                                                "+------+------------------+--------------------------+-------+------------------------------------------+"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "error",
+                                            "error": { "code": "SEARCH_HYBRID_ERROR", "message": e.to_string() }
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        eprintln!("Error: {}", e);
+                                    }
+                                    process::exit(1);
+                                }
+                            }
+                        } else {
+                        // Existing search logic (unchanged)
                         let search_result = match &tag {
                             Some(tag_text) => {
                                 // Combined --image + --tag search
@@ -743,6 +876,7 @@ fn main() {
                                 process::exit(1);
                             }
                         }
+                    }
                     }
                     Err(e) => {
                         if is_json {
@@ -2409,6 +2543,174 @@ fn display_search_results(results: &[mengxi_core::search::SearchResult], is_json
     }
 }
 
+/// Resolve hybrid search weights from --search-mode and --weights flags.
+/// When both are provided, --weights takes priority (FR15).
+/// Per-query --weights allows weight=0.0 (warning to stderr).
+fn resolve_hybrid_weights(
+    search_mode: Option<&str>,
+    weights_str: Option<&str>,
+) -> Result<mengxi_core::hybrid_scoring::SignalWeights, String> {
+    if let Some(ws) = weights_str {
+        // Parse "grading=0.6,clip=0.3,tag=0.1"
+        let mut grading = 0.0_f64;
+        let mut clip = 0.0_f64;
+        let mut tag = 0.0_f64;
+        let mut seen_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+        for pair in ws.split(',') {
+            let parts: Vec<&str> = pair.split('=').collect();
+            if parts.len() != 2 {
+                return Err(format!(
+                    "SEARCH_WEIGHT_ERROR -- invalid weight format '{}', expected key=value (e.g., grading=0.6,clip=0.3,tag=0.1)",
+                    pair.trim()
+                ));
+            }
+            let key = parts[0].trim();
+            if !seen_keys.insert(key) {
+                return Err(format!(
+                    "SEARCH_WEIGHT_ERROR -- duplicate signal '{}', each signal must appear only once",
+                    key
+                ));
+            }
+            let value: f64 = match parts[1].trim().parse::<f64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(format!(
+                        "SEARCH_WEIGHT_ERROR -- invalid weight value '{}' for '{}', expected a number",
+                        parts[1].trim(),
+                        key
+                    ));
+                }
+            };
+            // F-02/F-03: reject negative, NaN, Inf values
+            if !value.is_finite() {
+                return Err(format!(
+                    "SEARCH_WEIGHT_ERROR -- weight for '{}' must be a finite number, got '{}'",
+                    key, parts[1].trim()
+                ));
+            }
+            if value < 0.0 {
+                return Err(format!(
+                    "SEARCH_WEIGHT_ERROR -- weight for '{}' must be non-negative, got {}",
+                    key, value
+                ));
+            }
+            match key {
+                "grading" => grading = value,
+                "clip" => clip = value,
+                "tag" => tag = value,
+                _ => {
+                    return Err(format!(
+                        "SEARCH_WEIGHT_ERROR -- unknown signal '{}', expected grading, clip, or tag",
+                        key
+                    ));
+                }
+            }
+        }
+
+        // Validate sum ~= 1.0
+        let sum = grading + clip + tag;
+        if (sum - 1.0).abs() > 1e-6 {
+            return Err(format!(
+                "SEARCH_WEIGHT_ERROR -- weights must sum to 1.0, got {:.10}",
+                sum
+            ));
+        }
+
+        // Warn for zero weights (FR15 allows this per-query)
+        if grading == 0.0 {
+            eprintln!("warning: grading signal explicitly disabled via --weights");
+        }
+        if clip == 0.0 {
+            eprintln!("warning: clip signal explicitly disabled via --weights");
+        }
+        if tag == 0.0 {
+            eprintln!("warning: tag signal explicitly disabled via --weights");
+        }
+
+        Ok(mengxi_core::hybrid_scoring::SignalWeights { grading, clip, tag })
+    } else if let Some(mode) = search_mode {
+        match mode {
+            "grading-first" => Ok(mengxi_core::hybrid_scoring::SignalWeights::grading_first()),
+            "balanced" => Ok(mengxi_core::hybrid_scoring::SignalWeights::balanced()),
+            _ => unreachable!("clap validates --search-mode values"),
+        }
+    } else {
+        Ok(mengxi_core::hybrid_scoring::SignalWeights::grading_first())
+    }
+}
+
+/// Resolve an image path to a file_id in the database.
+fn resolve_image_to_file_id(
+    conn: &mengxi_core::db::DbConnection,
+    image_path: &str,
+    project: Option<&str>,
+) -> Result<i64, String> {
+    let filename = std::path::Path::new(image_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("SEARCH_IMAGE_ERROR -- cannot extract filename from '{}'", image_path))?;
+
+    let sql = if project.is_some() {
+        "SELECT f.id FROM files f JOIN projects p ON p.id = f.project_id WHERE f.filename = ?1 AND p.name = ?2 LIMIT 1"
+    } else {
+        "SELECT f.id FROM files f WHERE f.filename = ?1 LIMIT 1"
+    };
+
+    // F-05: warn when no project filter and multiple files share the same filename
+    if project.is_none() {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE filename = ?1",
+                [filename],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if count > 1 {
+            eprintln!(
+                "warning: {} files named '{}', using first match — specify --project to disambiguate",
+                count, filename
+            );
+        }
+    }
+
+    let result = if let Some(proj) = project {
+        conn.query_row(sql, [filename, proj], |row| row.get::<_, i64>(0))
+    } else {
+        conn.query_row(sql, [filename], |row| row.get::<_, i64>(0))
+    };
+
+    match result {
+        Ok(id) => Ok(id),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("no rows") {
+                Err(format!(
+                    "SEARCH_IMAGE_ERROR -- file '{}' not found in database{}",
+                    filename,
+                    project.map(|p| format!(" (project: {})", p)).unwrap_or_default()
+                ))
+            } else {
+                Err(format!("SEARCH_IMAGE_ERROR -- database error: {}", err_str))
+            }
+        }
+    }
+}
+
+/// Format a ScoreBreakdown as a text string for display.
+/// Missing signals are omitted entirely.
+fn format_breakdown(breakdown: &mengxi_core::hybrid_scoring::ScoreBreakdown) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("oklab_hist:{:.2}", breakdown.grading));
+    if let Some(clip) = breakdown.clip {
+        parts.push(format!("clip:{:.2}", clip));
+    }
+    if let Some(tag) = breakdown.tag {
+        parts.push(format!("tag:{:.2}", tag));
+    }
+    parts.join(" ")
+}
+
 /// Record accept/reject feedback for a search result.
 fn record_feedback_if_needed(
     conn: &mengxi_core::db::DbConnection,
@@ -2552,7 +2854,7 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::Search { image, tag, limit, project, accept, reject, format }) => {
+            Some(Commands::Search { image, tag, limit, project, accept, reject, format, .. }) => {
                 assert_eq!(image.as_deref(), Some("/ref/mood.jpg"));
                 assert_eq!(tag.as_deref(), Some("industrial"));
                 assert_eq!(limit, Some(10));
@@ -3050,5 +3352,242 @@ mod tests {
         let (name, args, _) = extract_command_info(&cli.unwrap());
         assert_eq!(name, "db");
         assert_eq!(args, "{}");
+    }
+
+    // ── Hybrid search tests (Story 3.3) ──
+
+    #[test]
+    fn test_search_mode_grading_first() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif", "--search-mode", "grading-first",
+        ]);
+        match cli.unwrap().command {
+            Some(Commands::Search { search_mode, weights, .. }) => {
+                assert_eq!(search_mode.as_deref(), Some("grading-first"));
+                assert!(weights.is_none());
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_mode_balanced() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif", "--search-mode", "balanced",
+        ]);
+        match cli.unwrap().command {
+            Some(Commands::Search { search_mode, .. }) => {
+                assert_eq!(search_mode.as_deref(), Some("balanced"));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_mode_invalid_rejected() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif", "--search-mode", "invalid",
+        ]);
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_weights_parsing() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif",
+            "--weights", "grading=0.6,clip=0.3,tag=0.1",
+        ]);
+        match cli.unwrap().command {
+            Some(Commands::Search { weights, .. }) => {
+                assert_eq!(weights.as_deref(), Some("grading=0.6,clip=0.3,tag=0.1"));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_weights_grading_first_preset() {
+        let w = resolve_hybrid_weights(Some("grading-first"), None).unwrap();
+        let expected = mengxi_core::hybrid_scoring::SignalWeights::grading_first();
+        assert_eq!(w, expected);
+        assert!((w.grading - 0.6).abs() < 1e-10);
+        assert!((w.clip - 0.3).abs() < 1e-10);
+        assert!((w.tag - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_resolve_weights_balanced_preset() {
+        let w = resolve_hybrid_weights(Some("balanced"), None).unwrap();
+        assert!((w.grading - 0.4).abs() < 1e-10);
+        assert!((w.clip - 0.4).abs() < 1e-10);
+        assert!((w.tag - 0.2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_resolve_weights_custom() {
+        let w = resolve_hybrid_weights(None, Some("grading=0.8,clip=0.1,tag=0.1")).unwrap();
+        assert!((w.grading - 0.8).abs() < 1e-10);
+        assert!((w.clip - 0.1).abs() < 1e-10);
+        assert!((w.tag - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_resolve_weights_override_takes_priority() {
+        // --weights overrides --search-mode
+        let w = resolve_hybrid_weights(
+            Some("grading-first"),
+            Some("grading=0.8,clip=0.1,tag=0.1"),
+        ).unwrap();
+        assert!((w.grading - 0.8).abs() < 1e-10);
+        assert!((w.clip - 0.1).abs() < 1e-10);
+        assert!((w.tag - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_resolve_weights_invalid_sum() {
+        let result = resolve_hybrid_weights(None, Some("grading=0.5,clip=0.3,tag=0.1"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must sum to 1.0"));
+    }
+
+    #[test]
+    fn test_resolve_weights_invalid_format() {
+        let result = resolve_hybrid_weights(None, Some("grading-0.6"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid weight format"));
+    }
+
+    #[test]
+    fn test_resolve_weights_invalid_value() {
+        let result = resolve_hybrid_weights(None, Some("grading=abc,clip=0.3,tag=0.1"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid weight value"));
+    }
+
+    #[test]
+    fn test_resolve_weights_unknown_signal() {
+        let result = resolve_hybrid_weights(None, Some("grading=0.6,clip=0.3,speed=0.1"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown signal"));
+    }
+
+    #[test]
+    fn test_resolve_weights_zero_weight_allowed() {
+        // FR15: per-query --weights allows weight=0.0 with warning
+        let w = resolve_hybrid_weights(None, Some("grading=0.0,clip=0.5,tag=0.5")).unwrap();
+        assert!((w.grading - 0.0).abs() < 1e-10);
+        assert!((w.clip - 0.5).abs() < 1e-10);
+        assert!((w.tag - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_resolve_weights_no_args_defaults_to_grading_first() {
+        let w = resolve_hybrid_weights(None, None).unwrap();
+        assert!((w.grading - 0.6).abs() < 1e-10);
+        assert!((w.clip - 0.3).abs() < 1e-10);
+        assert!((w.tag - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_format_breakdown_all_signals() {
+        let bd = mengxi_core::hybrid_scoring::ScoreBreakdown {
+            grading: 0.91,
+            clip: Some(0.76),
+            tag: Some(0.94),
+        };
+        let s = format_breakdown(&bd);
+        assert_eq!(s, "oklab_hist:0.91 clip:0.76 tag:0.94");
+    }
+
+    #[test]
+    fn test_format_breakdown_missing_signals() {
+        let bd = mengxi_core::hybrid_scoring::ScoreBreakdown {
+            grading: 0.84,
+            clip: Some(0.55),
+            tag: None,
+        };
+        let s = format_breakdown(&bd);
+        assert_eq!(s, "oklab_hist:0.84 clip:0.55");
+    }
+
+    #[test]
+    fn test_format_breakdown_only_grading() {
+        let bd = mengxi_core::hybrid_scoring::ScoreBreakdown {
+            grading: 0.95,
+            clip: None,
+            tag: None,
+        };
+        let s = format_breakdown(&bd);
+        assert_eq!(s, "oklab_hist:0.95");
+    }
+
+    #[test]
+    fn test_search_analytics_includes_hybrid_fields() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif",
+            "--search-mode", "balanced", "--weights", "grading=0.5,clip=0.3,tag=0.2",
+        ]);
+        let (name, args, _) = extract_command_info(&cli.unwrap());
+        assert_eq!(name, "search");
+        assert!(args.contains("balanced"));
+        assert!(args.contains("grading=0.5,clip=0.3,tag=0.2"));
+    }
+
+    #[test]
+    fn test_search_backward_compat_no_hybrid_flags() {
+        // No --search-mode or --weights → same behavior as before
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif",
+        ]);
+        match cli.unwrap().command {
+            Some(Commands::Search { search_mode, weights, .. }) => {
+                assert!(search_mode.is_none());
+                assert!(weights.is_none());
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_limit_as_top() {
+        let cli = Cli::try_parse_from([
+            "mengxi", "search", "--image", "ref.tif", "--limit", "5",
+        ]);
+        match cli.unwrap().command {
+            Some(Commands::Search { limit, .. }) => {
+                assert_eq!(limit, Some(5));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    // ── Code review fix tests (F-01 through F-08) ──
+
+    #[test]
+    fn test_resolve_weights_negative_rejected() {
+        let result = resolve_hybrid_weights(None, Some("grading=1.3,clip=-0.2,tag=-0.1"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("non-negative"));
+    }
+
+    #[test]
+    fn test_resolve_weights_nan_rejected() {
+        let result = resolve_hybrid_weights(None, Some("grading=NaN,clip=0.5,tag=0.5"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("finite"));
+    }
+
+    #[test]
+    fn test_resolve_weights_inf_rejected() {
+        let result = resolve_hybrid_weights(None, Some("grading=inf,clip=0.0,tag=0.0"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("finite"));
+    }
+
+    #[test]
+    fn test_resolve_weights_duplicate_key_rejected() {
+        let result = resolve_hybrid_weights(None, Some("grading=0.3,grading=0.3,clip=0.2,tag=0.2"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("duplicate"));
     }
 }

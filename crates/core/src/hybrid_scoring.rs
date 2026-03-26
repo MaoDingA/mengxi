@@ -236,7 +236,9 @@ pub fn compute_hybrid_score(
     tag_sim: Option<f64>,
     weights: &SignalWeights,
 ) -> Result<HybridScore, HybridScoringError> {
-    weights.validate()?;
+    // Note: weights.validate() is intentionally NOT called here.
+    // Per-query --weights (FR15) allows weight=0.0 with warning.
+    // CLI layer validates sum ~= 1.0 and non-negativity before reaching here.
 
     let has_grading = grading_sim.is_some();
     let has_clip = clip_sim.is_some();
@@ -625,14 +627,15 @@ mod tests {
     }
 
     #[test]
-    fn test_hybrid_score_invalid_weights() {
+    fn test_hybrid_score_zero_weight_allowed() {
+        // FR15: per-query --weights allows weight=0.0
         let w = SignalWeights {
             grading: 0.5,
             clip: 0.5,
             tag: 0.0,
         };
         let result = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     // --- ScoreBreakdown field access ---
