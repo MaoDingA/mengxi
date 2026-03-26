@@ -723,13 +723,16 @@ fn main() {
                                                 if let Some(tag) = r.score_breakdown.tag {
                                                     bd.insert("tag_match".to_string(), serde_json::json!(tag));
                                                 }
-                                                serde_json::json!({
-                                                    "rank": r.rank,
-                                                    "project": r.project_name,
-                                                    "file": r.file_path,
-                                                    "score": r.score,
-                                                    "score_breakdown": bd,
-                                                })
+                                                let mut obj = serde_json::Map::new();
+                                                obj.insert("rank".to_string(), serde_json::json!(r.rank));
+                                                obj.insert("project".to_string(), serde_json::json!(r.project_name));
+                                                obj.insert("file".to_string(), serde_json::json!(r.file_path));
+                                                obj.insert("score".to_string(), serde_json::json!(r.score));
+                                                obj.insert("score_breakdown".to_string(), serde_json::json!(bd));
+                                                if !r.match_warnings.is_empty() {
+                                                    obj.insert("match_warnings".to_string(), serde_json::json!(r.match_warnings));
+                                                }
+                                                serde_json::Value::Object(obj)
                                             })
                                             .collect();
 
@@ -754,6 +757,9 @@ fn main() {
                                             for r in &results {
                                                 let score_pct = format!("{:.1}%", r.score * 100.0);
                                                 let breakdown = format_breakdown(&r.score_breakdown);
+                                                for w in &r.match_warnings {
+                                                    eprintln!("warning: {}", w);
+                                                }
                                                 println!(
                                                     "| {:<4} | {:<16} | {:<24} | {:<5} | {:<40} |",
                                                     r.rank,

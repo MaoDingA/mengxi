@@ -70,6 +70,8 @@ pub struct ScoreBreakdown {
 pub struct HybridScore {
     pub final_score: f64,
     pub breakdown: ScoreBreakdown,
+    /// Metadata warnings (e.g., color space gap). Does not affect final_score.
+    pub warnings: Vec<String>,
 }
 
 /// Search result with hybrid scoring details.
@@ -81,6 +83,8 @@ pub struct HybridSearchResult {
     pub file_format: String,
     pub score: f64,
     pub score_breakdown: ScoreBreakdown,
+    /// Match-level warnings (e.g., color space gap between reference and candidate).
+    pub match_warnings: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,11 +234,14 @@ pub fn tag_similarity(query_tags: &[String], candidate_tags: &[String]) -> f64 {
 ///
 /// Missing signals (None) cause their weights to degrade to 0.0 with renormalization.
 /// The final score is clamped to [0.0, 1.0].
+/// Color space gap warnings are produced as metadata and do NOT affect the score (FR17).
 pub fn compute_hybrid_score(
     grading_sim: Option<f64>,
     clip_sim: Option<f64>,
     tag_sim: Option<f64>,
     weights: &SignalWeights,
+    query_cs: &str,
+    candidate_cs: &str,
 ) -> Result<HybridScore, HybridScoringError> {
     // Note: weights.validate() is intentionally NOT called here.
     // Per-query --weights (FR15) allows weight=0.0 with warning.
@@ -267,10 +274,59 @@ pub fn compute_hybrid_score(
         tag: tag_sim,
     };
 
+    let warnings = match check_color_space_gap(query_cs, candidate_cs) {
+        Some(w) => vec![w],
+        None => vec![],
+    };
+
     Ok(HybridScore {
         final_score,
         breakdown,
+        warnings,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Color space gap detection
+// ---------------------------------------------------------------------------
+
+/// Map raw DB color_space_tag to human-readable display name.
+fn display_name(cs_tag: &str) -> std::borrow::Cow<'_, str> {
+    match cs_tag.to_lowercase().as_str() {
+        "video" | "srgb" | "rec709" => std::borrow::Cow::Borrowed("sRGB"),
+        "acescct" => std::borrow::Cow::Borrowed("ACEScct"),
+        "acescg" => std::borrow::Cow::Borrowed("ACEScg"),
+        "linear" => std::borrow::Cow::Borrowed("Linear"),
+        "log" => std::borrow::Cow::Borrowed("Log"),
+        _ => std::borrow::Cow::Borrowed(cs_tag),
+    }
+}
+
+/// Determine the color space family for a given tag.
+fn color_space_family(cs_tag: &str) -> &'static str {
+    match cs_tag {
+        "video" | "srgb" | "rec709" | "Video" | "sRGB" | "Rec709" => "video",
+        "acescct" | "acescg" | "log" | "ACEScct" | "ACEScg" | "Log" => "log",
+        "linear" | "Linear" => "linear",
+        _ => "unknown",
+    }
+}
+
+/// Check for a color space gap between query and candidate.
+/// Returns `Some(warning_message)` if they belong to different families, `None` otherwise.
+pub fn check_color_space_gap(query_cs: &str, candidate_cs: &str) -> Option<String> {
+    let q_family = color_space_family(query_cs);
+    let c_family = color_space_family(candidate_cs);
+
+    if q_family == c_family {
+        return None;
+    }
+
+    Some(format!(
+        "reference ({}) ↔ candidate ({}) — large color space gap",
+        display_name(query_cs),
+        display_name(candidate_cs),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -549,7 +605,7 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let score = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w).unwrap();
+        let score = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "video").unwrap();
         // 0.6 * 0.8 + 0.3 * 0.6 + 0.1 * 0.9 = 0.48 + 0.18 + 0.09 = 0.75
         assert!((score.final_score - 0.75).abs() < 1e-10);
         assert!((score.breakdown.grading - 0.8).abs() < 1e-10);
@@ -564,7 +620,7 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let score = compute_hybrid_score(Some(0.8), None, Some(0.9), &w).unwrap();
+        let score = compute_hybrid_score(Some(0.8), None, Some(0.9), &w, "video", "video").unwrap();
         // resolved: grading = 0.6/0.7, tag = 0.1/0.7
         // 0.857.. * 0.8 + 0.142.. * 0.9 = 0.6857.. + 0.1285.. = 0.8142..
         assert!(score.final_score > 0.0 && score.final_score <= 1.0);
@@ -582,7 +638,7 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let score = compute_hybrid_score(Some(0.8), Some(0.6), None, &w).unwrap();
+        let score = compute_hybrid_score(Some(0.8), Some(0.6), None, &w, "video", "video").unwrap();
         assert!(score.final_score > 0.0 && score.final_score <= 1.0);
         assert_eq!(score.breakdown.tag, None); // omitted
     }
@@ -594,7 +650,7 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let score = compute_hybrid_score(Some(0.5), None, None, &w).unwrap();
+        let score = compute_hybrid_score(Some(0.5), None, None, &w, "video", "video").unwrap();
         // Only grading: weight = 1.0, score = 0.5
         assert!((score.final_score - 0.5).abs() < 1e-10);
         assert_eq!(score.breakdown.clip, None);
@@ -608,8 +664,8 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let s1 = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w).unwrap();
-        let s2 = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w).unwrap();
+        let s1 = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "video").unwrap();
+        let s2 = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "video").unwrap();
         assert_eq!(s1.final_score, s2.final_score);
         assert_eq!(s1.breakdown, s2.breakdown);
     }
@@ -622,7 +678,7 @@ mod tests {
             tag: 0.1,
         };
         // All 1.0 should give 1.0 (no drift)
-        let score = compute_hybrid_score(Some(1.0), Some(1.0), Some(1.0), &w).unwrap();
+        let score = compute_hybrid_score(Some(1.0), Some(1.0), Some(1.0), &w, "video", "video").unwrap();
         assert!((score.final_score - 1.0).abs() < 1e-10);
     }
 
@@ -634,7 +690,7 @@ mod tests {
             clip: 0.5,
             tag: 0.0,
         };
-        let result = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w);
+        let result = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "video");
         assert!(result.is_ok());
     }
 
@@ -667,6 +723,7 @@ mod tests {
                 clip: Some(0.8),
                 tag: None,
             },
+            match_warnings: vec![],
         };
         assert_eq!(result.rank, 1);
         assert_eq!(result.project_name, "film_a");
@@ -694,7 +751,7 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let score = compute_hybrid_score(Some(0.0), Some(0.0), Some(0.0), &w).unwrap();
+        let score = compute_hybrid_score(Some(0.0), Some(0.0), Some(0.0), &w, "video", "video").unwrap();
         assert!((score.final_score - 0.0).abs() < 1e-10);
     }
 
@@ -705,7 +762,122 @@ mod tests {
             clip: 0.3,
             tag: 0.1,
         };
-        let score = compute_hybrid_score(Some(1.0), Some(1.0), Some(1.0), &w).unwrap();
+        let score = compute_hybrid_score(Some(1.0), Some(1.0), Some(1.0), &w, "video", "video").unwrap();
         assert!((score.final_score - 1.0).abs() < 1e-10);
+    }
+
+    // --- check_color_space_gap tests ---
+
+    #[test]
+    fn test_color_space_gap_same_family_video() {
+        assert!(check_color_space_gap("video", "srgb").is_none());
+        assert!(check_color_space_gap("srgb", "rec709").is_none());
+        assert!(check_color_space_gap("video", "video").is_none());
+    }
+
+    #[test]
+    fn test_color_space_gap_same_family_log() {
+        assert!(check_color_space_gap("acescct", "acescg").is_none());
+        assert!(check_color_space_gap("log", "acescct").is_none());
+    }
+
+    #[test]
+    fn test_color_space_gap_same_family_linear() {
+        assert!(check_color_space_gap("linear", "linear").is_none());
+    }
+
+    #[test]
+    fn test_color_space_gap_different_family_video_log() {
+        let w = check_color_space_gap("video", "acescct").unwrap();
+        assert!(w.contains("sRGB"));
+        assert!(w.contains("ACEScct"));
+        assert!(w.contains("large color space gap"));
+    }
+
+    #[test]
+    fn test_color_space_gap_different_family_video_linear() {
+        let w = check_color_space_gap("srgb", "linear").unwrap();
+        assert!(w.contains("sRGB"));
+        assert!(w.contains("Linear"));
+    }
+
+    #[test]
+    fn test_color_space_gap_different_family_log_linear() {
+        let w = check_color_space_gap("acescct", "linear").unwrap();
+        assert!(w.contains("ACEScct"));
+        assert!(w.contains("Linear"));
+    }
+
+    #[test]
+    fn test_color_space_gap_unknown_tag() {
+        // Unknown tags treated as unique family — warns against known families
+        assert!(check_color_space_gap("video", "custom").is_some());
+        // Two unknown tags with same value = same family
+        assert!(check_color_space_gap("custom", "custom").is_none());
+    }
+
+    // --- display_name tests ---
+
+    #[test]
+    fn test_display_name_known_tags() {
+        assert_eq!(display_name("video"), std::borrow::Cow::Borrowed("sRGB"));
+        assert_eq!(display_name("srgb"), std::borrow::Cow::Borrowed("sRGB"));
+        assert_eq!(display_name("rec709"), std::borrow::Cow::Borrowed("sRGB"));
+        assert_eq!(display_name("acescct"), std::borrow::Cow::Borrowed("ACEScct"));
+        assert_eq!(display_name("acescg"), std::borrow::Cow::Borrowed("ACEScg"));
+        assert_eq!(display_name("linear"), std::borrow::Cow::Borrowed("Linear"));
+        assert_eq!(display_name("log"), std::borrow::Cow::Borrowed("Log"));
+    }
+
+    #[test]
+    fn test_display_name_unknown_tag() {
+        assert_eq!(display_name("custom"), std::borrow::Cow::Borrowed("custom"));
+    }
+
+    // --- compute_hybrid_score warning tests ---
+
+    #[test]
+    fn test_hybrid_score_no_warning_same_color_space() {
+        let w = SignalWeights::grading_first();
+        let score = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "srgb").unwrap();
+        assert!(score.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_score_warning_different_color_space() {
+        let w = SignalWeights::grading_first();
+        let score = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "acescct").unwrap();
+        assert_eq!(score.warnings.len(), 1);
+        assert!(score.warnings[0].contains("large color space gap"));
+    }
+
+    #[test]
+    fn test_hybrid_score_warning_does_not_affect_score() {
+        let w = SignalWeights::grading_first();
+        let s1 = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "video").unwrap();
+        let s2 = compute_hybrid_score(Some(0.8), Some(0.6), Some(0.9), &w, "video", "acescct").unwrap();
+        // Same signals, different color spaces → same score (FR17)
+        assert!((s1.final_score - s2.final_score).abs() < 1e-10);
+        assert!(s1.warnings.is_empty());
+        assert!(!s2.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_search_result_includes_match_warnings() {
+        let result = HybridSearchResult {
+            rank: 1,
+            project_name: "film_a".to_string(),
+            file_path: "scene.dpx".to_string(),
+            file_format: "dpx".to_string(),
+            score: 0.85,
+            score_breakdown: ScoreBreakdown {
+                grading: 0.9,
+                clip: Some(0.8),
+                tag: None,
+            },
+            match_warnings: vec!["reference (sRGB) ↔ candidate (ACEScct) — large color space gap".to_string()],
+        };
+        assert_eq!(result.match_warnings.len(), 1);
+        assert!(result.match_warnings[0].contains("large color space gap"));
     }
 }

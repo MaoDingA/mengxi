@@ -1006,6 +1006,15 @@ pub fn hybrid_search(
     // Load query grading features
     let query_features = load_grading_features(conn, query_file_id)?;
 
+    // Load query color_space_tag
+    let query_cs_tag: String = conn
+        .query_row(
+            "SELECT color_space_tag FROM fingerprints WHERE file_id = ?1 LIMIT 1",
+            rusqlite::params![query_file_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "unknown".to_string());
+
     // Load query CLIP embedding
     let query_embedding: Option<Vec<f64>> = conn
         .query_row(
@@ -1045,7 +1054,7 @@ pub fn hybrid_search(
     let mut sql = String::from(
         "SELECT fp.id, fp.file_id, p.name, f.filename, f.format,
                 fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments,
-                fp.embedding
+                fp.embedding, fp.color_space_tag
          FROM fingerprints fp
          JOIN files f ON f.id = fp.file_id
          JOIN projects p ON p.id = f.project_id
@@ -1065,7 +1074,7 @@ pub fn hybrid_search(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>)> =
+    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>, String)> =
         stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,   // fp.id
@@ -1078,6 +1087,7 @@ pub fn hybrid_search(
                 row.get::<_, Vec<u8>>(7)?, // oklab_hist_b
                 row.get::<_, Vec<u8>>(8)?, // color_moments
                 row.get::<_, Option<Vec<u8>>>(9)?, // embedding
+                row.get::<_, String>(10)?, // color_space_tag
             ))
         })
         .map_err(|e| SearchError::DatabaseError(e.to_string()))?
@@ -1096,9 +1106,9 @@ pub fn hybrid_search(
     let tags_map = load_tags_batch(conn, &fp_ids)?;
 
     // Score each candidate
-    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String)> = Vec::new();
+    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String)> = Vec::new();
 
-    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob) in rows {
+    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag) in rows {
         // Deserialize grading features
         let candidate_features = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments) {
             Ok(gf) => gf,
@@ -1145,8 +1155,8 @@ pub fn hybrid_search(
         };
 
         // Compute hybrid score
-        match hybrid_scoring::compute_hybrid_score(grading_sim, clip_sim, tag_sim, weights) {
-            Ok(hybrid) => scored.push((hybrid.final_score, hybrid, project_name, filename, format)),
+        match hybrid_scoring::compute_hybrid_score(grading_sim, clip_sim, tag_sim, weights, &query_cs_tag, &candidate_cs_tag) {
+            Ok(hybrid) => scored.push((hybrid.final_score, hybrid, project_name, filename, format, candidate_cs_tag)),
             Err(_) => continue,
         }
     }
@@ -1162,13 +1172,14 @@ pub fn hybrid_search(
     let results: Vec<HybridSearchResult> = scored
         .into_iter()
         .enumerate()
-        .map(|(i, (score, hybrid, project_name, file_path, file_format))| HybridSearchResult {
+        .map(|(i, (score, hybrid, project_name, file_path, file_format, _cs_tag))| HybridSearchResult {
             rank: i + 1,
             project_name,
             file_path,
             file_format,
             score,
             score_breakdown: hybrid.breakdown,
+            match_warnings: hybrid.warnings,
         })
         .collect();
 
