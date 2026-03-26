@@ -1123,12 +1123,18 @@ pub fn hybrid_search(
         let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
         if is_stale {
             if recomputation_count < MAX_RECOMPUTATIONS_PER_SEARCH {
-                // Atomic state transition: UPDATE only if still stale
-                let rows_affected = conn.execute(
+                // Atomic state transition: UPDATE only if still stale (use fp id as primary key)
+                let rows_affected = match conn.execute(
                     "UPDATE fingerprints SET feature_status = 'fresh'
-                     WHERE file_id = ?1 AND (feature_status = 'stale' OR feature_status IS NULL)",
-                    rusqlite::params![file_id],
-                ).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
+                     WHERE id = ?1 AND (feature_status = 'stale' OR feature_status IS NULL)",
+                    rusqlite::params![_fp_id],
+                ) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("warning: stale recomputation failed for {} ({}): {}", project_name, filename, e);
+                        0
+                    }
+                };
 
                 if rows_affected > 0 {
                     recomputation_count += 1;
