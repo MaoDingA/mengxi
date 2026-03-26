@@ -1,6 +1,6 @@
 // hybrid_scoring.rs — Weighted multi-signal scoring engine (ADR-v2-3)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::search::cosine_similarity;
 
@@ -269,56 +269,6 @@ pub fn compute_hybrid_score(
         final_score,
         breakdown,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Batch tag loading helper
-// ---------------------------------------------------------------------------
-
-/// Load tags for a batch of fingerprint IDs.
-/// Returns a HashMap mapping fingerprint_id -> Vec<tag>.
-pub fn load_tags_batch(
-    conn: &rusqlite::Connection,
-    fingerprint_ids: &[i64],
-) -> HashMap<i64, Vec<String>> {
-    let mut result: HashMap<i64, Vec<String>> = HashMap::new();
-
-    if fingerprint_ids.is_empty() {
-        return result;
-    }
-
-    let placeholders: Vec<String> = (1..=fingerprint_ids.len())
-        .map(|i| format!("?{}", i))
-        .collect();
-    let where_clause = placeholders.join(", ");
-
-    let sql = format!(
-        "SELECT fingerprint_id, tag FROM tags WHERE fingerprint_id IN ({})",
-        where_clause
-    );
-
-    let params: Vec<Box<dyn rusqlite::types::ToSql>> = fingerprint_ids
-        .iter()
-        .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
-        .collect();
-
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return result,
-    };
-
-    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return result,
-    };
-
-    for row in rows.flatten() {
-        result.entry(row.0).or_default().push(row.1);
-    }
-
-    result
 }
 
 // ---------------------------------------------------------------------------

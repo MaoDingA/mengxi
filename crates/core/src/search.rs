@@ -945,6 +945,53 @@ pub(crate) fn load_grading_features(
 // Hybrid search (three-signal weighted scoring)
 // ---------------------------------------------------------------------------
 
+/// Load tags for a batch of fingerprint IDs.
+/// Returns a HashMap mapping fingerprint_id -> Vec<tag>.
+fn load_tags_batch(
+    conn: &Connection,
+    fingerprint_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<String>>, SearchError> {
+    use std::collections::HashMap;
+
+    let mut result: HashMap<i64, Vec<String>> = HashMap::new();
+
+    if fingerprint_ids.is_empty() {
+        return Ok(result);
+    }
+
+    let placeholders: Vec<String> = (1..=fingerprint_ids.len())
+        .map(|i| format!("?{}", i))
+        .collect();
+    let where_clause = placeholders.join(", ");
+
+    let sql = format!(
+        "SELECT fingerprint_id, tag FROM tags WHERE fingerprint_id IN ({})",
+        where_clause
+    );
+
+    let params: Vec<Box<dyn rusqlite::types::ToSql>> = fingerprint_ids
+        .iter()
+        .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| SearchError::DatabaseError(format!("load_tags_batch prepare: {}", e)))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| SearchError::DatabaseError(format!("load_tags_batch query: {}", e)))?;
+
+    for row in rows {
+        let row = row.map_err(|e| SearchError::DatabaseError(format!("load_tags_batch row: {}", e)))?;
+        result.entry(row.0).or_default().push(row.1);
+    }
+
+    Ok(result)
+}
+
 /// Hybrid search using weighted combination of grading, CLIP, and tag signals.
 ///
 /// Loads query and candidate features from DB, computes per-signal similarities,
@@ -1046,7 +1093,7 @@ pub fn hybrid_search(
 
     // Collect fingerprint IDs and load tags in batch
     let fp_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
-    let tags_map = hybrid_scoring::load_tags_batch(conn, &fp_ids);
+    let tags_map = load_tags_batch(conn, &fp_ids)?;
 
     // Score each candidate
     let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String)> = Vec::new();
@@ -1094,12 +1141,7 @@ pub fn hybrid_search(
         let tag_sim = if query_tags.is_empty() || candidate_tags.is_empty() {
             None
         } else {
-            let sim = hybrid_scoring::tag_similarity(&query_tags, &candidate_tags);
-            if sim > 0.0 {
-                Some(sim)
-            } else {
-                None
-            }
+            Some(hybrid_scoring::tag_similarity(&query_tags, &candidate_tags))
         };
 
         // Compute hybrid score
