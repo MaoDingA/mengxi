@@ -1,5 +1,8 @@
 // fingerprint.rs — FFI bridge to MoonBit color fingerprint extraction
 
+use mengxi_format::dpx;
+use mengxi_format::exr as exr_format;
+
 /// Number of histogram bins per channel.
 pub const BINS_PER_CHANNEL: usize = 64;
 
@@ -164,6 +167,191 @@ pub fn is_ffi_available() -> bool {
     result == OUTPUT_SIZE as i32
 }
 
+// ---------------------------------------------------------------------------
+// Grading feature re-extraction (Story 5.4)
+// ---------------------------------------------------------------------------
+
+/// Result of a single fingerprint re-extraction attempt.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReextractResult {
+    /// Features were successfully re-extracted and stored.
+    Reextracted,
+    /// Fingerprint was skipped (source file missing, MOV file, etc.).
+    Skipped(String),
+    /// Re-extraction failed (FFI error, DB error, etc.).
+    Error(String),
+}
+
+/// Re-extract grading features for a single fingerprint by reading its source file.
+///
+/// Looks up the source file path via `files` + `projects` tables, reads pixel data,
+/// downsamples, converts RGB→Oklab, extracts features via FFI, and atomically
+/// updates the 4 BLOB columns + feature_status.
+pub fn reextract_grading_features(
+    conn: &rusqlite::Connection,
+    fingerprint_id: i64,
+) -> Result<ReextractResult, String> {
+    // Look up file metadata: path, format, transfer, dimensions, project path
+    let (file_path, format, transfer, width, height): (String, String, Option<String>, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT p.path || '/' || f.filename, f.format, f.transfer, f.width, f.height
+             FROM fingerprints fp
+             JOIN files f ON fp.file_id = f.id
+             JOIN projects p ON f.project_id = p.id
+             WHERE fp.id = ?1",
+            rusqlite::params![fingerprint_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+
+    // Skip MOV files — no pixel data
+    if format == "mov" {
+        return Ok(ReextractResult::Skipped(
+            "MOV files have no pixel data".to_string(),
+        ));
+    }
+
+    // Determine color space tag
+    let color_tag = if format == "dpx" {
+        transfer
+            .as_deref()
+            .map_or("linear".to_string(), |t| {
+                crate::project::map_transfer_string_to_color_tag(t)
+            })
+    } else {
+        "linear".to_string() // EXR is always linear
+    };
+
+    let color_space_tag_int = match color_tag.as_str() {
+        "log" => 1,
+        "video" => 2,
+        _ => 0,
+    };
+
+    // Check source file exists
+    if !std::path::Path::new(&file_path).is_file() {
+        return Ok(ReextractResult::Skipped(format!(
+            "source file not found: {}",
+            file_path
+        )));
+    }
+
+    // Read pixel data
+    let path = std::path::Path::new(&file_path);
+    let pixel_data = if format == "dpx" {
+        dpx::read_pixel_data(path)
+            .map_err(|e| format!("REEXTRACT_READ_ERROR -- {}", e))?
+    } else {
+        exr_format::read_pixel_data(path)
+            .map_err(|e| format!("REEXTRACT_READ_ERROR -- {}", e))?
+    };
+
+    // Downsample
+    let w = width.and_then(|v| if v > 0 { Some(v as usize) } else { None });
+    let h = height.and_then(|v| if v > 0 { Some(v as usize) } else { None });
+    let downsampled = match (w, h) {
+        (Some(w), Some(h)) => {
+            crate::downsample::downsample_rgb(&pixel_data, w, h, crate::downsample::MAX_DIMENSION)
+                .map_err(|e| format!("REEXTRACT_DOWNSAMPLE_ERROR -- {}", e))?
+                .0
+        }
+        _ => pixel_data,
+    };
+
+    // RGB → Oklab
+    let oklab_data = crate::color_science::rgb_to_oklab_batch(&downsampled, &color_tag)
+        .map_err(|e| format!("REEXTRACT_OKLAB_ERROR -- {}", e))?;
+
+    // Extract grading features via FFI
+    let features = crate::color_science::extract_grading_features(&oklab_data, color_space_tag_int)
+        .map_err(|e| format!("REEXTRACT_FFI_ERROR -- {}", e))?;
+
+    // Serialize to BLOBs
+    let hist_l_blob = features.hist_l_blob();
+    let hist_a_blob = features.hist_a_blob();
+    let hist_b_blob = features.hist_b_blob();
+    let moments_blob = features.moments_blob();
+
+    // Atomic UPDATE: all 4 BLOBs + feature_status in one statement
+    conn.execute(
+        "UPDATE fingerprints
+         SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, feature_status = 'fresh'
+         WHERE id = ?5",
+        rusqlite::params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, fingerprint_id],
+    )
+    .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+
+    Ok(ReextractResult::Reextracted)
+}
+
+/// Query all fingerprint IDs for a given project name.
+pub fn list_fingerprints_by_project(
+    conn: &rusqlite::Connection,
+    project_name: &str,
+) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT fp.id, p.path || '/' || f.filename
+             FROM fingerprints fp
+             JOIN files f ON fp.file_id = f.id
+             JOIN projects p ON f.project_id = p.id
+             WHERE p.name = ?1
+             ORDER BY fp.id",
+        )
+        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+
+    let mut rows = Vec::new();
+    let mut rows_iter = stmt
+        .query_map(rusqlite::params![project_name], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+
+    for row in &mut rows_iter {
+        rows.push(row.map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?);
+    }
+
+    Ok(rows)
+}
+
+/// Query all fingerprint IDs for a given file path.
+pub fn list_fingerprints_by_file(
+    conn: &rusqlite::Connection,
+    file_path: &str,
+) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT fp.id, p.path || '/' || f.filename
+             FROM fingerprints fp
+             JOIN files f ON fp.file_id = f.id
+             JOIN projects p ON f.project_id = p.id
+             WHERE p.path || '/' || f.filename = ?1
+             ORDER BY fp.id",
+        )
+        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+
+    let mut rows = Vec::new();
+    let mut rows_iter = stmt
+        .query_map(rusqlite::params![file_path], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+
+    for row in &mut rows_iter {
+        rows.push(row.map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?);
+    }
+
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +466,101 @@ mod tests {
         let err = FingerprintError::InvalidInput("bad data".to_string());
         let msg = format!("{}", err);
         assert!(msg.contains("FINGERPRINT_INVALID_INPUT"));
+    }
+
+    // --- Re-extraction tests (Story 5.4) ---
+
+    fn setup_test_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+             CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), width INTEGER, height INTEGER, bit_depth INTEGER, transfer TEXT, colorimetric TEXT, descriptor TEXT, compression TEXT);
+             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT, histogram_g TEXT, histogram_b TEXT, luminance_mean REAL, luminance_stddev REAL, color_space_tag TEXT, embedding BLOB, oklab_hist_l BLOB, oklab_hist_a BLOB, oklab_hist_b BLOB, color_moments BLOB, feature_status TEXT CHECK(feature_status IN ('fresh', 'stale') OR feature_status IS NULL), created_at INTEGER NOT NULL DEFAULT (unixepoch()));",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_reextract_mov_file_skipped() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/film')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'clip.mov', 'mov')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'stale')", []).unwrap();
+
+        let result = reextract_grading_features(&conn, 1).unwrap();
+        assert_eq!(result, ReextractResult::Skipped("MOV files have no pixel data".to_string()));
+    }
+
+    #[test]
+    fn test_reextract_missing_source_skipped() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/nonexistent/path')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'missing.dpx', 'dpx')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'stale')", []).unwrap();
+
+        let result = reextract_grading_features(&conn, 1).unwrap();
+        assert!(matches!(result, ReextractResult::Skipped(reason) if reason.contains("source file not found")));
+    }
+
+    #[test]
+    fn test_reextract_nonexistent_fingerprint_errors() {
+        let conn = setup_test_db();
+        let result = reextract_grading_features(&conn, 999);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("REEXTRACT_DB_ERROR"));
+    }
+
+    #[test]
+    fn test_list_fingerprints_by_project() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/film')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'a.dpx', 'dpx')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'b.exr', 'exr')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'fresh')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (2, 'stale')", []).unwrap();
+
+        let fps = list_fingerprints_by_project(&conn, "film").unwrap();
+        assert_eq!(fps.len(), 2);
+        assert_eq!(fps[0].0, 1);
+        assert_eq!(fps[0].1, "/tmp/film/a.dpx");
+        assert_eq!(fps[1].0, 2);
+        assert_eq!(fps[1].1, "/tmp/film/b.exr");
+    }
+
+    #[test]
+    fn test_list_fingerprints_by_project_empty() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/film')", []).unwrap();
+
+        let fps = list_fingerprints_by_project(&conn, "film").unwrap();
+        assert!(fps.is_empty());
+    }
+
+    #[test]
+    fn test_list_fingerprints_by_file() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/film')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'a.dpx', 'dpx')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'fresh')", []).unwrap();
+
+        let fps = list_fingerprints_by_file(&conn, "/tmp/film/a.dpx").unwrap();
+        assert_eq!(fps.len(), 1);
+        assert_eq!(fps[0].0, 1);
+    }
+
+    #[test]
+    fn test_list_fingerprints_by_file_not_found() {
+        let conn = setup_test_db();
+        let fps = list_fingerprints_by_file(&conn, "/nonexistent/file.dpx").unwrap();
+        assert!(fps.is_empty());
+    }
+
+    #[test]
+    fn test_reextract_result_equality() {
+        assert_eq!(ReextractResult::Reextracted, ReextractResult::Reextracted);
+        assert_eq!(ReextractResult::Skipped("x".to_string()), ReextractResult::Skipped("x".to_string()));
+        assert_ne!(ReextractResult::Skipped("a".to_string()), ReextractResult::Skipped("b".to_string()));
     }
 }

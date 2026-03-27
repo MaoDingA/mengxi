@@ -1118,29 +1118,25 @@ pub fn hybrid_search(
     // Score each candidate
     let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
 
-    for (_fp_id, file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
+    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
         // Check for stale fingerprint and attempt recomputation
         let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
         if is_stale {
             if recomputation_count < MAX_RECOMPUTATIONS_PER_SEARCH {
-                // Atomic state transition: UPDATE only if still stale (use fp id as primary key)
-                let rows_affected = match conn.execute(
-                    "UPDATE fingerprints SET feature_status = 'fresh'
-                     WHERE id = ?1 AND (feature_status = 'stale' OR feature_status IS NULL)",
-                    rusqlite::params![_fp_id],
-                ) {
-                    Ok(n) => n,
+                match crate::fingerprint::reextract_grading_features(conn, _fp_id) {
+                    Ok(crate::fingerprint::ReextractResult::Reextracted) => {
+                        recomputation_count += 1;
+                        eprintln!("info: recomputed stale features for {} ({})", project_name, filename);
+                    }
+                    Ok(crate::fingerprint::ReextractResult::Skipped(reason)) => {
+                        eprintln!("warning: skipped stale recomputation for {} ({}): {}", project_name, filename, reason);
+                    }
+                    Ok(crate::fingerprint::ReextractResult::Error(reason)) => {
+                        eprintln!("warning: stale recomputation failed for {} ({}): {}", project_name, filename, reason);
+                    }
                     Err(e) => {
                         eprintln!("warning: stale recomputation failed for {} ({}): {}", project_name, filename, e);
-                        0
                     }
-                };
-
-                if rows_affected > 0 {
-                    recomputation_count += 1;
-                    eprintln!("info: recomputed stale features for {} ({})", project_name, filename);
-                } else {
-                    // Another process already recomputed — features are already fresh
                 }
             } else {
                 if !rate_limit_warned {
@@ -2383,12 +2379,12 @@ mod tests {
         let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
 
         assert_eq!(results.len(), 1);
-        // Verify candidate was updated to fresh
+        // Source file doesn't exist, so re-extraction is skipped — status remains stale
         let status: String = conn.query_row(
             "SELECT feature_status FROM fingerprints WHERE file_id = 2",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(status, "fresh");
+        assert_eq!(status, "stale");
     }
 
     #[test]
@@ -2419,12 +2415,12 @@ mod tests {
         let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
 
         assert_eq!(results.len(), 1);
-        // Verify candidate was updated to fresh
-        let status: String = conn.query_row(
+        // Source file doesn't exist, so re-extraction is skipped — status remains NULL
+        let status: Option<String> = conn.query_row(
             "SELECT feature_status FROM fingerprints WHERE file_id = 2",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(status, "fresh");
+        assert!(status.is_none());
     }
 
     #[test]
@@ -2495,19 +2491,12 @@ mod tests {
         // All 12 should be returned (features exist, just stale)
         assert_eq!(results.len(), 12);
 
-        // Only 10 should have been recomputed (rate limit)
-        let fresh_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM fingerprints WHERE file_id >= 2 AND feature_status = 'fresh'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(fresh_count, 10);
-
-        // 2 should still be stale
+        // Source files don't exist, so re-extraction is skipped for all — status remains stale
         let stale_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM fingerprints WHERE file_id >= 2 AND feature_status = 'stale'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(stale_count, 2);
+        assert_eq!(stale_count, 12);
     }
 
     #[test]
@@ -2536,21 +2525,20 @@ mod tests {
 
         let weights = SignalWeights::grading_first();
 
-        // First search: should recompute
+        // First search: should attempt recompute, but source file doesn't exist — skipped
         let results1 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
         assert_eq!(results1.len(), 1);
         let status1: String = conn.query_row(
             "SELECT feature_status FROM fingerprints WHERE file_id = 2", [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(status1, "fresh");
+        assert_eq!(status1, "stale");
 
-        // Second search: candidate is already fresh, should NOT trigger UPDATE
+        // Second search: candidate is still stale, should attempt again but still skip
         let results2 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
         assert_eq!(results2.len(), 1);
-        // Status remains fresh (atomic UPDATE would have returned 0 rows)
         let status2: String = conn.query_row(
             "SELECT feature_status FROM fingerprints WHERE file_id = 2", [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(status2, "fresh");
+        assert_eq!(status2, "stale");
     }
 }

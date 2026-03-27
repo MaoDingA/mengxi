@@ -179,6 +179,19 @@ enum Commands {
         #[arg(long)]
         full: bool,
     },
+    /// Re-extract grading features for existing fingerprints
+    #[command(name = "reextract")]
+    Reextract {
+        /// Re-extract all fingerprints for a project
+        #[arg(long)]
+        project: Option<String>,
+        /// Specific file path to re-extract
+        #[arg(long)]
+        file: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
     /// Browse and query the database
     Db {
         #[command(subcommand)]
@@ -284,6 +297,7 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
         Some(Commands::Stats { .. }) => ("stats".to_string(), "{}".to_string(), None),
         Some(Commands::Config { .. }) => ("config".to_string(), "{}".to_string(), None),
         Some(Commands::Validate { .. }) => ("validate".to_string(), "{}".to_string(), None),
+        Some(Commands::Reextract { .. }) => ("reextract".to_string(), "{}".to_string(), None),
         Some(Commands::Db { .. }) => ("db".to_string(), "{}".to_string(), None),
         None => ("help".to_string(), "{}".to_string(), None),
     }
@@ -2355,6 +2369,120 @@ fn main() {
             let is_json = format == "json";
             let exit_code = validate::run_validate(is_json, full);
             process::exit(exit_code);
+        }
+        Some(Commands::Reextract { project, file, format }) => {
+            let is_json = format == "json";
+            if project.is_none() && file.is_none() {
+                eprintln!("Error: specify --project <name> or --file <path>");
+                process::exit(1);
+            }
+            let conn = match db::open_db() {
+                Ok(c) => c,
+                Err(e) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "REEXTRACT_DB_ERROR", "message": e.to_string() }
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: DB_OPEN_FAILED — {}", e);
+                    }
+                    process::exit(1);
+                }
+            };
+            let fps = if let Some(ref proj) = project {
+                match mengxi_core::fingerprint::list_fingerprints_by_project(&conn, proj) {
+                    Ok(fps) => fps,
+                    Err(e) => {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": { "code": "REEXTRACT_DB_ERROR", "message": e }
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            eprintln!("Error: {}", e);
+                        }
+                        process::exit(1);
+                    }
+                }
+            } else {
+                // --file mode: look up fingerprints for the given file path
+                let file_path = file.as_ref().unwrap();
+                match mengxi_core::fingerprint::list_fingerprints_by_file(&conn, file_path) {
+                    Ok(fps) if fps.is_empty() => {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": { "code": "REEXTRACT_NOT_FOUND", "message": format!("no fingerprint found for file: {}", file_path) }
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            eprintln!("Error: no fingerprint found for file: {}", file_path);
+                        }
+                        process::exit(1);
+                    }
+                    Ok(fps) => fps,
+                    Err(e) => {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": { "code": "REEXTRACT_DB_ERROR", "message": e }
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            eprintln!("Error: {}", e);
+                        }
+                        process::exit(1);
+                    }
+                }
+            };
+            let mut reextracted = 0usize;
+            let mut skipped = 0usize;
+            let mut failed = 0usize;
+            let mut failures: Vec<serde_json::Value> = Vec::new();
+            for (fp_id, fp_path) in &fps {
+                eprintln!("re-extracting {} ({}/{})", fp_path, reextracted + skipped + failed + 1, fps.len());
+                match mengxi_core::fingerprint::reextract_grading_features(&conn, *fp_id) {
+                    Ok(mengxi_core::fingerprint::ReextractResult::Reextracted) => reextracted += 1,
+                    Ok(mengxi_core::fingerprint::ReextractResult::Skipped(reason)) => {
+                        skipped += 1;
+                        eprintln!("  skipped: {}", reason);
+                    }
+                    Ok(mengxi_core::fingerprint::ReextractResult::Error(reason)) => {
+                        failed += 1;
+                        eprintln!("  error: {}", reason);
+                        failures.push(serde_json::json!({
+                            "file": fp_path,
+                            "reason": reason,
+                        }));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("  error: {}", e);
+                        failures.push(serde_json::json!({
+                            "file": fp_path,
+                            "reason": e,
+                        }));
+                    }
+                }
+            }
+            if is_json {
+                let mut output = serde_json::Map::new();
+                output.insert("status".to_string(), serde_json::json!("ok"));
+                output.insert("total".to_string(), serde_json::json!(fps.len()));
+                output.insert("reextracted".to_string(), serde_json::json!(reextracted));
+                output.insert("skipped".to_string(), serde_json::json!(skipped));
+                output.insert("failed".to_string(), serde_json::json!(failed));
+                if !failures.is_empty() {
+                    output.insert("failures".to_string(), serde_json::json!(failures));
+                }
+                println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(output)).unwrap());
+            } else {
+                println!("Re-extraction complete: {} reextracted, {} skipped, {} failed ({} total)",
+                    reextracted, skipped, failed, fps.len());
+            }
         }
         Some(Commands::Db { command }) => {
             let conn = match db::open_db() {

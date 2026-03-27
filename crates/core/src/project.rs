@@ -466,7 +466,7 @@ pub fn register_project(
 }
 
 /// Map DPX transfer characteristic string to a color space tag for fingerprint extraction.
-fn map_transfer_string_to_color_tag(transfer: &str) -> String {
+pub(crate) fn map_transfer_string_to_color_tag(transfer: &str) -> String {
     match transfer {
         "printing_density" | "logarithmic" => "log".to_string(),
         "bt709" | "bt601_bg" | "bt601_m" | "smpte_274m"
