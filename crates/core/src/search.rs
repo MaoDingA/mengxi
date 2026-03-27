@@ -1116,7 +1116,7 @@ pub fn hybrid_search(
     let mut rate_limit_warned = false;
 
     // Score each candidate
-    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String)> = Vec::new();
+    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
 
     for (_fp_id, file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
         // Check for stale fingerprint and attempt recomputation
@@ -1197,7 +1197,10 @@ pub fn hybrid_search(
 
         // Compute hybrid score
         match hybrid_scoring::compute_hybrid_score(grading_sim, clip_sim, tag_sim, weights, &query_cs_tag, &candidate_cs_tag) {
-            Ok(hybrid) => scored.push((hybrid.final_score, hybrid, project_name, filename, format, candidate_cs_tag)),
+            Ok(hybrid) => {
+                let hr = crate::feature_translation::translate_features(&candidate_features);
+                scored.push((hybrid.final_score, hybrid, project_name, filename, format, candidate_cs_tag, hr));
+            }
             Err(_) => continue,
         }
     }
@@ -1213,7 +1216,7 @@ pub fn hybrid_search(
     let results: Vec<HybridSearchResult> = scored
         .into_iter()
         .enumerate()
-        .map(|(i, (score, hybrid, project_name, file_path, file_format, _cs_tag))| HybridSearchResult {
+        .map(|(i, (score, hybrid, project_name, file_path, file_format, _cs_tag, human_readable))| HybridSearchResult {
             rank: i + 1,
             project_name,
             file_path,
@@ -1221,6 +1224,7 @@ pub fn hybrid_search(
             score,
             score_breakdown: hybrid.breakdown,
             match_warnings: hybrid.warnings,
+            human_readable,
         })
         .collect();
 

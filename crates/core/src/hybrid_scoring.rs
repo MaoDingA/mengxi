@@ -85,6 +85,8 @@ pub struct HybridSearchResult {
     pub score_breakdown: ScoreBreakdown,
     /// Match-level warnings (e.g., color space gap between reference and candidate).
     pub match_warnings: Vec<String>,
+    /// Human-readable Chinese grading style description (e.g., "高对比度 · 暗部偏冷").
+    pub human_readable: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +726,7 @@ mod tests {
                 tag: None,
             },
             match_warnings: vec![],
+            human_readable: "高对比度".to_string(),
         };
         assert_eq!(result.rank, 1);
         assert_eq!(result.project_name, "film_a");
@@ -876,6 +879,7 @@ mod tests {
                 tag: None,
             },
             match_warnings: vec!["reference (sRGB) ↔ candidate (ACEScct) — large color space gap".to_string()],
+            human_readable: "低对比度 · 暗部偏冷".to_string(),
         };
         assert_eq!(result.match_warnings.len(), 1);
         assert!(result.match_warnings[0].contains("large color space gap"));

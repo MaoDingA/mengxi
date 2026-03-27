@@ -729,6 +729,7 @@ fn main() {
                                                 obj.insert("file".to_string(), serde_json::json!(r.file_path));
                                                 obj.insert("score".to_string(), serde_json::json!(r.score));
                                                 obj.insert("score_breakdown".to_string(), serde_json::json!(bd));
+                                                obj.insert("human_readable".to_string(), serde_json::json!(r.human_readable));
                                                 if !r.match_warnings.is_empty() {
                                                     obj.insert("match_warnings".to_string(), serde_json::json!(r.match_warnings));
                                                 }
@@ -769,6 +770,9 @@ fn main() {
                                                     score_pct,
                                                     truncate_str(&breakdown, 40),
                                                 );
+                                                if !r.human_readable.is_empty() {
+                                                    println!("        {}", r.human_readable);
+                                                }
                                             }
                                             println!(
                                                 "+------+------------------+--------------------------+-------+------------------------------------------+"
