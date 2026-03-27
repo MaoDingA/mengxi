@@ -666,8 +666,29 @@ fn main() {
                             limit: limit_val as usize,
                         };
 
-                        // Hybrid search: --image + (--search-mode or --weights)
-                        let use_hybrid = search_mode.is_some() || weights.is_some();
+                        // Resolve search weights via config cascade when no CLI args
+                        let config_weights = if search_mode.is_some() || weights.is_some() {
+                            None
+                        } else {
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            match config::resolve_search_config(&cwd) {
+                                Ok(w) => Some(w),
+                                Err(e) => {
+                                    if is_json {
+                                        let output = serde_json::json!({
+                                            "status": "error",
+                                            "error": { "code": "CONFIG_VALIDATION_ERROR", "message": e }
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    } else {
+                                        eprintln!("Error: {}", e);
+                                    }
+                                    process::exit(1);
+                                }
+                            }
+                        };
+
+                        let use_hybrid = search_mode.is_some() || weights.is_some() || config_weights.is_some();
 
                         if use_hybrid {
                             // F-06: warn when --tag is provided but hybrid mode ignores it
@@ -675,8 +696,13 @@ fn main() {
                                 eprintln!("warning: --tag is ignored in hybrid search mode (use --search-mode or --weights without --tag)");
                             }
 
-                            // Resolve weights
-                            let resolved_weights = match resolve_hybrid_weights(search_mode.as_deref(), weights.as_deref()) {
+                            // Resolve weights (config cascade: CLI args > project config > global config > defaults)
+                            let resolved_weights = if search_mode.is_some() || weights.is_some() {
+                                resolve_hybrid_weights(search_mode.as_deref(), weights.as_deref())
+                            } else {
+                                Ok(config_weights.unwrap())
+                            };
+                            let resolved_weights = match resolved_weights {
                                 Ok(w) => w,
                                 Err(e) => {
                                     if is_json {
