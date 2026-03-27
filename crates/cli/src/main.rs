@@ -737,14 +737,19 @@ fn main() {
                                             })
                                             .collect();
 
-                                        let output = serde_json::json!({
-                                            "status": "ok",
-                                            "results": json_results,
-                                        });
-                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                        let mut output = serde_json::Map::new();
+                                        output.insert("status".to_string(), serde_json::json!("ok"));
+                                        output.insert("results".to_string(), serde_json::json!(json_results));
+                                        if let Some(explanation) = low_result_explanation(results.len()) {
+                                            output.insert("low_result_reason".to_string(), serde_json::json!(explanation));
+                                        }
+                                        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(output)).unwrap());
                                     } else {
                                         if results.is_empty() {
                                             println!("No results found.");
+                                            if let Some(explanation) = low_result_explanation(results.len()) {
+                                                println!("{}", explanation);
+                                            }
                                         } else {
                                             println!(
                                                 "+------+------------------+--------------------------+-------+------------------------------------------+"
@@ -779,6 +784,9 @@ fn main() {
                                             );
                                             for w in &all_warnings {
                                                 eprintln!("warning: {}", w);
+                                            }
+                                            if let Some(explanation) = low_result_explanation(results.len()) {
+                                                println!("{}", explanation);
                                             }
                                         }
                                     }
@@ -2725,6 +2733,17 @@ fn format_breakdown(breakdown: &mengxi_core::hybrid_scoring::ScoreBreakdown) -> 
     parts.join(" ")
 }
 
+/// Generate a human-readable explanation when search returns few results.
+/// Returns None when results >= 3 (no explanation needed).
+fn low_result_explanation(count: usize) -> Option<String> {
+    match count {
+        0 => Some("无匹配结果 -- 候选集中无高相似度调色风格".to_string()),
+        1 => Some("仅找到 1 个匹配 -- 候选集可能不足或参考图风格较特殊".to_string()),
+        2 => Some("仅找到 2 个匹配 -- 候选集可能不足或参考图风格较特殊".to_string()),
+        _ => None,
+    }
+}
+
 /// Record accept/reject feedback for a search result.
 fn record_feedback_if_needed(
     conn: &mengxi_core::db::DbConnection,
@@ -3603,5 +3622,48 @@ mod tests {
         let result = resolve_hybrid_weights(None, Some("grading=0.3,grading=0.3,clip=0.2,tag=0.2"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("duplicate"));
+    }
+
+    // --- low_result_explanation tests (Story 4.2) ---
+
+    #[test]
+    fn test_low_result_explanation_zero() {
+        let result = low_result_explanation(0);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("无匹配结果"));
+    }
+
+    #[test]
+    fn test_low_result_explanation_one() {
+        let result = low_result_explanation(1);
+        assert!(result.is_some());
+        let s = result.unwrap();
+        assert!(s.contains("仅找到 1 个匹配"));
+    }
+
+    #[test]
+    fn test_low_result_explanation_two() {
+        let result = low_result_explanation(2);
+        assert!(result.is_some());
+        let s = result.unwrap();
+        assert!(s.contains("仅找到 2 个匹配"));
+    }
+
+    #[test]
+    fn test_low_result_explanation_three_returns_none() {
+        let result = low_result_explanation(3);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_low_result_explanation_ten_returns_none() {
+        let result = low_result_explanation(10);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_low_result_explanation_hundred_returns_none() {
+        let result = low_result_explanation(100);
+        assert!(result.is_none());
     }
 }

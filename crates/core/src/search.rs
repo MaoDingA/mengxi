@@ -1206,7 +1206,7 @@ pub fn hybrid_search(
     }
 
     if scored.is_empty() {
-        return Err(SearchError::NoFingerprints);
+        return Ok(vec![]);
     }
 
     // Sort by score descending
