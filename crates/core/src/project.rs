@@ -321,14 +321,7 @@ pub fn register_project(
 
         // Extract color fingerprint for DPX and EXR files
         if format == "dpx" || format == "exr" {
-            let color_tag = if format == "dpx" {
-                transfer.as_deref().map_or("linear".to_string(), |t| {
-                    map_transfer_string_to_color_tag(t)
-                })
-            } else {
-                // EXR is always linear
-                "linear".to_string()
-            };
+            let color_tag = crate::feature_pipeline::determine_color_tag(format, transfer.as_deref());
 
             let pixel_result = if format == "dpx" {
                 dpx::read_pixel_data(&file_path)
@@ -385,17 +378,12 @@ pub fn register_project(
                             breakdown.fingerprint_count += 1;
 
                             // Extract Oklab grading features from downsampled data
-                            let color_space_tag_int = match color_tag.as_str() {
-                                "linear" => 0,
-                                "log" => 1,
-                                "video" => 2,
-                                _ => 0,
-                            };
-                            match color_science::rgb_to_oklab_batch(&downsampled_data, &color_tag)
-                                .and_then(|oklab_data| {
-                                    color_science::extract_grading_features(&oklab_data, color_space_tag_int, color_science::GradingFeatures::HIST_BINS)
-                                })
-                            {
+                            match crate::feature_pipeline::extract_features_from_pixels(
+                                &downsampled_data,
+                                None, // already downsampled
+                                None,
+                                &color_tag,
+                            ) {
                                 Ok(features) => {
                                     let hist_l_blob = features.hist_l_blob();
                                     let hist_a_blob = features.hist_a_blob();
@@ -466,13 +454,9 @@ pub fn register_project(
 }
 
 /// Map DPX transfer characteristic string to a color space tag for fingerprint extraction.
+/// Delegates to the shared feature_pipeline module.
 pub(crate) fn map_transfer_string_to_color_tag(transfer: &str) -> String {
-    match transfer {
-        "printing_density" | "logarithmic" => "log".to_string(),
-        "bt709" | "bt601_bg" | "bt601_m" | "smpte_274m"
-        | "unspecified_video" | "ntsc_composite" | "pal_composite" => "video".to_string(),
-        _ => "linear".to_string(),
-    }
+    crate::feature_pipeline::map_transfer_string_to_color_tag(transfer)
 }
 
 /// Retrieve a project by name.

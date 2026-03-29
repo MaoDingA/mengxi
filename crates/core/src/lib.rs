@@ -8,6 +8,7 @@ pub mod grading_features;
 pub mod hybrid_scoring;
 pub mod db;
 pub mod feedback;
+pub mod feature_pipeline;
 pub mod feature_translation;
 pub mod fingerprint;
 pub mod lut_diff;

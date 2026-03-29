@@ -245,21 +245,7 @@ pub fn reextract_grading_features(
     }
 
     // Determine color space tag
-    let color_tag = if format == "dpx" {
-        transfer
-            .as_deref()
-            .map_or("linear".to_string(), |t| {
-                crate::project::map_transfer_string_to_color_tag(t)
-            })
-    } else {
-        "linear".to_string() // EXR is always linear
-    };
-
-    let color_space_tag_int = match color_tag.as_str() {
-        "log" => 1,
-        "video" => 2,
-        _ => 0,
-    };
+    let color_tag = crate::feature_pipeline::determine_color_tag(&format, transfer.as_deref());
 
     // Check source file exists
     if !std::path::Path::new(&file_path).is_file() {
@@ -283,29 +269,14 @@ pub fn reextract_grading_features(
         }
     };
 
-    // Downsample
+    // Downsample + RGB→Oklab + FFI feature extraction via shared pipeline
     let w = width.and_then(|v| if v > 0 { Some(v as usize) } else { None });
     let h = height.and_then(|v| if v > 0 { Some(v as usize) } else { None });
-    let downsampled = match (w, h) {
-        (Some(dw), Some(dh)) => {
-            match crate::downsample::downsample_rgb(&pixel_data, dw, dh, crate::downsample::MAX_DIMENSION) {
-                Ok((data, _, _)) => data,
-                Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_DOWNSAMPLE_ERROR -- {}", e))),
-            }
-        }
-        _ => pixel_data,
-    };
-
-    // RGB → Oklab
-    let oklab_data = match crate::color_science::rgb_to_oklab_batch(&downsampled, &color_tag) {
-        Ok(data) => data,
-        Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_OKLAB_ERROR -- {}", e))),
-    };
-
-    // Extract grading features via FFI
-    let features = match crate::color_science::extract_grading_features(&oklab_data, color_space_tag_int, crate::color_science::GradingFeatures::HIST_BINS) {
+    let features = match crate::feature_pipeline::extract_features_from_pixels(
+        &pixel_data, w, h, &color_tag,
+    ) {
         Ok(f) => f,
-        Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_FFI_ERROR -- {}", e))),
+        Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_PIPELINE_ERROR -- {}", e))),
     };
 
     // Serialize to BLOBs
