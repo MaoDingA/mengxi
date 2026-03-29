@@ -6,6 +6,7 @@ use crate::color_science::{bhattacharyya_distance, GradingFeatures};
 use crate::fingerprint::BINS_PER_CHANNEL;
 use crate::hybrid_scoring::{self, HybridSearchResult, SignalWeights};
 use crate::python_bridge::{AiError, PythonBridge};
+use crate::vector_index::VectorIndex;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -1008,6 +1009,31 @@ pub fn hybrid_search(
     weights: &SignalWeights,
     options: &SearchOptions,
 ) -> Result<Vec<HybridSearchResult>, SearchError> {
+    hybrid_search_impl(conn, query_file_id, weights, options, None)
+}
+
+/// Hybrid search with optional HNSW vector index for embedding pre-filtering.
+///
+/// When a `VectorIndex` is provided and the query has an embedding, uses HNSW
+/// to pre-filter candidates by embedding similarity before full hybrid scoring.
+/// Falls back to linear scan when no index is available or dataset is small.
+pub fn hybrid_search_with_index(
+    conn: &Connection,
+    query_file_id: i64,
+    weights: &SignalWeights,
+    options: &SearchOptions,
+    vector_index: Option<&VectorIndex>,
+) -> Result<Vec<HybridSearchResult>, SearchError> {
+    hybrid_search_impl(conn, query_file_id, weights, options, vector_index)
+}
+
+fn hybrid_search_impl(
+    conn: &Connection,
+    query_file_id: i64,
+    weights: &SignalWeights,
+    options: &SearchOptions,
+    vector_index: Option<&VectorIndex>,
+) -> Result<Vec<HybridSearchResult>, SearchError> {
     // Load query grading features
     let query_features = load_grading_features(conn, query_file_id)?;
 
@@ -1059,7 +1085,21 @@ pub fn hybrid_search(
         None => vec![],
     };
 
-    // Load all candidates with grading features
+    // Decide whether to use HNSW pre-filtering
+    let hnsw_candidate_ids: Option<Vec<i64>> = match (&query_embedding, vector_index) {
+        (Some(ref q_emb), Some(ref idx)) if idx.should_use_hnsw() => {
+            let pre_filter_k = std::cmp::max(options.limit * 5, 200);
+            let results = idx.search(q_emb, pre_filter_k);
+            if results.is_empty() {
+                None
+            } else {
+                Some(results.into_iter().map(|(id, _)| id).collect())
+            }
+        }
+        _ => None,
+    };
+
+    // Build candidate SQL query
     let mut sql = String::from(
         "SELECT fp.id, fp.file_id, p.name, f.filename, f.format,
                 fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments,
@@ -1073,6 +1113,11 @@ pub fn hybrid_search(
                AND fp.file_id != ?1"
     );
 
+    if let Some(ref ids) = hnsw_candidate_ids {
+        let placeholders: Vec<String> = (0..ids.len()).map(|_| "?".to_string()).collect();
+        sql.push_str(&format!(" AND fp.id IN ({})", placeholders.join(", ")));
+    }
+
     if options.project.is_some() {
         sql.push_str(" AND p.name = ?2");
     }
@@ -1080,6 +1125,11 @@ pub fn hybrid_search(
     let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
 
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(query_file_id)];
+    if let Some(ref ids) = hnsw_candidate_ids {
+        for id in ids {
+            params.push(Box::new(*id));
+        }
+    }
     if let Some(ref proj) = options.project {
         params.push(Box::new(proj.clone()));
     }

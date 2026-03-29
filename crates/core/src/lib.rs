@@ -17,3 +17,4 @@ pub mod project;
 pub mod python_bridge;
 pub mod search;
 pub mod tag;
+pub mod vector_index;
