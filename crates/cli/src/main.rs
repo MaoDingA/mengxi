@@ -2478,32 +2478,39 @@ fn main() {
             let mut skipped = 0usize;
             let mut failed = 0usize;
             let mut failures: Vec<serde_json::Value> = Vec::new();
-            for (fp_id, fp_path) in &fps {
-                eprintln!("re-extracting {} ({}/{})", fp_path, reextracted + skipped + failed + 1, fps.len());
-                match mengxi_core::fingerprint::reextract_grading_features(&conn, *fp_id) {
-                    Ok(mengxi_core::fingerprint::ReextractResult::Reextracted) => reextracted += 1,
-                    Ok(mengxi_core::fingerprint::ReextractResult::Skipped(reason)) => {
-                        skipped += 1;
-                        eprintln!("  skipped: {}", reason);
-                    }
-                    Ok(mengxi_core::fingerprint::ReextractResult::Error(reason)) => {
-                        failed += 1;
-                        eprintln!("  error: {}", reason);
+
+            match mengxi_core::fingerprint::batch_reextract_grading_features(
+                &conn,
+                &fps,
+                |_i, total, path| {
+                    eprintln!("re-extracting {} ({}/{})", path, _i + 1, total);
+                },
+            ) {
+                Ok(batch_result) => {
+                    reextracted = batch_result.reextracted;
+                    skipped = batch_result.skipped;
+                    failed = batch_result.failed;
+                    for (fp_path, reason) in &batch_result.failures {
                         failures.push(serde_json::json!({
                             "file": fp_path,
                             "reason": reason,
                         }));
                     }
-                    Err(e) => {
-                        failed += 1;
-                        eprintln!("  error: {}", e);
-                        failures.push(serde_json::json!({
-                            "file": fp_path,
-                            "reason": e.to_string(),
-                        }));
+                }
+                Err(e) => {
+                    if is_json {
+                        let output = serde_json::json!({
+                            "status": "error",
+                            "error": { "code": "REEXTRACT_TX_ERROR", "message": e.to_string() }
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else {
+                        eprintln!("Error: REEXTRACT_TX_ERROR — {}", e);
                     }
+                    process::exit(1);
                 }
             }
+
             if is_json {
                 let mut output = serde_json::Map::new();
                 output.insert("status".to_string(), serde_json::json!("ok"));

@@ -358,6 +358,68 @@ pub fn list_fingerprints_by_file(
     Ok(rows)
 }
 
+/// Batch re-extraction result summary.
+#[derive(Debug, Clone)]
+pub struct BatchReextractResult {
+    pub reextracted: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub failures: Vec<(String, String)>,
+}
+
+/// Re-extract grading features for multiple fingerprints in a single transaction.
+///
+/// Wraps all individual `reextract_grading_features` calls in a SQLite transaction,
+/// providing significant performance improvement for large batches by reducing
+/// WAL checkpoint overhead from N commits to 1.
+///
+/// The `progress` callback is called before each fingerprint with `(current, total, path)`.
+pub fn batch_reextract_grading_features<F>(
+    conn: &rusqlite::Connection,
+    fingerprint_ids: &[(i64, String)],
+    mut progress: F,
+) -> Result<BatchReextractResult, ReextractError>
+where
+    F: FnMut(usize, usize, &str),
+{
+    let total = fingerprint_ids.len();
+    let mut result = BatchReextractResult {
+        reextracted: 0,
+        skipped: 0,
+        failed: 0,
+        failures: Vec::new(),
+    };
+
+    conn.execute_batch("BEGIN TRANSACTION")
+        .map_err(|e| ReextractError::DbError(format!("failed to begin transaction: {}", e)))?;
+
+    for (i, (fp_id, fp_path)) in fingerprint_ids.iter().enumerate() {
+        progress(i, total, fp_path);
+        match reextract_grading_features(conn, *fp_id) {
+            Ok(ReextractResult::Reextracted) => result.reextracted += 1,
+            Ok(ReextractResult::Skipped(reason)) => {
+                result.skipped += 1;
+                eprintln!("  skipped: {}", reason);
+            }
+            Ok(ReextractResult::Error(reason)) => {
+                result.failed += 1;
+                eprintln!("  error: {}", reason);
+                result.failures.push((fp_path.clone(), reason));
+            }
+            Err(e) => {
+                result.failed += 1;
+                eprintln!("  error: {}", e);
+                result.failures.push((fp_path.clone(), e.to_string()));
+            }
+        }
+    }
+
+    conn.execute_batch("COMMIT")
+        .map_err(|e| ReextractError::DbError(format!("failed to commit transaction: {}", e)))?;
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
