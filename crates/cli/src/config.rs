@@ -56,6 +56,9 @@ pub struct ImportConfig {
     pub auto_detect_format: bool,
     #[serde(default = "default_keyframe_extraction")]
     pub keyframe_extraction: String,
+    /// Grid size for per-tile feature extraction (0 = disabled, N = NxN grid).
+    #[serde(default)]
+    pub tile_grid_size: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -138,6 +141,7 @@ impl Default for ImportConfig {
         Self {
             auto_detect_format: default_true(),
             keyframe_extraction: default_keyframe_extraction(),
+            tile_grid_size: 0,
         }
     }
 }
@@ -442,6 +446,7 @@ mod tests {
             import: ImportConfig {
                 auto_detect_format: false,
                 keyframe_extraction: "manual".to_string(),
+                tile_grid_size: 0,
             },
             export: ExportConfig {
                 default_output_dir: "/custom/lut".to_string(),
