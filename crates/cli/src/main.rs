@@ -83,6 +83,9 @@ enum Commands {
         /// Force overwrite without prompting
         #[arg(long)]
         force: bool,
+        /// Output format for status/progress (text, json)
+        #[arg(long, value_name = "OUTPUT_FORMAT", value_parser = ["text", "json"], default_value = "text")]
+        output_format: String,
     },
     /// Display detailed fingerprint information for a search result
     Info {
@@ -180,7 +183,7 @@ enum Commands {
         #[arg(long)]
         period: Option<String>,
         /// Output format (text, json)
-        #[arg(long)]
+        #[arg(long, value_parser = ["text", "json"])]
         format: Option<String>,
     },
     /// View and manage system configuration
@@ -210,9 +213,9 @@ enum Commands {
         /// Specific file path to re-extract
         #[arg(conflicts_with = "project", value_name = "FILE")]
         file: Option<String>,
-        /// Output as structured JSON
-        #[arg(long)]
-        json: bool,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
     },
     /// Generate CLIP embeddings for fingerprints
     #[command(name = "embed")]
@@ -223,18 +226,18 @@ enum Commands {
         /// Force regeneration of existing embeddings
         #[arg(long)]
         force: bool,
-        /// Output as structured JSON
-        #[arg(long)]
-        json: bool,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
     },
     /// Validate evaluation dataset format compliance
     #[command(name = "validate-dataset")]
     ValidateDataset {
         /// Directory containing evaluation dataset
         dir: String,
-        /// Output as structured JSON
-        #[arg(long)]
-        json: bool,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
     },
     /// Browse and query the database
     Db {
@@ -930,7 +933,10 @@ fn main() {
                                                 "rank": r.rank,
                                                 "project": r.project_name,
                                                 "file": r.file_path,
-                                                "score": r.score
+                                                "score": r.score,
+                                                "score_breakdown": null,
+                                                "human_readable": "",
+                                                "match_warnings": []
                                             })
                                         })
                                         .collect();
@@ -1113,7 +1119,10 @@ fn main() {
                                             "rank": r.rank,
                                             "project": r.project_name,
                                             "file": r.file_path,
-                                            "score": r.score
+                                            "score": r.score,
+                                            "score_breakdown": null,
+                                            "human_readable": "",
+                                            "match_warnings": []
                                         })
                                     })
                                     .collect();
@@ -1227,8 +1236,9 @@ fn main() {
             output,
             grid_size,
             force,
+            output_format,
         }) => {
-            let is_json = std::env::var("MENGXI_JSON").is_ok();
+            let is_json = output_format == "json";
 
             // Validate required args
             let result_id = match result {
@@ -1378,7 +1388,7 @@ fn main() {
                                                     "status": "error",
                                                     "error": { "code": "LUT_EXPORT_ERROR", "message": e.to_string() }
                                                 });
-                                                eprintln!(
+                                                println!(
                                                     "{}",
                                                     serde_json::to_string_pretty(&output).unwrap()
                                                 );
@@ -1394,7 +1404,7 @@ fn main() {
                                             "status": "error",
                                             "error": { "code": "EXPORT_CANCELLED", "message": "Export cancelled by user" }
                                         });
-                                        eprintln!(
+                                        println!(
                                             "{}",
                                             serde_json::to_string_pretty(&output).unwrap()
                                         );
@@ -1408,7 +1418,7 @@ fn main() {
                                         "status": "error",
                                         "error": { "code": "EXPORT_FILE_EXISTS", "message": format!("File {} already exists. Use --force to overwrite.", path.display()) }
                                     });
-                                    eprintln!(
+                                    println!(
                                         "{}",
                                         serde_json::to_string_pretty(&output).unwrap()
                                     );
@@ -1427,7 +1437,7 @@ fn main() {
                                     "status": "error",
                                     "error": { "code": "LUT_EXPORT_ERROR", "message": e.to_string() }
                                 });
-                                eprintln!(
+                                println!(
                                     "{}",
                                     serde_json::to_string_pretty(&output).unwrap()
                                 );
@@ -2652,7 +2662,8 @@ fn main() {
             let exit_code = validate::run_validate(is_json, full);
             process::exit(exit_code);
         }
-        Some(Commands::Reextract { project, file, json: is_json }) => {
+        Some(Commands::Reextract { project, file, format }) => {
+            let is_json = format == "json";
             if project.is_none() && file.is_none() {
                 eprintln!("Error: specify --project <name> or provide a FILE path");
                 process::exit(1);
@@ -2787,7 +2798,8 @@ fn main() {
                 process::exit(1);
             }
         }
-        Some(Commands::Embed { project, force, json: is_json }) => {
+        Some(Commands::Embed { project, force, format }) => {
+            let is_json = format == "json";
             let conn = match db::open_db() {
                 Ok(c) => c,
                 Err(e) => {
@@ -2945,7 +2957,8 @@ fn main() {
                 process::exit(1);
             }
         }
-        Some(Commands::ValidateDataset { dir, json: is_json }) => {
+        Some(Commands::ValidateDataset { dir, format }) => {
+            let is_json = format == "json";
             let exit_code = validate_dataset::run_validate_dataset(&dir, is_json);
             process::exit(exit_code);
         }
@@ -3146,7 +3159,10 @@ fn display_search_results(results: &[mengxi_core::search::SearchResult], is_json
                     "rank": r.rank,
                     "project": r.project_name,
                     "file": r.file_path,
-                    "score": r.score.max(0.0)
+                    "score": r.score.max(0.0),
+                    "score_breakdown": null,
+                    "human_readable": "",
+                    "match_warnings": []
                 })
             })
             .collect();
@@ -3530,7 +3546,7 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
-            Some(Commands::Export { result, format, output, grid_size, force }) => {
+            Some(Commands::Export { result, format, output, grid_size, force, .. }) => {
                 assert_eq!(result, Some(3));
                 assert_eq!(format.as_deref(), Some("cube"));
                 assert_eq!(output.as_deref(), Some("~/lut/grade.cube"));
