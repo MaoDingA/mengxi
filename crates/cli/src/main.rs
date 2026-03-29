@@ -1,5 +1,6 @@
 mod config;
 mod validate;
+mod validate_dataset;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -192,6 +193,15 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Validate evaluation dataset format compliance
+    #[command(name = "validate-dataset")]
+    ValidateDataset {
+        /// Directory containing evaluation dataset
+        dir: String,
+        /// Output as structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Browse and query the database
     Db {
         #[command(subcommand)]
@@ -298,6 +308,7 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
         Some(Commands::Config { .. }) => ("config".to_string(), "{}".to_string(), None),
         Some(Commands::Validate { .. }) => ("validate".to_string(), "{}".to_string(), None),
         Some(Commands::Reextract { .. }) => ("reextract".to_string(), "{}".to_string(), None),
+        Some(Commands::ValidateDataset { .. }) => ("validate-dataset".to_string(), "{}".to_string(), None),
         Some(Commands::Db { .. }) => ("db".to_string(), "{}".to_string(), None),
         None => ("help".to_string(), "{}".to_string(), None),
     }
@@ -2497,6 +2508,10 @@ fn main() {
             if failed > 0 {
                 process::exit(1);
             }
+        }
+        Some(Commands::ValidateDataset { dir, json: is_json }) => {
+            let exit_code = validate_dataset::run_validate_dataset(&dir, is_json);
+            process::exit(exit_code);
         }
         Some(Commands::Db { command }) => {
             let conn = match db::open_db() {
