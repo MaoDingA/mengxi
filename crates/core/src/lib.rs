@@ -18,6 +18,7 @@ pub mod lut_generation;
 pub mod project;
 pub mod python_bridge;
 pub mod search;
+pub mod segmentation;
 pub mod tag;
 pub mod tile_search;
 pub mod vector_index;
