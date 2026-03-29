@@ -142,6 +142,7 @@ pub fn register_project(
     conn: &Connection,
     name: &str,
     path: &Path,
+    tile_grid_size: u32,
     mut on_progress: impl FnMut(usize, usize, &str),
 ) -> Result<(Project, VariantBreakdown), ImportError> {
     // Check for existing project (resume support)
@@ -341,7 +342,7 @@ pub fn register_project(
                 // Downsample for feature extraction (NFR2: 4K → ~512, ~34x reduction)
                 let w = width.and_then(|v| if v > 0 { Some(v as usize) } else { None });
                 let h = height.and_then(|v| if v > 0 { Some(v as usize) } else { None });
-                let (downsampled_data, _, _) = match (w, h) {
+                let (downsampled_data, ds_w, ds_h) = match (w, h) {
                     (Some(w), Some(h)) => {
                         match downsample::downsample_rgb(&pixel_data, w, h, MAX_DIMENSION) {
                             Ok(data) => data,
@@ -396,6 +397,36 @@ pub fn register_project(
                                         eprintln!("Warning: failed to store grading features for {}: {}", filename, e);
                                     } else {
                                         breakdown.grading_feature_count += 1;
+
+                                        // Extract per-tile features if tile_grid_size configured
+                                        if tile_grid_size > 0 && ds_w > 0 && ds_h > 0 {
+                                            let fingerprint_id = conn.last_insert_rowid();
+                                            // Convert RGB → Oklab for tile extraction
+                                            match color_science::rgb_to_oklab_batch(&downsampled_data, &color_tag) {
+                                                Ok(oklab_data) => {
+                                                    match crate::feature_pipeline::extract_tile_features(
+                                                        &oklab_data, ds_w, ds_h, &color_tag,
+                                                        tile_grid_size as usize,
+                                                        color_science::GradingFeatures::HIST_BINS,
+                                                    ) {
+                                                        Ok(tiles) => {
+                                                            if let Err(e) = crate::db::store_fingerprint_tiles(
+                                                                &conn, fingerprint_id, &tiles,
+                                                                color_science::GradingFeatures::HIST_BINS,
+                                                            ) {
+                                                                eprintln!("Warning: failed to store tile features for {}: {}", filename, e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("Warning: tile feature extraction failed for {}: {}", filename, e);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Warning: tile Oklab conversion failed for {}: {}", filename, e);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -591,7 +622,7 @@ mod tests {
         create_test_files(&film_dir, &["shot001.dpx", "shot002.dpx", "ref.exr"]);
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, _breakdown) = register_project(&conn, "my_film", &film_dir, |_, _, _| {}).unwrap();
+        let (project, _breakdown) = register_project(&conn, "my_film", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.name, "my_film");
         assert_eq!(project.dpx_count, 2);
@@ -608,11 +639,11 @@ mod tests {
         dpx::create_synthetic_dpx(&film_dir.join("shot.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project1, _breakdown1) = register_project(&conn, "my_film", &film_dir, |_, _, _| {}).unwrap();
+        let (project1, _breakdown1) = register_project(&conn, "my_film", &film_dir, 0, |_, _, _| {}).unwrap();
         assert_eq!(project1.name, "my_film");
 
         // Re-import should resume, not error
-        let (project2, breakdown2) = register_project(&conn, "my_film", &film_dir, |_, _, _| {}).unwrap();
+        let (project2, breakdown2) = register_project(&conn, "my_film", &film_dir, 0, |_, _, _| {}).unwrap();
         assert_eq!(project2.id, project1.id); // Same project record
         assert_eq!(breakdown2.resumed_count, 1); // Skipped already-imported file
     }
@@ -620,7 +651,7 @@ mod tests {
     #[test]
     fn test_nonexistent_path_error() {
         let (_db_dir, conn) = setup_test_db();
-        let result = register_project(&conn, "test", Path::new("/nonexistent/path"), |_, _, _| {});
+        let result = register_project(&conn, "test", Path::new("/nonexistent/path"), 0, |_, _, _| {});
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -656,11 +687,11 @@ mod tests {
         create_test_files(&film_dir, &["shot.dpx"]);
 
         let (_db_dir, conn) = setup_test_db();
-        register_project(&conn, "film_a", &film_dir, |_, _, _| {}).unwrap();
+        register_project(&conn, "film_a", &film_dir, 0, |_, _, _| {}).unwrap();
 
         let film_dir2 = dir.path().join("film2");
         create_test_files(&film_dir2, &["ref.exr"]);
-        register_project(&conn, "film_b", &film_dir2, |_, _, _| {}).unwrap();
+        register_project(&conn, "film_b", &film_dir2, 0, |_, _, _| {}).unwrap();
 
         let projects = list_projects(&conn).unwrap();
         assert_eq!(projects.len(), 2);
@@ -680,7 +711,7 @@ mod tests {
         dpx::create_synthetic_dpx(&dpx_path, 1920, 1080, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "meta_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "meta_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 1);
         assert_eq!(breakdown.variants.len(), 1);
@@ -706,7 +737,7 @@ mod tests {
         fs::write(&corrupt_path, &data).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "corrupt_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "corrupt_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 2); // Both files are .dpx
         assert_eq!(breakdown.skipped_count, 1);
@@ -735,7 +766,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "mixed_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "mixed_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 3);
         assert_eq!(project.exr_count, 1);
@@ -760,7 +791,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 1920, 1080, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "exr_meta_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "exr_meta_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.exr_count, 1);
         assert_eq!(breakdown.variants.len(), 1);
@@ -784,7 +815,7 @@ mod tests {
         fs::write(&corrupt_path, vec![0xAB; 2048]).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "corrupt_exr_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "corrupt_exr_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.exr_count, 2); // Both files are .exr
         assert_eq!(breakdown.skipped_count, 1);
@@ -812,7 +843,7 @@ mod tests {
         }
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "exr_compress_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "exr_compress_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.exr_count, 5);
         assert_eq!(breakdown.skipped_count, 0);
@@ -840,7 +871,7 @@ mod tests {
         exr_format::create_synthetic_exr(&film_dir.join("c.exr"), 1920, 1080, exr::image::Encoding::SMALL_FAST_LOSSLESS).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "mixed_dpx_exr", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "mixed_dpx_exr", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 2);
         assert_eq!(project.exr_count, 3);
@@ -866,7 +897,7 @@ mod tests {
         fs::write(&corrupt_path, vec![0xAB; 2048]).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "corrupt_mov_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "corrupt_mov_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.mov_count, 1);
         assert_eq!(breakdown.skipped_count, 1);
@@ -893,7 +924,7 @@ mod tests {
         fs::write(&trunc_path, vec![0u8; 50]).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (project, breakdown) = register_project(&conn, "mixed_corrupt_test", &film_dir, |_, _, _| {}).unwrap();
+        let (project, breakdown) = register_project(&conn, "mixed_corrupt_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(project.dpx_count, 1);
         assert_eq!(project.mov_count, 2);
@@ -916,7 +947,7 @@ mod tests {
         dpx::create_synthetic_dpx(&dpx_path, 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "fp_dpx_test", &film_dir, |_, _, _| {}).unwrap();
+        let (_project, breakdown) = register_project(&conn, "fp_dpx_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 1);
 
@@ -949,7 +980,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "fp_exr_test", &film_dir, |_, _, _| {}).unwrap();
+        let (_project, breakdown) = register_project(&conn, "fp_exr_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 1);
 
@@ -974,7 +1005,7 @@ mod tests {
         dpx::create_synthetic_dpx(&video_path, 4, 4, 10, 6, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "tag_test", &film_dir, |_, _, _| {}).unwrap();
+        let (_project, breakdown) = register_project(&conn, "tag_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 2);
 
@@ -1001,7 +1032,7 @@ mod tests {
         exr_format::create_synthetic_exr(&exr_path, 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "lum_test", &film_dir, |_, _, _| {}).unwrap();
+        let (_project, breakdown) = register_project(&conn, "lum_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 1);
 
@@ -1035,7 +1066,7 @@ mod tests {
         exr_format::create_synthetic_exr(&film_dir.join("ref.exr"), 4, 4, exr::image::Encoding::UNCOMPRESSED).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (_project, breakdown) = register_project(&conn, "mixed_fp", &film_dir, |_, _, _| {}).unwrap();
+        let (_project, breakdown) = register_project(&conn, "mixed_fp", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(breakdown.fingerprint_count, 3);
 
@@ -1070,7 +1101,7 @@ mod tests {
         let (_db_dir, conn) = setup_test_db();
         let mut call_count = 0usize;
         let mut last_filename = String::new();
-        register_project(&conn, "progress_test", &film_dir, |_current, _total, filename| {
+        register_project(&conn, "progress_test", &film_dir, 0, |_current, _total, filename| {
             call_count += 1;
             last_filename = filename.to_string();
         }).unwrap();
@@ -1090,7 +1121,7 @@ mod tests {
         dpx::create_synthetic_dpx(&film_dir.join("shot002.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (proj1, bd1) = register_project(&conn, "resume_new", &film_dir, |_, _, _| {}).unwrap();
+        let (proj1, bd1) = register_project(&conn, "resume_new", &film_dir, 0, |_, _, _| {}).unwrap();
         assert_eq!(proj1.dpx_count, 2);
         assert_eq!(bd1.resumed_count, 0);
 
@@ -1098,7 +1129,7 @@ mod tests {
         dpx::create_synthetic_dpx(&film_dir.join("shot003.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let mut processed_count = 0usize;
-        let (proj2, bd2) = register_project(&conn, "resume_new", &film_dir, |_current, _total, _filename| {
+        let (proj2, bd2) = register_project(&conn, "resume_new", &film_dir, 0, |_current, _total, _filename| {
             processed_count += 1;
         }).unwrap();
 
@@ -1116,10 +1147,10 @@ mod tests {
         dpx::create_synthetic_dpx(&film_dir.join("shot.dpx"), 4, 4, 10, 2, DpxEndian::Big).unwrap();
 
         let (_db_dir, conn) = setup_test_db();
-        let (proj1, _bd1) = register_project(&conn, "idem_test", &film_dir, |_, _, _| {}).unwrap();
+        let (proj1, _bd1) = register_project(&conn, "idem_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         // Re-import same files — should resume everything
-        let (proj2, bd2) = register_project(&conn, "idem_test", &film_dir, |_, _, _| {}).unwrap();
+        let (proj2, bd2) = register_project(&conn, "idem_test", &film_dir, 0, |_, _, _| {}).unwrap();
 
         assert_eq!(proj2.id, proj1.id);
         assert_eq!(bd2.resumed_count, 1);

@@ -207,6 +207,7 @@ impl std::error::Error for ReextractError {}
 pub fn reextract_grading_features(
     conn: &rusqlite::Connection,
     fingerprint_id: i64,
+    tile_grid_size: u32,
 ) -> Result<ReextractResult, ReextractError> {
     // Look up file metadata: path, format, transfer, dimensions, project path
     let (file_path, format, transfer, width, height): (String, String, Option<String>, Option<i64>, Option<i64>) = conn
@@ -295,6 +296,45 @@ pub fn reextract_grading_features(
         return Ok(ReextractResult::Error(format!("REEXTRACT_DB_ERROR -- {}", e)));
     }
 
+    // Extract per-tile features if tile_grid_size configured
+    if tile_grid_size > 0 {
+        // Get downsampled data for tile extraction
+        let (ds_data, ds_w, ds_h) = if let (Some(w), Some(h)) = (w, h) {
+            match crate::downsample::downsample_rgb(&pixel_data, w, h, crate::downsample::MAX_DIMENSION) {
+                Ok((data, dw, dh)) => (data, dw, dh),
+                Err(_) => return Ok(ReextractResult::Reextracted),
+            }
+        } else {
+            // No dimensions — can't tile
+            return Ok(ReextractResult::Reextracted);
+        };
+
+        match crate::color_science::rgb_to_oklab_batch(&ds_data, &color_tag) {
+            Ok(oklab_data) => {
+                match crate::feature_pipeline::extract_tile_features(
+                    &oklab_data, ds_w, ds_h, &color_tag,
+                    tile_grid_size as usize,
+                    crate::color_science::GradingFeatures::HIST_BINS,
+                ) {
+                    Ok(tiles) => {
+                        if let Err(e) = crate::db::store_fingerprint_tiles(
+                            conn, fingerprint_id, &tiles,
+                            crate::color_science::GradingFeatures::HIST_BINS,
+                        ) {
+                            eprintln!("Warning: failed to store tile features during re-extraction: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: tile feature extraction failed during re-extraction: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: tile Oklab conversion failed during re-extraction: {}", e);
+            }
+        }
+    }
+
     Ok(ReextractResult::Reextracted)
 }
 
@@ -377,6 +417,7 @@ pub struct BatchReextractResult {
 pub fn batch_reextract_grading_features<F>(
     conn: &rusqlite::Connection,
     fingerprint_ids: &[(i64, String)],
+    tile_grid_size: u32,
     mut progress: F,
 ) -> Result<BatchReextractResult, ReextractError>
 where
@@ -395,7 +436,7 @@ where
 
     for (i, (fp_id, fp_path)) in fingerprint_ids.iter().enumerate() {
         progress(i, total, fp_path);
-        match reextract_grading_features(conn, *fp_id) {
+        match reextract_grading_features(conn, *fp_id, tile_grid_size) {
             Ok(ReextractResult::Reextracted) => result.reextracted += 1,
             Ok(ReextractResult::Skipped(reason)) => {
                 result.skipped += 1;
@@ -557,7 +598,7 @@ mod tests {
         conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'clip.mov', 'mov')", []).unwrap();
         conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'stale')", []).unwrap();
 
-        let result = reextract_grading_features(&conn, 1).unwrap();
+        let result = reextract_grading_features(&conn, 1, 0).unwrap();
         assert_eq!(result, ReextractResult::Skipped("MOV files have no pixel data".to_string()));
     }
 
@@ -568,14 +609,14 @@ mod tests {
         conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'missing.dpx', 'dpx')", []).unwrap();
         conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'stale')", []).unwrap();
 
-        let result = reextract_grading_features(&conn, 1).unwrap();
+        let result = reextract_grading_features(&conn, 1, 0).unwrap();
         assert!(matches!(result, ReextractResult::Skipped(reason) if reason.contains("source file not found")));
     }
 
     #[test]
     fn test_reextract_nonexistent_fingerprint_errors() {
         let conn = setup_test_db();
-        let result = reextract_grading_features(&conn, 999);
+        let result = reextract_grading_features(&conn, 999, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("REEXTRACT_DB_ERROR"));
     }
@@ -587,7 +628,7 @@ mod tests {
         conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'img.ari', 'ari')", []).unwrap();
         conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'stale')", []).unwrap();
 
-        let result = reextract_grading_features(&conn, 1).unwrap();
+        let result = reextract_grading_features(&conn, 1, 0).unwrap();
         assert!(matches!(result, ReextractResult::Skipped(reason) if reason.contains("unsupported format")));
     }
 

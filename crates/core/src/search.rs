@@ -1182,7 +1182,7 @@ fn hybrid_search_impl(
         if is_stale {
             if recomputation_count < MAX_RECOMPUTATIONS_PER_SEARCH {
                 recomputation_count += 1;
-                match crate::fingerprint::reextract_grading_features(conn, _fp_id) {
+                match crate::fingerprint::reextract_grading_features(conn, _fp_id, 0) {
                     Ok(crate::fingerprint::ReextractResult::Reextracted) => {
                         // Re-read updated BLOBs from DB for correct scoring
                         if let Ok((new_hl, new_ha, new_hb, new_m, new_bins)) = conn.query_row(

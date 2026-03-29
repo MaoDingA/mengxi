@@ -438,8 +438,11 @@ fn main() {
 
             let path = Path::new(&project_path);
 
+            let cfg = config::load_or_create_config().unwrap_or_default();
+            let tile_grid_size = cfg.import.tile_grid_size;
+
             match db::open_db() {
-                Ok(conn) => match project::register_project(&conn, &project_name, &path, |current, total, filename| {
+                Ok(conn) => match project::register_project(&conn, &project_name, &path, tile_grid_size, |current, total, filename| {
                     let percent = if total == 0 { 100 } else { (current * 100) / total };
                     let filled = (percent / 5).min(20);
                     let empty = 20 - filled;
@@ -2747,9 +2750,11 @@ fn main() {
             let mut failed = 0usize;
             let mut failures: Vec<serde_json::Value> = Vec::new();
 
+            let reextract_cfg = config::load_or_create_config().unwrap_or_default();
             match mengxi_core::fingerprint::batch_reextract_grading_features(
                 &conn,
                 &fps,
+                reextract_cfg.import.tile_grid_size,
                 |_i, total, path| {
                     eprintln!("re-extracting {} ({}/{})", path, _i + 1, total);
                 },
