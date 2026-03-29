@@ -179,13 +179,13 @@ development_status:
   epic-2-v3: in-progress
   # Story 2.1 implementation completed: 2026-03-29
   2-1-hnsw-vector-index: done
-  2-2-batch-embedding-generation: backlog
-  2-3-batch-reextraction-transaction-optimization: backlog
+  2-2-batch-embedding-generation: done
+  2-3-batch-reextraction-transaction-optimization: done
 
   # Epic 3: Result Comparison & Analysis (P2)
-  epic-3-v3: backlog
-  3-1-feature-comparison-view: backlog
-  3-2-cross-project-consistency-report: backlog
+  epic-3-v3: done
+  3-1-feature-comparison-view: done
+  3-2-cross-project-consistency-report: done
 
   # Epic 4: Advanced Color Processing (P2)
   epic-4-v3: backlog
