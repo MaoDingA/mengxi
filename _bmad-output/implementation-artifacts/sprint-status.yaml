@@ -1,0 +1,188 @@
+# generated: 2026-03-19
+# last_updated: 2026-03-23
+# project: moonbit-v2
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+#
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: "2026-03-19"
+last_updated: "2026-03-27"
+# Story 3.4 implementation completed: 2026-03-26
+# Story 3.1 implementation completed: 2026-03-25
+# Story 2.3 creation completed: 2026-03-24
+project: moonbit-v2
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # === v1 (moonbit) — All Done ===
+  # Epic 1: CLI Foundation & Project Import
+  epic-1: done
+  1-1-cli-skeleton-with-configuration-management: review
+  1-2-embedded-database-with-basic-project-import: review
+  1-3-dpx-format-decoding: review
+  1-4-exr-format-decoding: review
+  1-5-mov-proxy-decoding-and-keyframe-extraction: review
+  1-6-moonbit-ffi-bridge-and-color-fingerprint-extraction: done
+  1-7-import-progress-reporting-and-robustness: review
+  epic-1-retrospective: done
+
+  # Epic 2: LUT Generation & Color Science
+  epic-2: done
+  2-1-aces-color-science-engine: done
+  2-2-multi-format-lut-file-parsing-and-serialization: done
+  2-3-lut-generation-and-export-command: done
+  2-4-lut-diff-comparison-and-dependency-tracking: done
+  epic-2-retrospective: done
+
+  # Epic 3: Color Style Search
+  epic-3: done
+  3-1-histogram-based-search-engine: done
+  3-2-python-ai-subprocess-and-embedding-generation: done
+  3-3-image-based-similarity-search-with-embeddings: done
+  3-4-search-feedback-tag-search-and-fingerprint-display: done
+  epic-3-retrospective: done
+
+  # Epic 4: AI-Enhanced Tags & Calibration
+  epic-4: done
+  4-1-ai-tag-generation: done
+  4-2-manual-tag-management: done
+  4-3-tag-calibration-learning-loop: done
+  epic-4-retrospective: done
+
+  # Epic 5: Usage Analytics & Reporting
+  epic-5: done
+  5-1-session-tracking-and-time-measurement: done
+  5-2-search-hit-rate-and-calibration-metrics: done
+  5-3-statistics-display-and-reporting: done
+  epic-5-retrospective: done
+
+  # === v2 (moonbit-v2) — Algorithm Enhancement ===
+  # Epic 1: Oklab Color Science Foundation & Validation
+  epic-1-v2: done
+  # Story 1.1 created and marked ready-for-dev: 2026-03-23
+   # Story 1.1 implementation completed: 2026-03-23
+  # Story 1.1 review completed: 2026-03-23
+  1-1-srgb-oklab-bidirectional-conversion: done
+  1-2-acescct-oklab-bidirectional-conversion: done
+  1-3-linear-oklab-bidirectional-conversion: done
+  # Story 1.4 created and marked ready-for-dev: 2026-03-23
+  # Story 1.4 implementation completed: 2026-03-23
+  # Story 1.4 review completed: 2026-03-23
+  1-4-mengxi-validate-color-precision-command: done
+  # Story 1.5 created and marked ready-for-dev: 2026-03-24
+  # Story 1.5 implementation completed: 2026-03-24
+  # Story 1.5 review completed: 2026-03-24
+  1-5-mengxi-validate-full-numerical-safety-tests: done
+  epic-1-v2-retrospective: done
+
+  # Epic 2: Grading Feature Extraction & Storage
+  epic-2-v2: done
+  # Story 2.1 implementation completed: 2026-03-24
+  # Story 2.1 review completed: 2026-03-24
+  2-1-oklab-histogram-and-color-moments-extraction: done
+  # Story 2.2 created and marked ready-for-dev: 2026-03-24
+  # Story 2.2 implementation completed: 2026-03-24
+  # Story 2.2 review completed: 2026-03-24
+  2-2-ffi-compound-interface-and-blob-serialization: done
+  # Story 2.3 created and marked ready-for-dev: 2026-03-24
+  # Story 2.3 implementation started: 2026-03-24
+  # Story 2.3 implementation completed: 2026-03-24
+  # Story 2.3 review completed: 2026-03-24
+  2-3-downsampling-and-import-pipeline-integration: done
+  # Story 2.4 implementation completed: 2026-03-24
+  # Story 2.4 implementation completed: 2026-03-24
+  # Story 2.4 review completed: 2026-03-24
+  2-4-db-migration-and-stale-marking: done
+  epic-2-v2-retrospective: done
+
+  # Epic 3: Hybrid Scoring Search Engine
+  # Story 3.1 created and marked ready-for-dev: 2026-03-25
+  epic-3-v2: done
+  3-1-bhattacharyya-distance-candidate-ranking: review
+  # Story 3.2 implementation started: 2026-03-25
+  # Story 3.2 implementation completed: 2026-03-25
+  # Story 3.2 review completed: 2026-03-26
+  3-2-hybrid-scoring-engine-core: done
+  # Story 3.3 implementation started: 2026-03-26
+  # Story 3.3 implementation completed: 2026-03-26
+  # Story 3.3 review completed: 2026-03-26
+  3-3-search-mode-cli-parameters-and-score-breakdown: done
+  # Story 3.4 created and marked ready-for-dev: 2026-03-26
+  # Story 3.4 implementation started: 2026-03-26
+  # Story 3.4 implementation completed: 2026-03-26
+  # Story 3.4 review completed: 2026-03-26
+  3-4-color-space-gap-warnings: done
+  # Story 3.5 created and marked ready-for-dev: 2026-03-26
+  # Story 3.5 implementation started: 2026-03-26
+  # Story 3.5 implementation completed: 2026-03-26
+  3-5-stale-fingerprint-lazy-recomputation: done
+  epic-3-v2-retrospective: optional
+
+  # Epic 4: Human-Readable Search Result Presentation
+  epic-4-v2: done
+  4-1-grading-style-feature-translation-rules: done
+  4-2-low-result-count-explanation: done
+  epic-4-v2-retrospective: optional
+
+  # Epic 5: Configuration System & Tooling Polish
+  epic-5-v2: done
+  5-1-project-level-config-cascade-and-weight-validation: done
+  5-2-json-output-and-stdout-stderr-separation: backlog
+  5-3-evaluation-dataset-format-validation: backlog
+  # Story 5.4 implementation completed: 2026-03-27
+  5-4-feature-re-extraction: done
+  epic-5-v2-retrospective: optional
+
+  # === v3 (moonbit-v3) — Scale & Intelligence ===
+  # Epic 1: Algorithm Parameterization & Code Quality (P0)
+  epic-1-v3: backlog
+  1-1-configurable-histogram-bins: backlog
+  1-2-feature-extraction-pipeline-refactoring: backlog
+  1-3-configurable-grading-style-vocabulary: backlog
+
+  # Epic 2: Search Performance at Scale (P1)
+  epic-2-v3: backlog
+  2-1-hnsw-vector-index: backlog
+  2-2-batch-embedding-generation: backlog
+  2-3-batch-reextraction-transaction-optimization: backlog
+
+  # Epic 3: Result Comparison & Analysis (P2)
+  epic-3-v3: backlog
+  3-1-feature-comparison-view: backlog
+  3-2-cross-project-consistency-report: backlog
+
+  # Epic 4: Advanced Color Processing (P2)
+  epic-4-v3: backlog
+  4-1-soft-clamp-histogram-edge-handling: backlog
+  4-2-extended-color-moments-skewness-kurtosis: backlog
