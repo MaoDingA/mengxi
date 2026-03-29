@@ -598,7 +598,7 @@ fn main() {
                                     "message": message,
                                 }
                             });
-                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
                             process::exit(1);
                         } else {
                             match e {
@@ -628,7 +628,7 @@ fn main() {
                                 "message": "Failed to initialize database",
                             }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: IMPORT_DB_INIT_FAILED — {e}");
                     }
@@ -666,7 +666,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "SEARCH_INVALID_LIMIT", "message": "--limit must be at least 1" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: SEARCH_INVALID_LIMIT -- --limit must be at least 1");
                     }
@@ -693,7 +693,7 @@ fn main() {
                                             "status": "error",
                                             "error": { "code": "CONFIG_VALIDATION_ERROR", "message": e }
                                         });
-                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                     } else {
                                         eprintln!("Error: {}", e);
                                     }
@@ -724,7 +724,7 @@ fn main() {
                                             "status": "error",
                                             "error": { "code": "SEARCH_WEIGHT_ERROR", "message": e }
                                         });
-                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                     } else {
                                         eprintln!("Error: {}", e);
                                     }
@@ -741,7 +741,7 @@ fn main() {
                                             "status": "error",
                                             "error": { "code": "SEARCH_IMAGE_ERROR", "message": e }
                                         });
-                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                     } else {
                                         eprintln!("Error: {}", e);
                                     }
@@ -837,7 +837,7 @@ fn main() {
                                             "status": "error",
                                             "error": { "code": "SEARCH_HYBRID_ERROR", "message": e.to_string() }
                                         });
-                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                     } else {
                                         eprintln!("Error: {}", e);
                                     }
@@ -931,7 +931,7 @@ fn main() {
                                         "status": "error",
                                         "error": { "code": "SEARCH_IMAGE_ERROR", "message": e.to_string() }
                                     });
-                                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                 } else {
                                     eprintln!("Error: {}", e);
                                 }
@@ -946,7 +946,7 @@ fn main() {
                                 "status": "error",
                                 "error": { "code": "SEARCH_DB_ERROR", "message": e.to_string() }
                             });
-                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
                         } else {
                             eprintln!("Error: SEARCH_DB_ERROR -- {}", e);
                         }
@@ -964,7 +964,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "SEARCH_INVALID_LIMIT", "message": "--limit must be at least 1" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: SEARCH_INVALID_LIMIT -- --limit must be at least 1");
                     }
@@ -1006,7 +1006,7 @@ fn main() {
                                         "status": "error",
                                         "error": { "code": "SEARCH_TAG_ERROR", "message": e.to_string() }
                                     });
-                                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                 } else {
                                     eprintln!("Error: {}", e);
                                 }
@@ -1020,7 +1020,7 @@ fn main() {
                                 "status": "error",
                                 "error": { "code": "SEARCH_DB_ERROR", "message": e.to_string() }
                             });
-                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
                         } else {
                             eprintln!("Error: SEARCH_DB_ERROR -- {}", e);
                         }
@@ -1040,7 +1040,7 @@ fn main() {
                         "status": "error",
                         "error": { "code": "SEARCH_INVALID_LIMIT", "message": "--limit must be at least 1" }
                     });
-                    eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
                 } else {
                     eprintln!("Error: SEARCH_INVALID_LIMIT -- --limit must be at least 1");
                 }
@@ -1150,7 +1150,7 @@ fn main() {
                                     "status": "error",
                                     "error": { "code": "SEARCH_DB_ERROR", "message": e.to_string() }
                                 });
-                                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
                             } else {
                                 eprintln!("Error: {}", e);
                             }
@@ -1164,7 +1164,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "SEARCH_DB_INIT_FAILED", "message": e.to_string() }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: SEARCH_DB_INIT_FAILED -- {e}");
                     }
@@ -1191,7 +1191,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "EXPORT_MISSING_ARG", "message": "--result <id> is required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: EXPORT_MISSING_ARG -- --result <id> is required");
                     }
@@ -1208,7 +1208,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "EXPORT_MISSING_ARG", "message": "--format is required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: EXPORT_MISSING_ARG -- --format is required");
                     }
@@ -1240,7 +1240,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "EXPORT_MISSING_ARG", "message": "--output is required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: EXPORT_MISSING_ARG -- --output is required");
                     }
@@ -1396,7 +1396,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "EXPORT_DB_INIT_FAILED", "message": "Failed to initialize database" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: EXPORT_DB_INIT_FAILED -- {e}");
                     }
@@ -1488,7 +1488,7 @@ fn main() {
                                             "status": "error",
                                             "error": { "code": "INFO_NOT_FOUND", "message": e.to_string() }
                                         });
-                                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                                     } else {
                                         eprintln!("Error: {}", e);
                                     }
@@ -1502,7 +1502,7 @@ fn main() {
                                     "status": "error",
                                     "error": { "code": "INFO_DB_ERROR", "message": e.to_string() }
                                 });
-                                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
                             } else {
                                 eprintln!("Error: INFO_DB_ERROR -- {}", e);
                             }
@@ -1516,7 +1516,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "INFO_MISSING_ARG", "message": "--project and --file are required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: INFO_MISSING_ARG -- --project and --file are required");
                     }
@@ -1879,7 +1879,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "LUTDIFF_MISSING_ARG", "message": "<lut_a> is required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: LUTDIFF_MISSING_ARG -- <lut_a> is required");
                     }
@@ -1914,7 +1914,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "LUTDIFF_MISSING_ARG", "message": "<lut_b> is required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: LUTDIFF_MISSING_ARG -- <lut_b> is required");
                     }
@@ -1964,7 +1964,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": format!("{}", e).split(" -- ").next().unwrap_or("LUTDIFF_ERROR"), "message": format!("{}", e) }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: {}", e);
                     }
@@ -2003,7 +2003,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "LUTDEP_MISSING_ARG", "message": "--lut <path> is required" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: LUTDEP_MISSING_ARG -- --lut <path> is required");
                     }
@@ -2076,7 +2076,7 @@ fn main() {
                                     "status": "error",
                                     "error": { "code": "LUTDEP_DB_ERROR", "message": e.to_string() }
                                 });
-                                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                                println!("{}", serde_json::to_string_pretty(&output).unwrap());
                             } else {
                                 eprintln!("Error: {}", e);
                             }
@@ -2090,7 +2090,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "LUTDEP_DB_ERROR", "message": "Failed to initialize database" }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: LUTDEP_DB_ERROR -- {e}");
                     }

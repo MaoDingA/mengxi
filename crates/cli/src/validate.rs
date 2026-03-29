@@ -169,6 +169,7 @@ pub fn run_validate(is_json: bool, full: bool) -> i32 {
     if !color_science::is_aces_ffi_available() {
         if is_json {
             let output = serde_json::json!({
+                "status": "error",
                 "error": { "code": "VALIDATION_FFI_UNAVAILABLE", "message": "MoonBit FFI library not linked" }
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -307,7 +308,11 @@ pub fn run_validate(is_json: bool, full: bool) -> i32 {
     };
 
     if is_json {
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        let mut json_out = serde_json::Map::new();
+        json_out.insert("status".to_string(), serde_json::json!(if all_passed { "ok" } else { "error" }));
+        json_out.insert("results".to_string(), serde_json::to_value(&output.results).unwrap());
+        json_out.insert("summary".to_string(), serde_json::to_value(&output.summary).unwrap());
+        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(json_out)).unwrap());
     } else {
         let _ = format_text(&mut std::io::stdout(), &output, full);
     }
