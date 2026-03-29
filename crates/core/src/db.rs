@@ -356,6 +356,91 @@ pub fn db_run_query(
     Ok((col_names, rows))
 }
 
+// ---------------------------------------------------------------------------
+// Fingerprint tile operations
+// ---------------------------------------------------------------------------
+
+/// Store per-tile grading features for a fingerprint.
+/// Deletes any existing tiles for this fingerprint first (upsert semantics).
+pub fn store_fingerprint_tiles(
+    conn: &Connection,
+    fingerprint_id: i64,
+    tiles: &[crate::feature_pipeline::TileFeatures],
+    hist_bins: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Clear existing tiles
+    conn.execute(
+        "DELETE FROM fingerprint_tiles WHERE fingerprint_id = ?1",
+        rusqlite::params![fingerprint_id],
+    )?;
+
+    for tile in tiles {
+        let features = &tile.features;
+        conn.execute(
+            "INSERT INTO fingerprint_tiles (fingerprint_id, tile_row, tile_col, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, hist_bins)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                fingerprint_id,
+                tile.row as i64,
+                tile.col as i64,
+                features.hist_l_blob(),
+                features.hist_a_blob(),
+                features.hist_b_blob(),
+                features.moments_blob(),
+                hist_bins as i64,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Load all tiles for a given fingerprint.
+/// Returns a vector of (tile_row, tile_col, GradingFeatures).
+pub fn load_fingerprint_tiles(
+    conn: &Connection,
+    fingerprint_id: i64,
+) -> Result<Vec<(usize, usize, crate::grading_features::GradingFeatures)>, Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare(
+        "SELECT tile_row, tile_col, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, hist_bins
+         FROM fingerprint_tiles
+         WHERE fingerprint_id = ?1
+         ORDER BY tile_row, tile_col",
+    )?;
+
+    let rows = stmt.query_map(rusqlite::params![fingerprint_id], |row| {
+        let tile_row: i64 = row.get(0)?;
+        let tile_col: i64 = row.get(1)?;
+        let hist_l: Vec<u8> = row.get(2)?;
+        let hist_a: Vec<u8> = row.get(3)?;
+        let hist_b: Vec<u8> = row.get(4)?;
+        let moments: Vec<u8> = row.get(5)?;
+        let hist_bins: i64 = row.get(6)?;
+        Ok((tile_row, tile_col, hist_l, hist_a, hist_b, moments, hist_bins))
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let (tile_row, tile_col, hist_l, hist_a, hist_b, moments, hist_bins) = row?;
+        let features = crate::grading_features::GradingFeatures::from_separate_blobs(
+            &hist_l, &hist_a, &hist_b, &moments, hist_bins as usize,
+        ).map_err(|e| format!("TILE_DECODE_ERROR -- {}", e))?;
+        result.push((tile_row as usize, tile_col as usize, features));
+    }
+    Ok(result)
+}
+
+/// Delete all tiles for a given fingerprint.
+pub fn delete_fingerprint_tiles(
+    conn: &Connection,
+    fingerprint_id: i64,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let count = conn.execute(
+        "DELETE FROM fingerprint_tiles WHERE fingerprint_id = ?1",
+        rusqlite::params![fingerprint_id],
+    )?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1111,5 +1196,123 @@ mod tests {
             .query_row("SELECT grading_features FROM fingerprints WHERE id = 1", [], |row| row.get(0))
             .unwrap();
         assert_eq!(grading_features.len(), 1584); // version 18 format: 3*64*8 + 6*8
+    }
+
+    // --- Fingerprint tile tests (Story 1.2) ---
+
+    /// Helper to create a minimal DB with a fingerprint row for tile tests.
+    fn setup_test_db_with_fingerprint() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Insert minimal project → file → fingerprint chain
+        conn.execute("INSERT INTO projects (name, path) VALUES ('test_project', '/tmp/test')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'test.dpx', 'dpx')", []).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, grading_features)
+             VALUES (1, '[]', '[]', '[]', 0.5, 0.2, 'linear', X'00')",
+            [],
+        ).unwrap();
+
+        (dir, conn)
+    }
+
+    fn make_test_tile_features(row: usize, col: usize) -> crate::feature_pipeline::TileFeatures {
+        use crate::grading_features::GradingFeatures;
+        crate::feature_pipeline::TileFeatures {
+            row,
+            col,
+            features: GradingFeatures {
+                hist_l: vec![0.5; 64],
+                hist_a: vec![0.1; 64],
+                hist_b: vec![0.2; 64],
+                moments: [0.5, 0.2, 0.1, -0.3, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            },
+        }
+    }
+
+    #[test]
+    fn test_store_and_load_fingerprint_tiles() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+
+        let tiles = vec![
+            make_test_tile_features(0, 0),
+            make_test_tile_features(0, 1),
+            make_test_tile_features(1, 0),
+            make_test_tile_features(1, 1),
+        ];
+
+        store_fingerprint_tiles(&conn, 1, &tiles, 64).unwrap();
+
+        let loaded = load_fingerprint_tiles(&conn, 1).unwrap();
+        assert_eq!(loaded.len(), 4);
+
+        // Check positions are preserved
+        assert_eq!(loaded[0].0, 0); // row
+        assert_eq!(loaded[0].1, 0); // col
+        assert_eq!(loaded[3].0, 1);
+        assert_eq!(loaded[3].1, 1);
+
+        // Check features are preserved
+        for (_, _, features) in &loaded {
+            assert_eq!(features.hist_l.len(), 64);
+            assert!((features.hist_l[0] - 0.5).abs() < 1e-10);
+            assert!((features.moments[0] - 0.5).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_store_tiles_upsert_replaces_existing() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+
+        // First insert
+        let tiles_v1 = vec![make_test_tile_features(0, 0)];
+        store_fingerprint_tiles(&conn, 1, &tiles_v1, 64).unwrap();
+        let loaded_v1 = load_fingerprint_tiles(&conn, 1).unwrap();
+        assert_eq!(loaded_v1.len(), 1);
+
+        // Upsert with different tiles
+        let tiles_v2 = vec![
+            make_test_tile_features(0, 0),
+            make_test_tile_features(0, 1),
+        ];
+        store_fingerprint_tiles(&conn, 1, &tiles_v2, 64).unwrap();
+        let loaded_v2 = load_fingerprint_tiles(&conn, 1).unwrap();
+        assert_eq!(loaded_v2.len(), 2);
+    }
+
+    #[test]
+    fn test_load_tiles_empty_for_nonexistent_fingerprint() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+
+        let loaded = load_fingerprint_tiles(&conn, 999).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_fingerprint_tiles() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+
+        let tiles = vec![
+            make_test_tile_features(0, 0),
+            make_test_tile_features(0, 1),
+        ];
+        store_fingerprint_tiles(&conn, 1, &tiles, 64).unwrap();
+
+        let deleted = delete_fingerprint_tiles(&conn, 1).unwrap();
+        assert_eq!(deleted, 2);
+
+        let loaded = load_fingerprint_tiles(&conn, 1).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_tiles_nonexistent_fingerprint() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+        let deleted = delete_fingerprint_tiles(&conn, 999).unwrap();
+        assert_eq!(deleted, 0);
     }
 }
