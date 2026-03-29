@@ -39,6 +39,47 @@ impl GradingFeatures {
         3 * self.hist_bins() * 8 + Self::MOMENTS_COUNT * 8
     }
 
+    /// Compute the element-wise average of multiple GradingFeatures.
+    ///
+    /// Returns `None` if the input is empty or features have different bin counts.
+    pub fn average(features: &[&GradingFeatures]) -> Option<GradingFeatures> {
+        if features.is_empty() {
+            return None;
+        }
+        let bins = features[0].hist_bins();
+        for f in &features[1..] {
+            if f.hist_bins() != bins {
+                return None;
+            }
+        }
+
+        let n = features.len() as f64;
+        let avg_hist = |channel: fn(&GradingFeatures) -> &Vec<f64>| {
+            let mut result = vec![0.0; bins];
+            for f in features {
+                let h = channel(f);
+                for (i, v) in h.iter().enumerate() {
+                    result[i] += v / n;
+                }
+            }
+            result
+        };
+
+        let mut avg_moments = [0.0; 12];
+        for f in features {
+            for (i, &v) in f.moments.iter().enumerate() {
+                avg_moments[i] += v / n;
+            }
+        }
+
+        Some(GradingFeatures {
+            hist_l: avg_hist(|f| &f.hist_l),
+            hist_a: avg_hist(|f| &f.hist_a),
+            hist_b: avg_hist(|f| &f.hist_b),
+            moments: avg_moments,
+        })
+    }
+
     /// Serialize grading features to a little-endian BLOB.
     ///
     /// Layout: hist_l (bins*8 bytes) + hist_a (bins*8 bytes) + hist_b (bins*8 bytes) + moments (96 bytes).

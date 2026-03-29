@@ -63,6 +63,63 @@ pub fn build_spatial_pyramid(
     Ok(SpatialPyramid { levels })
 }
 
+/// Build a spatial pyramid from pre-extracted tile features stored in DB.
+///
+/// The finest level uses the actual tile grid (e.g., 4x4). Coarser levels
+/// are built by averaging tiles from the finest level:
+/// - Level 0 (1x1): average all tiles → global features
+/// - Level 1 (2x2): average 2x2 blocks from the finest level
+/// - Level 2 (NxN): original tile features
+pub fn build_spatial_pyramid_from_tiles(
+    tiles: &[(usize, usize, crate::grading_features::GradingFeatures)],
+) -> SpatialPyramid {
+    // Determine the finest grid size from tile data
+    let max_row = tiles.iter().map(|(r, _, _)| *r).max().unwrap_or(0);
+    let max_col = tiles.iter().map(|(_, c, _)| *c).max().unwrap_or(0);
+    let finest_grid = (max_row + 1).max(max_col + 1);
+
+    let mut levels = Vec::new();
+
+    // Build each level by aggregating from the finest level
+    for &target_grid in &[1, 2, finest_grid] {
+        if target_grid > finest_grid {
+            continue;
+        }
+
+        let scale = finest_grid / target_grid;
+        let mut level_tiles = Vec::new();
+
+        for tr in 0..target_grid {
+            for tc in 0..target_grid {
+                // Collect tiles in this block
+                let block: Vec<&crate::grading_features::GradingFeatures> = tiles
+                    .iter()
+                    .filter(|(r, c, _)| {
+                        *r >= tr * scale && *r < (tr + 1) * scale
+                            && *c >= tc * scale && *c < (tc + 1) * scale
+                    })
+                    .map(|(_, _, f)| f)
+                    .collect();
+
+                if let Some(avg) = crate::grading_features::GradingFeatures::average(&block) {
+                    level_tiles.push(TileFeatures {
+                        row: tr,
+                        col: tc,
+                        features: avg,
+                    });
+                }
+            }
+        }
+
+        levels.push(PyramidLevel {
+            grid_size: target_grid,
+            tiles: level_tiles,
+        });
+    }
+
+    SpatialPyramid { levels }
+}
+
 /// Serialize a spatial pyramid into a single BLOB.
 ///
 /// Layout:
@@ -293,5 +350,46 @@ mod tests {
             levels.push(PyramidLevel { grid_size: gs, tiles });
         }
         SpatialPyramid { levels }
+    }
+
+    #[test]
+    fn test_build_pyramid_from_tiles() {
+        // Create a 4x4 grid of tiles
+        let tiles: Vec<(usize, usize, GradingFeatures)> = (0..4)
+            .flat_map(|r| (0..4).map(move |c| (r, c, make_features(0.5))))
+            .collect();
+
+        let pyramid = build_spatial_pyramid_from_tiles(&tiles);
+        // Should have 3 levels: 1x1, 2x2, 4x4
+        assert_eq!(pyramid.levels.len(), 3);
+        // Level 0 (1x1): 1 tile
+        assert_eq!(pyramid.levels[0].grid_size, 1);
+        assert_eq!(pyramid.levels[0].tiles.len(), 1);
+        // Level 1 (2x2): 4 tiles
+        assert_eq!(pyramid.levels[1].grid_size, 2);
+        assert_eq!(pyramid.levels[1].tiles.len(), 4);
+        // Level 2 (4x4): 16 tiles
+        assert_eq!(pyramid.levels[2].grid_size, 4);
+        assert_eq!(pyramid.levels[2].tiles.len(), 16);
+    }
+
+    #[test]
+    fn test_build_pyramid_from_tiles_comparison() {
+        // Two sets of tiles with different features
+        let tiles_a: Vec<(usize, usize, GradingFeatures)> = (0..4)
+            .flat_map(|r| (0..4).map(move |c| (r, c, make_features_peaked(10))))
+            .collect();
+        let tiles_b: Vec<(usize, usize, GradingFeatures)> = (0..4)
+            .flat_map(|r| (0..4).map(move |c| (r, c, make_features_peaked(50))))
+            .collect();
+
+        let pyr_a = build_spatial_pyramid_from_tiles(&tiles_a);
+        let pyr_a2 = build_spatial_pyramid_from_tiles(&tiles_a);
+        let pyr_b = build_spatial_pyramid_from_tiles(&tiles_b);
+
+        let same = compare_pyramids(&pyr_a, &pyr_a2);
+        let diff = compare_pyramids(&pyr_a, &pyr_b);
+
+        assert!(same.score > diff.score, "identical pyramid should score higher: {} vs {}", same.score, diff.score);
     }
 }

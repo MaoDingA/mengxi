@@ -77,6 +77,8 @@ pub struct SearchOptions {
     pub project: Option<String>,
     /// Maximum number of results to return.
     pub limit: usize,
+    /// Use spatial pyramid matching for grading score instead of flat Bhattacharyya.
+    pub use_pyramid: bool,
 }
 
 /// Detailed fingerprint information for display.
@@ -1069,6 +1071,18 @@ fn hybrid_search_impl(
             |row| row.get::<_, i64>(0),
         )
         .ok();
+
+    // Load query pyramid tiles (if pyramid mode enabled)
+    let query_pyramid = if options.use_pyramid {
+        query_fp_id.and_then(|fp_id| {
+            let tiles = crate::db::load_fingerprint_tiles(conn, fp_id).ok()?;
+            if tiles.is_empty() { return None; }
+            Some(crate::spatial_pyramid::build_spatial_pyramid_from_tiles(&tiles))
+        })
+    } else {
+        None
+    };
+
     let query_tags: Vec<String> = match query_fp_id {
         Some(fp_id) => {
             let sql = "SELECT t.tag FROM tags t WHERE t.fingerprint_id = ?1";
@@ -1232,11 +1246,29 @@ fn hybrid_search_impl(
         };
 
         // Compute grading similarity
-        let grading_sim = match bhattacharyya_distance(&query_features, &candidate_features) {
-            Ok(score) => Some(score),
-            Err(e) => {
-                eprintln!("warning: skipping candidate {} ({}): bhattacharyya_distance failed: {}", project_name, filename, e);
-                continue;
+        let grading_sim = if options.use_pyramid && query_pyramid.is_some() {
+            // Pyramid mode: use spatial pyramid comparison
+            let query_pyr = query_pyramid.as_ref().unwrap();
+            let candidate_tiles = crate::db::load_fingerprint_tiles(conn, _fp_id).unwrap_or_default();
+            if candidate_tiles.is_empty() {
+                // Fallback to flat grading when candidate has no tiles
+                match bhattacharyya_distance(&query_features, &candidate_features) {
+                    Ok(score) => Some(score),
+                    Err(_) => continue,
+                }
+            } else {
+                let candidate_pyr = crate::spatial_pyramid::build_spatial_pyramid_from_tiles(&candidate_tiles);
+                let result = crate::spatial_pyramid::compare_pyramids(query_pyr, &candidate_pyr);
+                Some(result.score)
+            }
+        } else {
+            // Standard flat Bhattacharyya
+            match bhattacharyya_distance(&query_features, &candidate_features) {
+                Ok(score) => Some(score),
+                Err(e) => {
+                    eprintln!("warning: skipping candidate {} ({}): bhattacharyya_distance failed: {}", project_name, filename, e);
+                    continue;
+                }
             }
         };
 
@@ -1409,6 +1441,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 5,
+                use_pyramid: false,
             },
         );
         assert!(result.is_err());
@@ -1430,6 +1463,7 @@ mod tests {
             &SearchOptions {
                 project: Some("test".to_string()),
                 limit: 5,
+                use_pyramid: false,
             },
         );
         assert!(result.is_err());
@@ -1457,6 +1491,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 5,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1495,6 +1530,7 @@ mod tests {
             &SearchOptions {
                 project: Some("film_a".to_string()),
                 limit: 10,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1507,6 +1543,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 10,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1539,6 +1576,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 2,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1572,6 +1610,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 10,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1633,6 +1672,7 @@ mod tests {
             &SearchOptions {
                 project: Some("nonexistent".to_string()),
                 limit: 5,
+                use_pyramid: false,
             },
         );
         assert!(result.is_err());
@@ -1647,6 +1687,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 5,
+                use_pyramid: false,
             },
         );
         assert!(result.is_ok());
@@ -1865,6 +1906,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 10,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1877,6 +1919,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 10,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1905,6 +1948,7 @@ mod tests {
             &SearchOptions {
                 project: None,
                 limit: 10,
+                use_pyramid: false,
             },
         );
         assert!(result.is_err());
@@ -1944,6 +1988,7 @@ mod tests {
             &SearchOptions {
                 project: Some("film_a".to_string()),
                 limit: 10,
+                use_pyramid: false,
             },
         )
         .unwrap();
@@ -1992,7 +2037,7 @@ mod tests {
             &conn,
             1,
             &weights,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         ).unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2041,7 +2086,7 @@ mod tests {
             &conn,
             1,
             &weights,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         ).unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2083,7 +2128,7 @@ mod tests {
             &conn,
             1,
             &weights,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         ).unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2155,7 +2200,7 @@ mod tests {
             &conn,
             1,
             &weights,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         ).unwrap();
 
         assert_eq!(results.len(), 2);
@@ -2200,7 +2245,7 @@ mod tests {
             &conn,
             1,
             &weights,
-            &SearchOptions { project: None, limit: 2 },
+            &SearchOptions { project: None, limit: 2, use_pyramid: false },
         ).unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -2245,7 +2290,7 @@ mod tests {
             &conn,
             1,
             &weights,
-            &SearchOptions { project: Some("film_a".to_string()), limit: 10 },
+            &SearchOptions { project: Some("film_a".to_string()), limit: 10, use_pyramid: false },
         ).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].project_name, "film_a");
@@ -2289,7 +2334,7 @@ mod tests {
         let results = bhattacharyya_search(
             &conn,
             1,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         ).unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2318,7 +2363,7 @@ mod tests {
         let result = bhattacharyya_search(
             &conn,
             1,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         );
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -2382,7 +2427,7 @@ mod tests {
         let results = bhattacharyya_search(
             &conn,
             1,
-            &SearchOptions { project: None, limit: 10 },
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
         ).unwrap();
 
         assert_eq!(results.len(), 2);
@@ -2420,7 +2465,7 @@ mod tests {
         let results = bhattacharyya_search(
             &conn,
             1,
-            &SearchOptions { project: None, limit: 2 },
+            &SearchOptions { project: None, limit: 2, use_pyramid: false },
         ).unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -2452,7 +2497,7 @@ mod tests {
         ).unwrap();
 
         let weights = SignalWeights::grading_first();
-        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10, use_pyramid: false }).unwrap();
 
         assert_eq!(results.len(), 1);
         // Source file doesn't exist, so re-extraction is skipped — status remains stale
@@ -2488,7 +2533,7 @@ mod tests {
         ).unwrap();
 
         let weights = SignalWeights::grading_first();
-        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10, use_pyramid: false }).unwrap();
 
         assert_eq!(results.len(), 1);
         // Source file doesn't exist, so re-extraction is skipped — status remains NULL
@@ -2522,7 +2567,7 @@ mod tests {
         ).unwrap();
 
         let weights = SignalWeights::grading_first();
-        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10, use_pyramid: false }).unwrap();
 
         assert_eq!(results.len(), 1);
         // Status should remain fresh (no UPDATE attempted)
@@ -2562,7 +2607,7 @@ mod tests {
         }
 
         let weights = SignalWeights::grading_first();
-        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 20 }).unwrap();
+        let results = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 20, use_pyramid: false }).unwrap();
 
         // All 12 should be returned (features exist, just stale)
         assert_eq!(results.len(), 12);
@@ -2602,7 +2647,7 @@ mod tests {
         let weights = SignalWeights::grading_first();
 
         // First search: should attempt recompute, but source file doesn't exist — skipped
-        let results1 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        let results1 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10, use_pyramid: false }).unwrap();
         assert_eq!(results1.len(), 1);
         let status1: String = conn.query_row(
             "SELECT feature_status FROM fingerprints WHERE file_id = 2", [], |row| row.get(0),
@@ -2610,11 +2655,70 @@ mod tests {
         assert_eq!(status1, "stale");
 
         // Second search: candidate is still stale, should attempt again but still skip
-        let results2 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10 }).unwrap();
+        let results2 = hybrid_search(&conn, 1, &weights, &SearchOptions { project: None, limit: 10, use_pyramid: false }).unwrap();
         assert_eq!(results2.len(), 1);
         let status2: String = conn.query_row(
             "SELECT feature_status FROM fingerprints WHERE file_id = 2", [], |row| row.get(0),
         ).unwrap();
         assert_eq!(status2, "stale");
+    }
+
+    #[test]
+    fn test_pyramid_mode_falls_back_to_flat_when_no_tiles() {
+        let conn = setup_test_db();
+        // Create fingerprint_tiles table for this test
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS fingerprint_tiles (
+                id INTEGER NOT NULL PRIMARY KEY,
+                fingerprint_id INTEGER NOT NULL,
+                tile_row INTEGER NOT NULL,
+                tile_col INTEGER NOT NULL,
+                oklab_hist_l BLOB,
+                oklab_hist_a BLOB,
+                oklab_hist_b BLOB,
+                color_moments BLOB,
+                hist_bins INTEGER NOT NULL DEFAULT 64
+            );"
+        ).unwrap();
+
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/f')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'query.dpx', 'dpx')", [])
+            .unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'candidate.dpx', 'dpx')", [])
+            .unwrap();
+
+        let (hl, ha, hb, m) = make_grading_features_blob();
+
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (1, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments) VALUES (2, ?, ?, ?, 0.5, 0.1, 'acescg', ?, ?, ?, ?)",
+            rusqlite::params![make_histogram_csv(0.015625), make_histogram_csv(0.015625), make_histogram_csv(0.015625), hl, ha, hb, m],
+        ).unwrap();
+
+        let weights = SignalWeights::grading_first();
+
+        // pyramid mode but no tiles stored — should still return results via flat fallback
+        let results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 10, use_pyramid: true },
+        ).unwrap();
+
+        let flat_results = hybrid_search(
+            &conn,
+            1,
+            &weights,
+            &SearchOptions { project: None, limit: 10, use_pyramid: false },
+        ).unwrap();
+
+        assert_eq!(results.len(), flat_results.len());
+        for (r, f) in results.iter().zip(flat_results.iter()) {
+            assert!((r.score - f.score).abs() < 1e-10, "pyramid fallback score should match flat: {} vs {}", r.score, f.score);
+        }
     }
 }

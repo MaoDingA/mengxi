@@ -59,8 +59,8 @@ enum Commands {
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
-        /// Search mode preset (grading-first, balanced)
-        #[arg(long, value_parser = ["grading-first", "balanced"])]
+        /// Search mode preset (grading-first, balanced, pyramid)
+        #[arg(long, value_parser = ["grading-first", "balanced", "pyramid"])]
         search_mode: Option<String>,
         /// Override signal weights (e.g., grading=0.6,clip=0.3,tag=0.1)
         #[arg(long)]
@@ -740,6 +740,7 @@ fn main() {
                         let options = mengxi_core::search::SearchOptions {
                             project: project.clone(),
                             limit: limit_val as usize,
+                            use_pyramid: search_mode.as_deref() == Some("pyramid"),
                         };
 
                         // Resolve search weights via config cascade when no CLI args
@@ -1041,6 +1042,7 @@ fn main() {
                         let options = mengxi_core::search::SearchOptions {
                             project: project.clone(),
                             limit: limit_val as usize,
+                            use_pyramid: false,
                         };
 
                         match mengxi_core::search::search_by_tag(&conn, tag_text, &options) {
@@ -1118,6 +1120,7 @@ fn main() {
                     let options = mengxi_core::search::SearchOptions {
                         project: project.clone(),
                         limit: limit_val as usize,
+                        use_pyramid: false,
                     };
 
                     match mengxi_core::search::search_histograms(&conn, &options) {
@@ -3303,6 +3306,7 @@ fn resolve_hybrid_weights(
         match mode {
             "grading-first" => Ok(mengxi_core::hybrid_scoring::SignalWeights::grading_first()),
             "balanced" => Ok(mengxi_core::hybrid_scoring::SignalWeights::balanced()),
+            "pyramid" => Ok(mengxi_core::hybrid_scoring::SignalWeights::grading_first()),
             _ => unreachable!("clap validates --search-mode values"),
         }
     } else {
