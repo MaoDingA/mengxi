@@ -65,6 +65,12 @@ enum Commands {
         /// Override signal weights (e.g., grading=0.6,clip=0.3,tag=0.1)
         #[arg(long)]
         weights: Option<String>,
+        /// Tile search mode: spatial (position-aligned) or any (position-invariant)
+        #[arg(long, value_parser = ["spatial", "any"])]
+        tile_mode: Option<String>,
+        /// Tile range for region selection (e.g., "0,0-3,3" for top-left to bottom-right)
+        #[arg(long)]
+        tile_range: Option<String>,
     },
     /// Export a matching style as a LUT file
     Export {
@@ -700,6 +706,8 @@ fn main() {
             format,
             search_mode,
             weights,
+            tile_mode,
+            tile_range,
         }) => {
             let is_json = format == "json";
 
