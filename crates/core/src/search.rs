@@ -1118,14 +1118,30 @@ pub fn hybrid_search(
     // Score each candidate
     let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
 
-    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
+    for (_fp_id, _file_id, project_name, filename, format, mut hist_l, mut hist_a, mut hist_b, mut moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
         // Check for stale fingerprint and attempt recomputation
         let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
         if is_stale {
             if recomputation_count < MAX_RECOMPUTATIONS_PER_SEARCH {
+                recomputation_count += 1;
                 match crate::fingerprint::reextract_grading_features(conn, _fp_id) {
                     Ok(crate::fingerprint::ReextractResult::Reextracted) => {
-                        recomputation_count += 1;
+                        // Re-read updated BLOBs from DB for correct scoring
+                        if let Ok((new_hl, new_ha, new_hb, new_m)) = conn.query_row(
+                            "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments FROM fingerprints WHERE id = ?1",
+                            rusqlite::params![_fp_id],
+                            |row| Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, Vec<u8>>(2)?,
+                                row.get::<_, Vec<u8>>(3)?,
+                            )),
+                        ) {
+                            hist_l = new_hl;
+                            hist_a = new_ha;
+                            hist_b = new_hb;
+                            moments = new_m;
+                        }
                         eprintln!("info: recomputed stale features for {} ({})", project_name, filename);
                     }
                     Ok(crate::fingerprint::ReextractResult::Skipped(reason)) => {

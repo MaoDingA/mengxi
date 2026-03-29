@@ -182,6 +182,23 @@ pub enum ReextractResult {
     Error(String),
 }
 
+/// Errors from re-extraction that prevent the operation from being attempted.
+#[derive(Debug)]
+pub enum ReextractError {
+    /// Database query failed (fingerprint not found, connection error).
+    DbError(String),
+}
+
+impl std::fmt::Display for ReextractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReextractError::DbError(msg) => write!(f, "REEXTRACT_DB_ERROR -- {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ReextractError {}
+
 /// Re-extract grading features for a single fingerprint by reading its source file.
 ///
 /// Looks up the source file path via `files` + `projects` tables, reads pixel data,
@@ -190,7 +207,7 @@ pub enum ReextractResult {
 pub fn reextract_grading_features(
     conn: &rusqlite::Connection,
     fingerprint_id: i64,
-) -> Result<ReextractResult, String> {
+) -> Result<ReextractResult, ReextractError> {
     // Look up file metadata: path, format, transfer, dimensions, project path
     let (file_path, format, transfer, width, height): (String, String, Option<String>, Option<i64>, Option<i64>) = conn
         .query_row(
@@ -210,13 +227,21 @@ pub fn reextract_grading_features(
                 ))
             },
         )
-        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+        .map_err(|e| ReextractError::DbError(e.to_string()))?;
 
     // Skip MOV files — no pixel data
     if format == "mov" {
         return Ok(ReextractResult::Skipped(
             "MOV files have no pixel data".to_string(),
         ));
+    }
+
+    // Only DPX and EXR are supported for pixel data reading
+    if format != "dpx" && format != "exr" {
+        return Ok(ReextractResult::Skipped(format!(
+            "unsupported format: {}",
+            format
+        )));
     }
 
     // Determine color space tag
@@ -247,32 +272,41 @@ pub fn reextract_grading_features(
     // Read pixel data
     let path = std::path::Path::new(&file_path);
     let pixel_data = if format == "dpx" {
-        dpx::read_pixel_data(path)
-            .map_err(|e| format!("REEXTRACT_READ_ERROR -- {}", e))?
+        match dpx::read_pixel_data(path) {
+            Ok(data) => data,
+            Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_READ_ERROR -- {}", e))),
+        }
     } else {
-        exr_format::read_pixel_data(path)
-            .map_err(|e| format!("REEXTRACT_READ_ERROR -- {}", e))?
+        match exr_format::read_pixel_data(path) {
+            Ok(data) => data,
+            Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_READ_ERROR -- {}", e))),
+        }
     };
 
     // Downsample
     let w = width.and_then(|v| if v > 0 { Some(v as usize) } else { None });
     let h = height.and_then(|v| if v > 0 { Some(v as usize) } else { None });
     let downsampled = match (w, h) {
-        (Some(w), Some(h)) => {
-            crate::downsample::downsample_rgb(&pixel_data, w, h, crate::downsample::MAX_DIMENSION)
-                .map_err(|e| format!("REEXTRACT_DOWNSAMPLE_ERROR -- {}", e))?
-                .0
+        (Some(dw), Some(dh)) => {
+            match crate::downsample::downsample_rgb(&pixel_data, dw, dh, crate::downsample::MAX_DIMENSION) {
+                Ok((data, _, _)) => data,
+                Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_DOWNSAMPLE_ERROR -- {}", e))),
+            }
         }
         _ => pixel_data,
     };
 
     // RGB → Oklab
-    let oklab_data = crate::color_science::rgb_to_oklab_batch(&downsampled, &color_tag)
-        .map_err(|e| format!("REEXTRACT_OKLAB_ERROR -- {}", e))?;
+    let oklab_data = match crate::color_science::rgb_to_oklab_batch(&downsampled, &color_tag) {
+        Ok(data) => data,
+        Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_OKLAB_ERROR -- {}", e))),
+    };
 
     // Extract grading features via FFI
-    let features = crate::color_science::extract_grading_features(&oklab_data, color_space_tag_int)
-        .map_err(|e| format!("REEXTRACT_FFI_ERROR -- {}", e))?;
+    let features = match crate::color_science::extract_grading_features(&oklab_data, color_space_tag_int) {
+        Ok(f) => f,
+        Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_FFI_ERROR -- {}", e))),
+    };
 
     // Serialize to BLOBs
     let hist_l_blob = features.hist_l_blob();
@@ -281,13 +315,14 @@ pub fn reextract_grading_features(
     let moments_blob = features.moments_blob();
 
     // Atomic UPDATE: all 4 BLOBs + feature_status in one statement
-    conn.execute(
+    if let Err(e) = conn.execute(
         "UPDATE fingerprints
          SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, feature_status = 'fresh'
          WHERE id = ?5",
         rusqlite::params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, fingerprint_id],
-    )
-    .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+    ) {
+        return Ok(ReextractResult::Error(format!("REEXTRACT_DB_ERROR -- {}", e)));
+    }
 
     Ok(ReextractResult::Reextracted)
 }
@@ -296,7 +331,7 @@ pub fn reextract_grading_features(
 pub fn list_fingerprints_by_project(
     conn: &rusqlite::Connection,
     project_name: &str,
-) -> Result<Vec<(i64, String)>, String> {
+) -> Result<Vec<(i64, String)>, ReextractError> {
     let mut stmt = conn
         .prepare(
             "SELECT fp.id, p.path || '/' || f.filename
@@ -306,17 +341,17 @@ pub fn list_fingerprints_by_project(
              WHERE p.name = ?1
              ORDER BY fp.id",
         )
-        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+        .map_err(|e| ReextractError::DbError(e.to_string()))?;
 
     let mut rows = Vec::new();
     let mut rows_iter = stmt
         .query_map(rusqlite::params![project_name], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+        .map_err(|e| ReextractError::DbError(e.to_string()))?;
 
     for row in &mut rows_iter {
-        rows.push(row.map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?);
+        rows.push(row.map_err(|e| ReextractError::DbError(e.to_string()))?);
     }
 
     Ok(rows)
@@ -326,7 +361,7 @@ pub fn list_fingerprints_by_project(
 pub fn list_fingerprints_by_file(
     conn: &rusqlite::Connection,
     file_path: &str,
-) -> Result<Vec<(i64, String)>, String> {
+) -> Result<Vec<(i64, String)>, ReextractError> {
     let mut stmt = conn
         .prepare(
             "SELECT fp.id, p.path || '/' || f.filename
@@ -336,17 +371,17 @@ pub fn list_fingerprints_by_file(
              WHERE p.path || '/' || f.filename = ?1
              ORDER BY fp.id",
         )
-        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+        .map_err(|e| ReextractError::DbError(e.to_string()))?;
 
     let mut rows = Vec::new();
     let mut rows_iter = stmt
         .query_map(rusqlite::params![file_path], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?;
+        .map_err(|e| ReextractError::DbError(e.to_string()))?;
 
     for row in &mut rows_iter {
-        rows.push(row.map_err(|e| format!("REEXTRACT_DB_ERROR -- {}", e))?);
+        rows.push(row.map_err(|e| ReextractError::DbError(e.to_string()))?);
     }
 
     Ok(rows)
@@ -509,7 +544,24 @@ mod tests {
         let conn = setup_test_db();
         let result = reextract_grading_features(&conn, 999);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("REEXTRACT_DB_ERROR"));
+        assert!(result.unwrap_err().to_string().contains("REEXTRACT_DB_ERROR"));
+    }
+
+    #[test]
+    fn test_reextract_unsupported_format_skipped() {
+        let conn = setup_test_db();
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film', '/tmp/film')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'img.ari', 'ari')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, feature_status) VALUES (1, 'stale')", []).unwrap();
+
+        let result = reextract_grading_features(&conn, 1).unwrap();
+        assert!(matches!(result, ReextractResult::Skipped(reason) if reason.contains("unsupported format")));
+    }
+
+    #[test]
+    fn test_reextract_error_display() {
+        let err = ReextractError::DbError("test".to_string());
+        assert!(err.to_string().contains("REEXTRACT_DB_ERROR"));
     }
 
     #[test]

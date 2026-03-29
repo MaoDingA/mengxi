@@ -186,11 +186,11 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
         /// Specific file path to re-extract
-        #[arg(long)]
+        #[arg(conflicts_with = "project", value_name = "FILE")]
         file: Option<String>,
-        /// Output format (text, json)
-        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
-        format: String,
+        /// Output as structured JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Browse and query the database
     Db {
@@ -2370,10 +2370,9 @@ fn main() {
             let exit_code = validate::run_validate(is_json, full);
             process::exit(exit_code);
         }
-        Some(Commands::Reextract { project, file, format }) => {
-            let is_json = format == "json";
+        Some(Commands::Reextract { project, file, json: is_json }) => {
             if project.is_none() && file.is_none() {
-                eprintln!("Error: specify --project <name> or --file <path>");
+                eprintln!("Error: specify --project <name> or provide a FILE path");
                 process::exit(1);
             }
             let conn = match db::open_db() {
@@ -2384,7 +2383,7 @@ fn main() {
                             "status": "error",
                             "error": { "code": "REEXTRACT_DB_ERROR", "message": e.to_string() }
                         });
-                        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
                     } else {
                         eprintln!("Error: DB_OPEN_FAILED — {}", e);
                     }
@@ -2393,14 +2392,26 @@ fn main() {
             };
             let fps = if let Some(ref proj) = project {
                 match mengxi_core::fingerprint::list_fingerprints_by_project(&conn, proj) {
+                    Ok(fps) if fps.is_empty() => {
+                        if is_json {
+                            let output = serde_json::json!({
+                                "status": "error",
+                                "error": { "code": "REEXTRACT_NOT_FOUND", "message": format!("no fingerprints found for project: {}", proj) }
+                            });
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        } else {
+                            eprintln!("Error: no fingerprints found for project: {}", proj);
+                        }
+                        process::exit(1);
+                    }
                     Ok(fps) => fps,
                     Err(e) => {
                         if is_json {
                             let output = serde_json::json!({
                                 "status": "error",
-                                "error": { "code": "REEXTRACT_DB_ERROR", "message": e }
+                                "error": { "code": "REEXTRACT_DB_ERROR", "message": e.to_string() }
                             });
-                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
                         } else {
                             eprintln!("Error: {}", e);
                         }
@@ -2408,7 +2419,7 @@ fn main() {
                     }
                 }
             } else {
-                // --file mode: look up fingerprints for the given file path
+                // File mode: look up fingerprints for the given file path
                 let file_path = file.as_ref().unwrap();
                 match mengxi_core::fingerprint::list_fingerprints_by_file(&conn, file_path) {
                     Ok(fps) if fps.is_empty() => {
@@ -2417,7 +2428,7 @@ fn main() {
                                 "status": "error",
                                 "error": { "code": "REEXTRACT_NOT_FOUND", "message": format!("no fingerprint found for file: {}", file_path) }
                             });
-                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
                         } else {
                             eprintln!("Error: no fingerprint found for file: {}", file_path);
                         }
@@ -2428,9 +2439,9 @@ fn main() {
                         if is_json {
                             let output = serde_json::json!({
                                 "status": "error",
-                                "error": { "code": "REEXTRACT_DB_ERROR", "message": e }
+                                "error": { "code": "REEXTRACT_DB_ERROR", "message": e.to_string() }
                             });
-                            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
                         } else {
                             eprintln!("Error: {}", e);
                         }
@@ -2463,7 +2474,7 @@ fn main() {
                         eprintln!("  error: {}", e);
                         failures.push(serde_json::json!({
                             "file": fp_path,
-                            "reason": e,
+                            "reason": e.to_string(),
                         }));
                     }
                 }
@@ -2482,6 +2493,9 @@ fn main() {
             } else {
                 println!("Re-extraction complete: {} reextracted, {} skipped, {} failed ({} total)",
                     reextracted, skipped, failed, fps.len());
+            }
+            if failed > 0 {
+                process::exit(1);
             }
         }
         Some(Commands::Db { command }) => {
