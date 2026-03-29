@@ -166,8 +166,9 @@ development_status:
 
   # === v3 (moonbit-v3) — Scale & Intelligence ===
   # Epic 1: Algorithm Parameterization & Code Quality (P0)
-  epic-1-v3: backlog
-  1-1-configurable-histogram-bins: backlog
+  epic-1-v3: in-progress
+  # Story 1.1 implementation completed: 2026-03-29
+  1-1-configurable-histogram-bins: done
   1-2-feature-extraction-pipeline-refactoring: backlog
   1-3-configurable-grading-style-vocabulary: backlog
 
