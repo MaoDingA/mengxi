@@ -6,6 +6,7 @@
 use crate::color_science::{self, bhattacharyya_distance};
 use crate::db;
 use crate::grading_features::GradingFeatures;
+use crate::segmentation;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -282,6 +283,98 @@ fn load_tile_candidates(
     }
 
     Ok(candidates)
+}
+
+// ---------------------------------------------------------------------------
+// Segment-aware search (SLIC superpixels)
+// ---------------------------------------------------------------------------
+
+/// Search result for segment-aware comparison.
+#[derive(Debug, Clone)]
+pub struct SegmentSearchCandidate {
+    pub fingerprint_id: i64,
+    pub project_name: String,
+    pub file_path: String,
+    pub file_format: String,
+    pub score: f64,
+    pub segment_matches: Vec<SegmentMatch>,
+}
+
+/// Per-segment match detail.
+#[derive(Debug, Clone)]
+pub struct SegmentMatch {
+    pub query_segment_id: usize,
+    pub candidate_segment_id: usize,
+    pub score: f64,
+}
+
+/// Perform segment-aware search using SLIC superpixels.
+///
+/// For the query, performs SLIC segmentation on Oklab data and extracts
+/// per-segment features. For each candidate, loads tile features from DB
+/// and compares using position-invariant matching.
+///
+/// This provides semantically meaningful region matching because SLIC
+/// segments correspond to actual image regions rather than arbitrary grid cells.
+pub fn segment_search(
+    conn: &rusqlite::Connection,
+    query_oklab: &[f64],
+    query_width: usize,
+    query_height: usize,
+    slic_params: &segmentation::SlicParams,
+    project: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SegmentSearchCandidate>, TileSearchError> {
+    // Segment the query image
+    let labels = segmentation::slic_segment(query_oklab, query_width, query_height, slic_params)
+        .ok_or(TileSearchError::FeatureError("SLIC segmentation failed".to_string()))?;
+
+    // Extract per-segment features
+    let query_segments = segmentation::extract_segment_features(
+        query_oklab, query_width, query_height, &labels, "linear",
+        crate::color_science::GradingFeatures::HIST_BINS,
+    ).map_err(|e| TileSearchError::FeatureError(e.to_string()))?;
+
+    if query_segments.is_empty() {
+        return Err(TileSearchError::FeatureError("no segments extracted from query".to_string()));
+    }
+
+    // Convert to GradingFeatures tuples for comparison
+    let query_features: Vec<(usize, usize, GradingFeatures)> = query_segments.iter().map(|s| {
+        (s.min_row, s.min_col, s.features.clone())
+    }).collect();
+
+    // Load candidates with tiles from DB
+    let candidates = load_tile_candidates(conn, -1, project)
+        .map_err(|e| TileSearchError::DbError(e.to_string()))?;
+
+    let mut results = Vec::new();
+
+    for (fp_id, project_name, file_path, file_format, candidate_tiles) in &candidates {
+        let (score, tile_matches) = score_any(&query_features, candidate_tiles);
+
+        let segment_matches: Vec<SegmentMatch> = tile_matches.into_iter().map(|tm| {
+            SegmentMatch {
+                query_segment_id: tm.query_row, // using row as segment id
+                candidate_segment_id: tm.candidate_row,
+                score: tm.score,
+            }
+        }).collect();
+
+        results.push(SegmentSearchCandidate {
+            fingerprint_id: *fp_id,
+            project_name: project_name.clone(),
+            file_path: file_path.clone(),
+            file_format: file_format.clone(),
+            score,
+            segment_matches,
+        });
+    }
+
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit);
+
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
