@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Supported image formats for evaluation datasets.
 const SUPPORTED_EXTENSIONS: &[&str] = &["dpx", "exr"];
 
-/// Controlled vocabulary for grading style tags.
-/// Constructed from color grading domain conventions.
-const CONTROLLED_VOCABULARY: &[&str] = &[
+/// Built-in default vocabulary for grading style tags.
+/// Used as fallback when no `vocabulary.toml` is found.
+const DEFAULT_VOCABULARY: &[&str] = &[
     // Contrast
     "high_contrast",
     "low_contrast",
@@ -43,6 +43,47 @@ const CONTROLLED_VOCABULARY: &[&str] = &[
     "vintage",
     "modern_clean",
 ];
+
+/// Load vocabulary from a `vocabulary.toml` file in the given directory.
+///
+/// Format: `tags = ["high_contrast", "warm", ...]`
+/// Falls back to built-in defaults if the file is missing or unparseable.
+/// Silently deduplicates entries.
+fn load_vocabulary(dir: &Path) -> Vec<String> {
+    let vocab_path = dir.join("vocabulary.toml");
+    if !vocab_path.is_file() {
+        return DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+    }
+
+    match std::fs::read_to_string(&vocab_path) {
+        Ok(content) => {
+            #[derive(Deserialize)]
+            struct VocabFile {
+                tags: Vec<String>,
+            }
+            match toml::from_str::<VocabFile>(&content) {
+                Ok(vf) => {
+                    let mut seen = std::collections::HashSet::new();
+                    vf.tags.into_iter()
+                        .filter(|t| {
+                            let key = t.trim().to_lowercase();
+                            !t.is_empty() && seen.insert(key)
+                        })
+                        .map(|t| t.trim().to_string())
+                        .collect()
+                }
+                Err(_) => {
+                    eprintln!("Warning: failed to parse vocabulary.toml, using defaults");
+                    DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect()
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("Warning: cannot read vocabulary.toml, using defaults");
+            DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect()
+        }
+    }
+}
 
 /// Valid material types.
 const VALID_MATERIAL_TYPES: &[&str] = &["dpx", "exr", "mov"];
@@ -109,7 +150,7 @@ fn discover_entries(dir: &Path) -> Vec<ValidationEntry> {
 }
 
 /// Validate a single entry (image + metadata pair).
-fn validate_entry(entry: &ValidationEntry) -> EntryResult {
+fn validate_entry(entry: &ValidationEntry, vocabulary: &[String]) -> EntryResult {
     let image_str = entry.image_path.display().to_string();
     let mut errors = Vec::new();
 
@@ -174,7 +215,7 @@ fn validate_entry(entry: &ValidationEntry) -> EntryResult {
         errors.push("grading_style_tags is empty".to_string());
     }
     for tag in &metadata.grading_style_tags {
-        if !CONTROLLED_VOCABULARY.contains(&tag.as_str()) {
+        if !vocabulary.contains(&tag) {
             errors.push(format!(
                 "unknown grading_style_tag: '{}' (not in controlled vocabulary)",
                 tag
@@ -224,7 +265,8 @@ pub fn run_validate_dataset(dir: &str, is_json: bool) -> i32 {
         return 1;
     }
 
-    let results: Vec<EntryResult> = entries.iter().map(|e| validate_entry(e)).collect();
+    let vocabulary = load_vocabulary(dir_path);
+    let results: Vec<EntryResult> = entries.iter().map(|e| validate_entry(e, &vocabulary)).collect();
     let valid_count = results.iter().filter(|r| r.status == "valid").count();
     let invalid_count = results.len() - valid_count;
 
@@ -310,7 +352,8 @@ mod tests {
             image_path: image_path.clone(),
             metadata_path: dir.path().join("frame.json"),
         };
-        let result = validate_entry(&entry);
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
         assert_eq!(result.status, "invalid");
         assert!(result.errors[0].contains("missing metadata JSON"));
     }
@@ -325,7 +368,8 @@ mod tests {
             image_path,
             metadata_path: dir.path().join("frame.json"),
         };
-        let result = validate_entry(&entry);
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
         assert_eq!(result.status, "invalid");
         assert!(result.errors.iter().any(|e| e.contains("invalid metadata JSON")));
     }
@@ -345,7 +389,8 @@ mod tests {
             image_path,
             metadata_path: dir.path().join("frame.json"),
         };
-        let result = validate_entry(&entry);
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
         assert_eq!(result.status, "valid");
         assert!(result.errors.is_empty());
     }
@@ -365,7 +410,8 @@ mod tests {
             image_path,
             metadata_path: dir.path().join("frame.json"),
         };
-        let result = validate_entry(&entry);
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
         assert_eq!(result.status, "invalid");
         assert!(result.errors.iter().any(|e| e.contains("unknown grading_style_tag") && e.contains("my_custom_tag")));
     }
@@ -385,7 +431,8 @@ mod tests {
             image_path,
             metadata_path: dir.path().join("frame.json"),
         };
-        let result = validate_entry(&entry);
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
         assert_eq!(result.status, "invalid");
         assert!(result.errors.iter().any(|e| e.contains("grading_style_tags is empty")));
     }
@@ -405,18 +452,91 @@ mod tests {
             image_path,
             metadata_path: dir.path().join("frame.json"),
         };
-        let result = validate_entry(&entry);
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
         assert_eq!(result.status, "invalid");
         assert!(result.errors.iter().any(|e| e.contains("unknown material_type")));
     }
 
     #[test]
-    fn test_controlled_vocabulary_contains_expected_tags() {
-        assert!(CONTROLLED_VOCABULARY.contains(&"high_contrast"));
-        assert!(CONTROLLED_VOCABULARY.contains(&"warm"));
-        assert!(CONTROLLED_VOCABULARY.contains(&"desaturated"));
-        assert!(CONTROLLED_VOCABULARY.contains(&"film_emulation"));
-        assert!(CONTROLLED_VOCABULARY.contains(&"teal_orange"));
+    fn test_default_vocabulary_contains_expected_tags() {
+        assert!(DEFAULT_VOCABULARY.contains(&"high_contrast"));
+        assert!(DEFAULT_VOCABULARY.contains(&"warm"));
+        assert!(DEFAULT_VOCABULARY.contains(&"desaturated"));
+        assert!(DEFAULT_VOCABULARY.contains(&"film_emulation"));
+        assert!(DEFAULT_VOCABULARY.contains(&"teal_orange"));
+    }
+
+    #[test]
+    fn test_load_vocabulary_no_file_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let vocab = load_vocabulary(dir.path());
+        assert!(vocab.contains(&"high_contrast".to_string()));
+        assert!(vocab.contains(&"warm".to_string()));
+        assert!(vocab.contains(&"desaturated".to_string()));
+    }
+
+    #[test]
+    fn test_load_vocabulary_custom_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("vocabulary.toml"),
+            r#"tags = ["custom_tag_a", "custom_tag_b", "warm"]"#,
+        ).unwrap();
+        let vocab = load_vocabulary(dir.path());
+        assert_eq!(vocab.len(), 3); // deduplicated
+        assert!(vocab.contains(&"custom_tag_a".to_string()));
+        assert!(vocab.contains(&"custom_tag_b".to_string()));
+        assert!(vocab.contains(&"warm".to_string()));
+        assert!(!vocab.contains(&"high_contrast".to_string())); // not in custom vocab
+    }
+
+    #[test]
+    fn test_load_vocabulary_deduplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("vocabulary.toml"),
+            r#"tags = ["warm", "warm", "cool", "cool"]"#,
+        ).unwrap();
+        let vocab = load_vocabulary(dir.path());
+        assert_eq!(vocab.len(), 2);
+    }
+
+    #[test]
+    fn test_load_vocabulary_invalid_toml_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("vocabulary.toml"), "not valid toml {{{").unwrap();
+        let vocab = load_vocabulary(dir.path());
+        // Falls back to defaults
+        assert!(vocab.contains(&"high_contrast".to_string()));
+    }
+
+    #[test]
+    fn test_validate_entry_with_custom_vocabulary() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("frame.dpx");
+        fs::write(&image_path, "fake").unwrap();
+        let meta = EntryMetadata {
+            material_type: "dpx".to_string(),
+            color_space: "srgb".to_string(),
+            grading_style_tags: vec!["custom_tag_a".to_string()],
+        };
+        fs::write(dir.path().join("frame.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let entry = ValidationEntry {
+            image_path,
+            metadata_path: dir.path().join("frame.json"),
+        };
+
+        // With custom vocabulary containing the tag → valid
+        let custom_vocab = vec!["custom_tag_a".to_string(), "custom_tag_b".to_string()];
+        let result = validate_entry(&entry, &custom_vocab);
+        assert_eq!(result.status, "valid");
+
+        // With default vocabulary NOT containing the tag → invalid
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result2 = validate_entry(&entry, &default_vocab);
+        assert_eq!(result2.status, "invalid");
+        assert!(result2.errors.iter().any(|e| e.contains("unknown grading_style_tag")));
     }
 
     #[test]
