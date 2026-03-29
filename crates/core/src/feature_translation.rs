@@ -39,7 +39,7 @@ pub fn translate_features(features: &GradingFeatures) -> String {
 // ---------------------------------------------------------------------------
 
 /// Contrast: L-channel std > 0.35 → "高对比度", < 0.15 → "低对比度"
-fn eval_contrast(_hist_l: &[f64], moments: &[f64; 6]) -> Option<String> {
+fn eval_contrast(_hist_l: &[f64], moments: &[f64; 12]) -> Option<String> {
     let l_std = moments[1];
     if l_std > 0.35 {
         Some("高对比度".to_string())
@@ -51,8 +51,8 @@ fn eval_contrast(_hist_l: &[f64], moments: &[f64; 6]) -> Option<String> {
 }
 
 /// Shadow temperature: a-channel mean < -0.03 → "暗部偏冷", > 0.03 → "暗部偏暖"
-fn eval_shadow_temperature(moments: &[f64; 6]) -> Option<String> {
-    let a_mean = moments[2];
+fn eval_shadow_temperature(moments: &[f64; 12]) -> Option<String> {
+    let a_mean = moments[4];
     if a_mean < -0.03 {
         Some("暗部偏冷".to_string())
     } else if a_mean > 0.03 {
@@ -73,8 +73,8 @@ fn eval_highlight(hist_l: &[f64]) -> Option<String> {
 }
 
 /// Saturation proxy: (a_mean² + b_mean²) > 0.02 → "饱和度偏高", < 0.005 → "饱和度低"
-fn eval_saturation(moments: &[f64; 6]) -> Option<String> {
-    let chroma_sq = moments[2].powi(2) + moments[4].powi(2);
+fn eval_saturation(moments: &[f64; 12]) -> Option<String> {
+    let chroma_sq = moments[4].powi(2) + moments[8].powi(2);
     if chroma_sq > 0.02 {
         Some("饱和度偏高".to_string())
     } else if chroma_sq < 0.005 {
@@ -197,7 +197,7 @@ mod tests {
             hist_l,
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, l_std, a_mean, 0.1, b_mean, 0.1],
+            moments: [0.5, l_std, 0.0, 0.0, a_mean, 0.1, 0.0, 0.0, b_mean, 0.1, 0.0, 0.0],
         }
     }
 
@@ -205,19 +205,19 @@ mod tests {
 
     #[test]
     fn test_eval_contrast_high() {
-        let moments = [0.5, 0.40, 0.0, 0.1, 0.0, 0.1]; // L_std = 0.40 > 0.35
+        let moments = [0.5, 0.40, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]; // L_std = 0.40 > 0.35
         assert_eq!(eval_contrast(&[], &moments), Some("高对比度".to_string()));
     }
 
     #[test]
     fn test_eval_contrast_low() {
-        let moments = [0.5, 0.10, 0.0, 0.1, 0.0, 0.1]; // L_std = 0.10 < 0.15
+        let moments = [0.5, 0.10, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]; // L_std = 0.10 < 0.15
         assert_eq!(eval_contrast(&[], &moments), Some("低对比度".to_string()));
     }
 
     #[test]
     fn test_eval_contrast_ambiguous() {
-        let moments = [0.5, 0.25, 0.0, 0.1, 0.0, 0.1]; // L_std = 0.25, in [0.15, 0.35]
+        let moments = [0.5, 0.25, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]; // L_std = 0.25, in [0.15, 0.35]
         assert_eq!(eval_contrast(&[], &moments), None);
     }
 
@@ -225,19 +225,19 @@ mod tests {
 
     #[test]
     fn test_eval_shadow_cold() {
-        let moments = [0.5, 0.2, -0.05, 0.1, 0.0, 0.1]; // a_mean = -0.05 < -0.03
+        let moments = [0.5, 0.2, 0.0, 0.0, -0.05, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]; // a_mean = -0.05 < -0.03
         assert_eq!(eval_shadow_temperature(&moments), Some("暗部偏冷".to_string()));
     }
 
     #[test]
     fn test_eval_shadow_warm() {
-        let moments = [0.5, 0.2, 0.06, 0.1, 0.0, 0.1]; // a_mean = 0.06 > 0.03
+        let moments = [0.5, 0.2, 0.0, 0.0, 0.06, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]; // a_mean = 0.06 > 0.03
         assert_eq!(eval_shadow_temperature(&moments), Some("暗部偏暖".to_string()));
     }
 
     #[test]
     fn test_eval_shadow_ambiguous() {
-        let moments = [0.5, 0.2, 0.01, 0.1, 0.0, 0.1]; // a_mean = 0.01, in [-0.03, 0.03]
+        let moments = [0.5, 0.2, 0.0, 0.0, 0.01, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]; // a_mean = 0.01, in [-0.03, 0.03]
         assert_eq!(eval_shadow_temperature(&moments), None);
     }
 
@@ -245,19 +245,19 @@ mod tests {
 
     #[test]
     fn test_eval_saturation_high() {
-        let moments2 = [0.5, 0.2, 0.12, 0.1, 0.08, 0.1]; // 0.0144 + 0.0064 = 0.0208 > 0.02
+        let moments2 = [0.5, 0.2, 0.0, 0.0, 0.12, 0.1, 0.0, 0.0, 0.08, 0.1, 0.0, 0.0]; // 0.0144 + 0.0064 = 0.0208 > 0.02
         assert_eq!(eval_saturation(&moments2), Some("饱和度偏高".to_string()));
     }
 
     #[test]
     fn test_eval_saturation_low() {
-        let moments = [0.5, 0.2, 0.001, 0.1, 0.001, 0.1]; // 0.000001 + 0.000001 = 0.000002 < 0.005
+        let moments = [0.5, 0.2, 0.0, 0.0, 0.001, 0.1, 0.0, 0.0, 0.001, 0.1, 0.0, 0.0]; // 0.000001 + 0.000001 = 0.000002 < 0.005
         assert_eq!(eval_saturation(&moments), Some("饱和度低".to_string()));
     }
 
     #[test]
     fn test_eval_saturation_ambiguous() {
-        let moments2 = [0.5, 0.2, 0.07, 0.1, 0.07, 0.1]; // 0.0049 + 0.0049 = 0.0098, in [0.005, 0.02]
+        let moments2 = [0.5, 0.2, 0.0, 0.0, 0.07, 0.1, 0.0, 0.0, 0.07, 0.1, 0.0, 0.0]; // 0.0049 + 0.0049 = 0.0098, in [0.005, 0.02]
         assert_eq!(eval_saturation(&moments2), None);
     }
 
@@ -355,7 +355,7 @@ mod tests {
             hist_l: vec![1.0; 64], // uniform → p95 ~ 0.95 > 0.85
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.40, -0.05, 0.1, 0.15, 0.1], // L_std>0.35, a_mean<-0.03, chroma_sq=0.025+0.0225=0.0475>0.02
+            moments: [0.5, 0.40, 0.0, 0.0, -0.05, 0.1, 0.0, 0.0, 0.15, 0.1, 0.0, 0.0], // L_std>0.35, a_mean<-0.03, chroma_sq=0.0025+0.0225=0.025>0.02
         };
         let result = translate_features(&features);
         assert!(result.contains("高对比度"), "missing '高对比度': {}", result);
@@ -372,7 +372,7 @@ mod tests {
             hist_l: vec![1.0; 64], // uniform → p95 ~ 0.95 → "高光柔和延展"
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.40, 0.01, 0.1, 0.001, 0.1], // L_std>0.35, a_mean ambiguous, chroma_sq≈0.0001+0.000001<0.005
+            moments: [0.5, 0.40, 0.0, 0.0, 0.01, 0.1, 0.0, 0.0, 0.001, 0.1, 0.0, 0.0], // L_std>0.35, a_mean ambiguous, chroma_sq≈0.0001+0.000001<0.005
         };
         let result = translate_features(&features);
         assert!(result.contains("高对比度"), "missing '高对比度': {}", result);
@@ -390,7 +390,7 @@ mod tests {
             hist_l: vec![1.0; 64], // uniform → p95 ~ 0.95 > 0.85 (NOT ambiguous for highlight)
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.25, 0.01, 0.1, 0.05, 0.1], // L_std ambiguous, a_mean ambiguous, chroma_sq=0.0026
+            moments: [0.5, 0.25, 0.0, 0.0, 0.01, 0.1, 0.0, 0.0, 0.05, 0.1, 0.0, 0.0], // L_std ambiguous, a_mean ambiguous, chroma_sq=0.0001+0.0025=0.0026
         };
         let result = translate_features(&features);
         assert!(!result.is_empty(), "result should not be empty");
@@ -406,7 +406,7 @@ mod tests {
             hist_l: vec![0.0; 64],
             hist_a: vec![0.0; 64],
             hist_b: vec![0.0; 64],
-            moments: [0.0; 6],
+            moments: [0.0; 12],
         };
         let result = translate_features(&features);
         assert!(!result.is_empty(), "translate_features must never return empty string");
@@ -418,7 +418,7 @@ mod tests {
             hist_l: vec![1.0; 64],
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.10, 0.0, 0.1, 0.0, 0.1], // L_std<0.15, a_mean=0 (ambiguous), chroma_sq=0
+            moments: [0.5, 0.10, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0], // L_std<0.15, a_mean=0 (ambiguous), chroma_sq=0
         };
         let result = translate_features(&features);
         assert!(result.contains("低对比度"), "missing '低对比度': {}", result);
@@ -432,7 +432,7 @@ mod tests {
             hist_l: vec![0.1; 10].iter().chain(&vec![100.0; 54]).cloned().collect(), // high bins → p95 > 0.85
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.34, 0.0, 0.1, 0.07, 0.1], // L_std close to high, a_mean=0, chroma_sq=0.0049<0.005
+            moments: [0.5, 0.34, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.07, 0.1, 0.0, 0.0], // L_std close to high, a_mean=0, chroma_sq=0.0049<0.005
         };
         let result = translate_features(&features);
         // L_std=0.34 < 0.35 → still ambiguous, but very close

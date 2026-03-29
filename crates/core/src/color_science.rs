@@ -609,7 +609,7 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
 /// * `hist_bins` — Number of histogram bins per channel (must be >= 8, default 64).
 ///
 /// # Returns
-/// * `Ok(GradingFeatures)` with 3 histograms (`hist_bins` bins each) and 6 moments.
+/// * `Ok(GradingFeatures)` with 3 histograms (`hist_bins` bins each) and 12 moments.
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
 pub fn extract_grading_features(
     oklab_data: &[f64],
@@ -1417,7 +1417,7 @@ mod tests {
         assert_eq!(result.hist_l.len(), 64);
         assert_eq!(result.hist_a.len(), 64);
         assert_eq!(result.hist_b.len(), 64);
-        assert_eq!(result.moments.len(), 6);
+        assert_eq!(result.moments.len(), 12);
         // All black: L histogram should have all counts in bin 0 (L=0.0)
         assert_eq!(result.hist_l[0], 3.0, "All 3 black pixels in L bin 0");
         // a and b at 0.0 map to middle bin (32 in range [-0.5, 0.5])
@@ -1440,26 +1440,26 @@ mod tests {
             result.moments[0]
         );
         assert!(
-            (result.moments[2] - 0.1).abs() < 1e-10,
+            (result.moments[4] - 0.1).abs() < 1e-10,
             "a_mean should be 0.1, got {}",
-            result.moments[2]
+            result.moments[4]
         );
         assert!(
-            (result.moments[4] - (-0.1)).abs() < 1e-10,
+            (result.moments[8] - (-0.1)).abs() < 1e-10,
             "b_mean should be -0.1, got {}",
-            result.moments[4]
+            result.moments[8]
         );
         // Std should be 0 for solid color
         assert!(result.moments[1].abs() < 1e-10, "L_std should be 0 for solid");
-        assert!(result.moments[3].abs() < 1e-10, "a_std should be 0 for solid");
-        assert!(result.moments[5].abs() < 1e-10, "b_std should be 0 for solid");
+        assert!(result.moments[5].abs() < 1e-10, "a_std should be 0 for solid");
+        assert!(result.moments[9].abs() < 1e-10, "b_std should be 0 for solid");
     }
 
     #[test]
     fn test_extract_grading_features_single_pixel() {
         let oklab_data = [0.75_f64, 0.0, 0.0]; // bright achromatic
         let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
-        assert_eq!(result.moments.len(), 6);
+        assert_eq!(result.moments.len(), 12);
         // Single pixel: mean = value, std = 0
         assert!(
             (result.moments[0] - 0.75).abs() < 1e-10,
@@ -1578,7 +1578,7 @@ mod tests {
         }
         let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         assert_eq!(result.hist_l.len(), 64);
-        assert_eq!(result.moments.len(), 6);
+        assert_eq!(result.moments.len(), 12);
         // L_mean should be ~0.5
         assert!(
             (result.moments[0] - 0.5).abs() < 0.01,
@@ -1620,7 +1620,7 @@ mod tests {
             hist_l: vec![10.0; 64],
             hist_a: vec![5.0; 64],
             hist_b: vec![5.0; 64],
-            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0],
         };
         let score = bhattacharyya_distance(&gf, &gf).unwrap();
         assert!((score - 1.0).abs() < 1e-10, "Identical features should score 1.0, got {}", score);
@@ -1636,13 +1636,13 @@ mod tests {
             hist_l: q_l,
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0],
         };
         let candidate = GradingFeatures {
             hist_l: c_l,
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0],
         };
         let score = bhattacharyya_distance(&query, &candidate).unwrap();
         // L channel: no overlap → BC_L ≈ 0
@@ -1658,7 +1658,7 @@ mod tests {
             hist_l: vec![0.0; 64],
             hist_a: vec![0.0; 64],
             hist_b: vec![0.0; 64],
-            moments: [0.0; 6],
+            moments: [0.0; 12],
         };
         // Zero-sum histograms → uniform normalization → identical → score 1.0
         let score = bhattacharyya_distance(&gf, &gf).unwrap();
@@ -1673,7 +1673,7 @@ mod tests {
             hist_l,
             hist_a: vec![5.0; 64],
             hist_b: vec![5.0; 64],
-            moments: [0.0; 6],
+            moments: [0.0; 12],
         };
         let result = bhattacharyya_distance(&gf, &gf);
         assert!(result.is_err());

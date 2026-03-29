@@ -466,8 +466,8 @@ int32_t mengxi_oklab_to_linear(
 
 /* Default histogram bin count (used when caller passes 0) */
 #define GRADING_HIST_BINS_DEFAULT 64
-/* Moments count: mean + stddev for each of L, a, b */
-#define GRADING_MOMENTS_COUNT 6
+/* Moments count: mean + stddev + skewness + kurtosis for each of L, a, b */
+#define GRADING_MOMENTS_COUNT 12
 
 int32_t mengxi_extract_grading_features(
   int32_t pixel_len,

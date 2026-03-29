@@ -2110,7 +2110,7 @@ mod tests {
             hist_l: vec![50.0; 64],
             hist_a: vec![25.0; 64],
             hist_b: vec![25.0; 64],
-            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0],
         };
         let (qhl, qha, qhb, qm) = (query_gf.hist_l_blob(), query_gf.hist_a_blob(), query_gf.hist_b_blob(), query_gf.moments_blob());
 
@@ -2119,7 +2119,7 @@ mod tests {
             hist_l: vec![55.0; 64],
             hist_a: vec![27.0; 64],
             hist_b: vec![27.0; 64],
-            moments: [0.52, 0.11, 0.01, 0.05, 0.01, 0.05],
+            moments: [0.52, 0.11, 0.01, 0.05, 0.01, 0.0, 0.0, 0.0, 0.01, 0.05, 0.0, 0.0],
         };
         let (nhl, nha, nhb, nm) = (near_gf.hist_l_blob(), near_gf.hist_a_blob(), near_gf.hist_b_blob(), near_gf.moments_blob());
 
@@ -2128,7 +2128,7 @@ mod tests {
             hist_l: vec![1000.0; 64],
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.9, 0.01, 0.0, 0.01, 0.0, 0.01],
+            moments: [0.9, 0.01, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0],
         };
         let (fhl, fha, fhb, fm) = (far_gf.hist_l_blob(), far_gf.hist_a_blob(), far_gf.hist_b_blob(), far_gf.moments_blob());
 
@@ -2259,7 +2259,7 @@ mod tests {
             hist_l: vec![100.0; 64],
             hist_a: vec![50.0; 64],
             hist_b: vec![50.0; 64],
-            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0],
         };
         (gf.hist_l_blob(), gf.hist_a_blob(), gf.hist_b_blob(), gf.moments_blob())
     }
@@ -2344,7 +2344,7 @@ mod tests {
             hist_l: vec![50.0; 64],
             hist_a: vec![25.0; 64],
             hist_b: vec![25.0; 64],
-            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.05],
+            moments: [0.5, 0.1, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0],
         };
         let (qhl, qha, qhb, qm) = (query_gf.hist_l_blob(), query_gf.hist_a_blob(), query_gf.hist_b_blob(), query_gf.moments_blob());
 
@@ -2353,7 +2353,7 @@ mod tests {
             hist_l: vec![55.0; 64],
             hist_a: vec![27.0; 64],
             hist_b: vec![27.0; 64],
-            moments: [0.52, 0.11, 0.01, 0.05, 0.01, 0.05],
+            moments: [0.52, 0.11, 0.01, 0.05, 0.01, 0.0, 0.0, 0.0, 0.01, 0.05, 0.0, 0.0],
         };
         let (nhl, nha, nhb, nm) = (near_gf.hist_l_blob(), near_gf.hist_a_blob(), near_gf.hist_b_blob(), near_gf.moments_blob());
 
@@ -2362,7 +2362,7 @@ mod tests {
             hist_l: vec![1000.0; 64], // Concentrated in one bin
             hist_a: vec![1.0; 64],
             hist_b: vec![1.0; 64],
-            moments: [0.9, 0.01, 0.0, 0.01, 0.0, 0.01],
+            moments: [0.9, 0.01, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0],
         };
         let (fhl, fha, fhb, fm) = (far_gf.hist_l_blob(), far_gf.hist_a_blob(), far_gf.hist_b_blob(), far_gf.moments_blob());
 

@@ -313,7 +313,7 @@ mod tests {
             hist_l: vec![0.2, 0.8],
             hist_a: vec![0.1, 0.9],
             hist_b: vec![0.3, 0.7],
-            moments: [0.5, 0.1, 0.0, 0.0, 0.0, 0.0],
+            moments: [0.5, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         let (l, a, b) = histogram_centroid(std::iter::once(&f));
         assert!((l[0] - 0.2).abs() < 1e-10);
@@ -328,13 +328,13 @@ mod tests {
             hist_l: vec![0.0, 1.0],
             hist_a: vec![0.0, 0.0],
             hist_b: vec![0.0, 0.0],
-            moments: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            moments: [0.0; 12],
         };
         let f2 = GradingFeatures {
             hist_l: vec![1.0, 0.0],
             hist_a: vec![0.0, 0.0],
             hist_b: vec![0.0, 0.0],
-            moments: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            moments: [0.0; 12],
         };
         let (l, _, _) = histogram_centroid([&f1, &f2].into_iter());
         assert!((l[0] - 0.5).abs() < 1e-10);

@@ -95,8 +95,8 @@ fn compute_histogram(
 /// Compute color moments for three Oklab channels.
 /// Input:  l_data, a_data, b_data — separate channel arrays
 ///         data_len — number of pixels per channel
-///         out      — output array of size 6: [L_mean, L_std, a_mean, a_std, b_mean, b_std]
-/// Returns: 6 on success, negative error code on failure.
+///         out      — output array of size 12: [L_mean, L_std, L_skew, L_kurt, a_mean, a_std, a_skew, a_kurt, b_mean, b_std, b_skew, b_kurt]
+/// Returns: 12 on success, negative error code on failure.
 fn compute_color_moments(
   l_data: FixedArray[Double],
   a_data: FixedArray[Double],
@@ -104,15 +104,18 @@ fn compute_color_moments(
   data_len: Int,
   out: FixedArray[Double]
 ) -> Int {
+  let out_size = 12
   if data_len < 1 {
     // Return all zeros for empty input
     let mut z = 0
-    while z < 6 {
+    while z < out_size {
       out[z] = 0.0
       z = z + 1
     }
-    return 6
+    return out_size
   }
+
+  let n = data_len.to_double()
 
   // Compute mean for each channel
   let mut sum_l = 0.0
@@ -126,43 +129,73 @@ fn compute_color_moments(
     i = i + 1
   }
 
-  let mean_l = sum_l / data_len.to_double()
-  let mean_a = sum_a / data_len.to_double()
-  let mean_b = sum_b / data_len.to_double()
+  let mean_l = sum_l / n
+  let mean_a = sum_a / n
+  let mean_b = sum_b / n
 
-  // Compute variance (population) for each channel
-  let mut var_l = 0.0
-  let mut var_a = 0.0
-  let mut var_b = 0.0
+  // Compute variance, m3 (skewness), m4 (kurtosis) for each channel
+  let mut var_l = 0.0; let mut var_a = 0.0; let mut var_b = 0.0
+  let mut m3_l = 0.0;  let mut m3_a = 0.0;  let mut m3_b = 0.0
+  let mut m4_l = 0.0;  let mut m4_a = 0.0;  let mut m4_b = 0.0
   let mut j = 0
   while j < data_len {
     let dl = l_data[j] - mean_l
     let da = a_data[j] - mean_a
     let db = b_data[j] - mean_b
-    var_l = var_l + dl * dl
-    var_a = var_a + da * da
-    var_b = var_b + db * db
+    let dl2 = dl * dl
+    let da2 = da * da
+    let db2 = db * db
+    var_l = var_l + dl2
+    var_a = var_a + da2
+    var_b = var_b + db2
+    m3_l = m3_l + dl2 * dl
+    m3_a = m3_a + da2 * da
+    m3_b = m3_b + db2 * db
+    m4_l = m4_l + dl2 * dl2
+    m4_a = m4_a + da2 * da2
+    m4_b = m4_b + db2 * db2
     j = j + 1
   }
 
-  var_l = var_l / data_len.to_double()
-  var_a = var_a / data_len.to_double()
-  var_b = var_b / data_len.to_double()
+  var_l = var_l / n
+  var_a = var_a / n
+  var_b = var_b / n
+  m3_l = m3_l / n
+  m3_a = m3_a / n
+  m3_b = m3_b / n
+  m4_l = m4_l / n
+  m4_a = m4_a / n
+  m4_b = m4_b / n
 
-  // Compute std: sqrt(variance), guard against negative (numerical safety)
-  // Use @math.pow(x, 0.5) instead of @math.sqrt (Epic 1 retro: verify sqrt works)
+  // Std: sqrt(variance), guard against negative (numerical safety)
   let std_l = if var_l <= 0.0 { 0.0 } else { @math.pow(var_l, 0.5) }
   let std_a = if var_a <= 0.0 { 0.0 } else { @math.pow(var_a, 0.5) }
   let std_b = if var_b <= 0.0 { 0.0 } else { @math.pow(var_b, 0.5) }
 
+  // Skewness: m3 / std^3 (guard against zero std)
+  let skew_l = if std_l <= 0.0 { 0.0 } else { m3_l / (std_l * std_l * std_l) }
+  let skew_a = if std_a <= 0.0 { 0.0 } else { m3_a / (std_a * std_a * std_a) }
+  let skew_b = if std_b <= 0.0 { 0.0 } else { m3_b / (std_b * std_b * std_b) }
+
+  // Excess Kurtosis: m4 / std^4 - 3 (guard against zero std)
+  let kurt_l = if std_l <= 0.0 { 0.0 } else { m4_l / (std_l * std_l * std_l * std_l) - 3.0 }
+  let kurt_a = if std_a <= 0.0 { 0.0 } else { m4_a / (std_a * std_a * std_a * std_a) - 3.0 }
+  let kurt_b = if std_b <= 0.0 { 0.0 } else { m4_b / (std_b * std_b * std_b * std_b) - 3.0 }
+
   out[0] = mean_l
   out[1] = std_l
-  out[2] = mean_a
-  out[3] = std_a
-  out[4] = mean_b
-  out[5] = std_b
+  out[2] = skew_l
+  out[3] = kurt_l
+  out[4] = mean_a
+  out[5] = std_a
+  out[6] = skew_a
+  out[7] = kurt_a
+  out[8] = mean_b
+  out[9] = std_b
+  out[10] = skew_b
+  out[11] = kurt_b
 
-  6
+  out_size
 }
 
 // ============================================================
@@ -288,7 +321,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
@@ -306,7 +339,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
@@ -338,15 +371,21 @@ test {
   let l_data = FixedArray::make(3, 0.5)
   let a_data = FixedArray::make(3, 0.1)
   let b_data = FixedArray::make(3, -0.2)
-  let out = FixedArray::make(6, 0.0)
+  let out = FixedArray::make(12, 0.0)
   let result = compute_color_moments(l_data, a_data, b_data, 3, out)
-  assert_eq(result, 6)
+  assert_eq(result, 12)
   assert_eq(gf_approx_eq(out[0], 0.5), true)   // L_mean
   assert_eq(gf_approx_eq(out[1], 0.0), true)   // L_std
-  assert_eq(gf_approx_eq(out[2], 0.1), true)   // a_mean
-  assert_eq(gf_approx_eq(out[3], 0.0), true)   // a_std
-  assert_eq(gf_approx_eq(out[4], -0.2), true)  // b_mean
-  assert_eq(gf_approx_eq(out[5], 0.0), true)   // b_std
+  assert_eq(gf_approx_eq(out[2], 0.0), true)   // L_skew (all same value → 0)
+  assert_eq(gf_approx_eq(out[3], 0.0), true)   // L_kurt (all same value → 0)
+  assert_eq(gf_approx_eq(out[4], 0.1), true)   // a_mean
+  assert_eq(gf_approx_eq(out[5], 0.0), true)   // a_std
+  assert_eq(gf_approx_eq(out[6], 0.0), true)   // a_skew
+  assert_eq(gf_approx_eq(out[7], 0.0), true)   // a_kurt
+  assert_eq(gf_approx_eq(out[8], -0.2), true)  // b_mean
+  assert_eq(gf_approx_eq(out[9], 0.0), true)   // b_std
+  assert_eq(gf_approx_eq(out[10], 0.0), true)  // b_skew
+  assert_eq(gf_approx_eq(out[11], 0.0), true)  // b_kurt
 }
 
 test {
@@ -358,15 +397,15 @@ test {
   a_data[0] = -1.0; a_data[1] = 1.0
   let b_data = FixedArray::make(2, 0.0)
   b_data[0] = 0.5; b_data[1] = 0.5
-  let out = FixedArray::make(6, 0.0)
+  let out = FixedArray::make(12, 0.0)
   let result = compute_color_moments(l_data, a_data, b_data, 2, out)
-  assert_eq(result, 6)
+  assert_eq(result, 12)
   assert_eq(gf_approx_eq(out[0], 1.0), true)    // L_mean
   assert_eq(gf_approx_eq(out[1], 1.0), true)    // L_std
-  assert_eq(gf_approx_eq(out[2], 0.0), true)    // a_mean
-  assert_eq(gf_approx_eq(out[3], 1.0), true)    // a_std
-  assert_eq(gf_approx_eq(out[4], 0.5), true)    // b_mean
-  assert_eq(gf_approx_eq(out[5], 0.0), true)    // b_std (all same → 0.0)
+  assert_eq(gf_approx_eq(out[4], 0.0), true)    // a_mean
+  assert_eq(gf_approx_eq(out[5], 1.0), true)    // a_std
+  assert_eq(gf_approx_eq(out[8], 0.5), true)    // b_mean
+  assert_eq(gf_approx_eq(out[9], 0.0), true)    // b_std (all same → 0.0)
 }
 
 test {
@@ -374,11 +413,11 @@ test {
   let l_data = FixedArray::make(0, 0.0)
   let a_data = FixedArray::make(0, 0.0)
   let b_data = FixedArray::make(0, 0.0)
-  let out = FixedArray::make(6, 0.0)
+  let out = FixedArray::make(12, 0.0)
   let result = compute_color_moments(l_data, a_data, b_data, 0, out)
-  assert_eq(result, 6)
+  assert_eq(result, 12)
   let mut z = 0
-  while z < 6 {
+  while z < 12{
     assert_eq(gf_approx_eq(out[z], 0.0), true)
     z = z + 1
   }
@@ -389,9 +428,9 @@ test {
   let l_data = FixedArray::make(3, 0.0)
   let a_data = FixedArray::make(3, 0.0)
   let b_data = FixedArray::make(3, 0.0)
-  let out = FixedArray::make(6, 0.0)
+  let out = FixedArray::make(12, 0.0)
   let result = compute_color_moments(l_data, a_data, b_data, 3, out)
-  assert_eq(result, 6)
+  assert_eq(result, 12)
   // All finite
   assert_eq(out[0] == out[0], true)
   assert_eq(out[1] == out[1], true)
@@ -555,7 +594,7 @@ pub fn mengxi_extract_grading_features(
 
   // Write output sizes
   hist_len_ptr[0] = bin_count.to_double()
-  moments_len_ptr[0] = 6.0
+  moments_len_ptr[0] = 12.0
 
   0
 }
@@ -586,7 +625,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
@@ -596,14 +635,13 @@ test {
   assert_eq(result, 0)
   // Verify output sizes
   assert_eq(gf_approx_eq(hist_len[0], 64.0), true)
-  assert_eq(gf_approx_eq(moments_len[0], 6.0), true)
-  // Moments should be finite
-  assert_eq(moments[0] == moments[0], true)  // L_mean NaN check
-  assert_eq(moments[1] == moments[1], true)  // L_std NaN check
-  assert_eq(moments[2] == moments[2], true)  // a_mean NaN check
-  assert_eq(moments[3] == moments[3], true)  // a_std NaN check
-  assert_eq(moments[4] == moments[4], true)  // b_mean NaN check
-  assert_eq(moments[5] == moments[5], true)  // b_std NaN check
+  assert_eq(gf_approx_eq(moments_len[0], 12.0), true)
+  // Moments should be finite (check all 12)
+  let mut mi = 0
+  while mi < 12 {
+    assert_eq(moments[mi] == moments[mi], true)  // NaN check
+    mi = mi + 1
+  }
 }
 
 test {
@@ -612,7 +650,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
@@ -625,13 +663,12 @@ test {
   // a/b histogram: 0.0 in [-0.5, 0.5] → bin 32 (middle bin)
   assert_eq(gf_approx_eq(hist_a[32], 1.0), true)
   assert_eq(gf_approx_eq(hist_b[32], 1.0), true)
-  // Moments should be all zeros
-  assert_eq(gf_approx_eq(moments[0], 0.0), true)  // L_mean
-  assert_eq(gf_approx_eq(moments[1], 0.0), true)  // L_std
-  assert_eq(gf_approx_eq(moments[2], 0.0), true)  // a_mean
-  assert_eq(gf_approx_eq(moments[3], 0.0), true)  // a_std
-  assert_eq(gf_approx_eq(moments[4], 0.0), true)  // b_mean
-  assert_eq(gf_approx_eq(moments[5], 0.0), true)  // b_std
+  // Moments should be all zeros (black: all channels = 0)
+  let mut mi = 0
+  while mi < 12 {
+    assert_eq(gf_approx_eq(moments[mi], 0.0), true)
+    mi = mi + 1
+  }
 }
 
 test {
@@ -646,7 +683,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
@@ -663,8 +700,8 @@ test {
   assert_eq(gf_approx_eq(hist_b[expected_ab_bin], 3.0), true)
   // std should be 0.0 for solid color
   assert_eq(gf_approx_eq(moments[1], 0.0), true)  // L_std
-  assert_eq(gf_approx_eq(moments[3], 0.0), true)  // a_std
-  assert_eq(gf_approx_eq(moments[5], 0.0), true)  // b_std
+  assert_eq(gf_approx_eq(moments[5], 0.0), true)  // a_std
+  assert_eq(gf_approx_eq(moments[9], 0.0), true)  // b_std
 }
 
 test {
@@ -673,7 +710,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
@@ -689,7 +726,7 @@ test {
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
-  let moments = FixedArray::make(6, 0.0)
+  let moments = FixedArray::make(12, 0.0)
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(

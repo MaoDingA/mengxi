@@ -952,8 +952,8 @@ mod tests {
             .unwrap();
 
         if with_grading_features {
-            // Create a real 1584-byte BLOB with known pattern
-            let mut blob = Vec::with_capacity(1584);
+            // Create a real 1632-byte BLOB with known pattern (3 * 64 * 8 + 12 * 8)
+            let mut blob = Vec::with_capacity(1632);
             // hist_l: 64 f64 values (0.0, 1.0, 2.0, ...)
             for i in 0..64u32 {
                 blob.extend_from_slice(&(i as f64).to_le_bytes());
@@ -966,11 +966,11 @@ mod tests {
             for i in 0..64u32 {
                 blob.extend_from_slice(&((128 + i) as f64).to_le_bytes());
             }
-            // moments: 6 f64 values (200.0, 201.0, ...)
-            for i in 0..6u32 {
+            // moments: 12 f64 values (200.0, 201.0, ...)
+            for i in 0..12u32 {
                 blob.extend_from_slice(&((200 + i) as f64).to_le_bytes());
             }
-            assert_eq!(blob.len(), 1584);
+            assert_eq!(blob.len(), 1632);
             conn.execute(
                 "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, grading_features, feature_status) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video', ?1, 'stale')",
                 [blob],
@@ -1046,8 +1046,8 @@ mod tests {
         let color_moments: Vec<u8> = conn
             .query_row("SELECT color_moments FROM fingerprints WHERE id = 1", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(color_moments, grading_features[1536..1584]);
-        assert_eq!(color_moments.len(), 48);
+        assert_eq!(color_moments, grading_features[1536..1632]);
+        assert_eq!(color_moments.len(), 96);
     }
 
     #[test]
@@ -1103,6 +1103,6 @@ mod tests {
         let grading_features: Vec<u8> = conn
             .query_row("SELECT grading_features FROM fingerprints WHERE id = 1", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(grading_features.len(), 1584);
+        assert_eq!(grading_features.len(), 1632);
     }
 }
