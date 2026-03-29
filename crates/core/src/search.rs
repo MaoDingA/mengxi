@@ -821,7 +821,8 @@ pub fn bhattacharyya_search(
     // Load all candidates with grading features
     let mut sql = String::from(
         "SELECT fp.file_id, p.name, f.filename, f.format,
-                fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments
+                fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments,
+                COALESCE(fp.hist_bins, 64)
          FROM fingerprints fp
          JOIN files f ON f.id = fp.file_id
          JOIN projects p ON p.id = f.project_id
@@ -841,7 +842,7 @@ pub fn bhattacharyya_search(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = stmt
+    let rows: Vec<(i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32)> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -852,6 +853,7 @@ pub fn bhattacharyya_search(
                 row.get::<_, Vec<u8>>(5)?,
                 row.get::<_, Vec<u8>>(6)?,
                 row.get::<_, Vec<u8>>(7)?,
+                row.get::<_, i32>(8)?,
             ))
         })
         .map_err(|e| SearchError::DatabaseError(e.to_string()))?
@@ -868,8 +870,9 @@ pub fn bhattacharyya_search(
     // Score each candidate
     let mut scored: Vec<(f64, String, String, String)> = Vec::new();
 
-    for (_file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments) in rows {
-        let candidate = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments) {
+    for (_file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, hist_bins_i32) in rows {
+        let hist_bins = hist_bins_i32 as usize;
+        let candidate = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments, hist_bins) {
             Ok(gf) => gf,
             Err(e) => {
                 eprintln!("warning: skipping candidate {} ({}): grading feature decode failed: {}", project_name, filename, e);
@@ -914,7 +917,7 @@ pub(crate) fn load_grading_features(
     conn: &Connection,
     file_id: i64,
 ) -> Result<GradingFeatures, SearchError> {
-    let sql = "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments
+    let sql = "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, COALESCE(hist_bins, 64)
                FROM fingerprints
                WHERE file_id = ?1 AND oklab_hist_l IS NOT NULL
                LIMIT 1";
@@ -925,12 +928,14 @@ pub(crate) fn load_grading_features(
             row.get::<_, Option<Vec<u8>>>(1)?,
             row.get::<_, Option<Vec<u8>>>(2)?,
             row.get::<_, Option<Vec<u8>>>(3)?,
+            row.get::<_, i32>(4)?,
         ))
     });
 
     match result {
-        Ok((Some(hist_l), Some(hist_a), Some(hist_b), Some(moments))) => {
-            GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments)
+        Ok((Some(hist_l), Some(hist_a), Some(hist_b), Some(moments), hist_bins_i32)) => {
+            let hist_bins = hist_bins_i32 as usize;
+            GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments, hist_bins)
                 .map_err(|e| SearchError::DatabaseError(format!("grading feature decode: {}", e)))
         }
         Ok(_) => Err(SearchError::NoFingerprints),
@@ -1058,6 +1063,7 @@ pub fn hybrid_search(
     let mut sql = String::from(
         "SELECT fp.id, fp.file_id, p.name, f.filename, f.format,
                 fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments,
+                COALESCE(fp.hist_bins, 64),
                 fp.embedding, fp.color_space_tag, fp.feature_status
          FROM fingerprints fp
          JOIN files f ON f.id = fp.file_id
@@ -1078,7 +1084,7 @@ pub fn hybrid_search(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>, String, Option<String>)> =
+    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32, Option<Vec<u8>>, String, Option<String>)> =
         stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,   // fp.id
@@ -1090,9 +1096,10 @@ pub fn hybrid_search(
                 row.get::<_, Vec<u8>>(6)?, // oklab_hist_a
                 row.get::<_, Vec<u8>>(7)?, // oklab_hist_b
                 row.get::<_, Vec<u8>>(8)?, // color_moments
-                row.get::<_, Option<Vec<u8>>>(9)?, // embedding
-                row.get::<_, String>(10)?, // color_space_tag
-                row.get::<_, Option<String>>(11)?, // feature_status
+                row.get::<_, i32>(9)?,   // hist_bins
+                row.get::<_, Option<Vec<u8>>>(10)?, // embedding
+                row.get::<_, String>(11)?, // color_space_tag
+                row.get::<_, Option<String>>(12)?, // feature_status
             ))
         })
         .map_err(|e| SearchError::DatabaseError(e.to_string()))?
@@ -1118,7 +1125,8 @@ pub fn hybrid_search(
     // Score each candidate
     let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
 
-    for (_fp_id, _file_id, project_name, filename, format, mut hist_l, mut hist_a, mut hist_b, mut moments, embedding_blob, candidate_cs_tag, feature_status) in rows {
+    for (_fp_id, _file_id, project_name, filename, format, mut hist_l, mut hist_a, mut hist_b, mut moments, hist_bins_i32, embedding_blob, candidate_cs_tag, feature_status) in rows {
+        let mut hist_bins = hist_bins_i32 as usize;
         // Check for stale fingerprint and attempt recomputation
         let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
         if is_stale {
@@ -1127,20 +1135,22 @@ pub fn hybrid_search(
                 match crate::fingerprint::reextract_grading_features(conn, _fp_id) {
                     Ok(crate::fingerprint::ReextractResult::Reextracted) => {
                         // Re-read updated BLOBs from DB for correct scoring
-                        if let Ok((new_hl, new_ha, new_hb, new_m)) = conn.query_row(
-                            "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments FROM fingerprints WHERE id = ?1",
+                        if let Ok((new_hl, new_ha, new_hb, new_m, new_bins)) = conn.query_row(
+                            "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, COALESCE(hist_bins, 64) FROM fingerprints WHERE id = ?1",
                             rusqlite::params![_fp_id],
                             |row| Ok((
                                 row.get::<_, Vec<u8>>(0)?,
                                 row.get::<_, Vec<u8>>(1)?,
                                 row.get::<_, Vec<u8>>(2)?,
                                 row.get::<_, Vec<u8>>(3)?,
+                                row.get::<_, i32>(4)?,
                             )),
                         ) {
                             hist_l = new_hl;
                             hist_a = new_ha;
                             hist_b = new_hb;
                             moments = new_m;
+                            hist_bins = new_bins as usize;
                         }
                         eprintln!("info: recomputed stale features for {} ({})", project_name, filename);
                     }
@@ -1163,7 +1173,7 @@ pub fn hybrid_search(
         }
 
         // Deserialize grading features
-        let candidate_features = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments) {
+        let candidate_features = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments, hist_bins) {
             Ok(gf) => gf,
             Err(e) => {
                 eprintln!("warning: skipping candidate {} ({}): grading feature decode failed: {}", project_name, filename, e);
@@ -1330,7 +1340,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, embedding BLOB, embedding_model TEXT, oklab_hist_l BLOB, oklab_hist_a BLOB, oklab_hist_b BLOB, color_moments BLOB, feature_status TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, embedding BLOB, embedding_model TEXT, oklab_hist_l BLOB, oklab_hist_a BLOB, oklab_hist_b BLOB, color_moments BLOB, hist_bins INTEGER NOT NULL DEFAULT 64, feature_status TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_id INTEGER NOT NULL REFERENCES fingerprints(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
              CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);",
         )

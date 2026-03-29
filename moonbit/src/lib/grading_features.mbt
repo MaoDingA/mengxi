@@ -281,7 +281,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 3, 0,
+    pixel, 3, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, -3)
@@ -299,7 +299,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 6, 0,
+    pixel, 6, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, 0)
@@ -480,13 +480,14 @@ test {
 ///         color_space_tag — reserved for future use (unused in Story 2.1)
 /// Output: hist_l_ptr, hist_a_ptr, hist_b_ptr — 64-bin histograms
 ///         moments_ptr — 6 values [L_mean, L_std, a_mean, a_std, b_mean, b_std]
-///         hist_len_ptr — output: bin_count (64)
+///         hist_len_ptr — output: bin_count
 ///         moments_len_ptr — output: 6
 /// Returns: 0 on success, negative error code on failure.
 pub fn mengxi_extract_grading_features(
   pixel_ptr : FixedArray[Double],
   pixel_len : Int,
   color_space_tag : Int,
+  hist_bins : Int,
   hist_l_ptr : FixedArray[Double],
   hist_a_ptr : FixedArray[Double],
   hist_b_ptr : FixedArray[Double],
@@ -496,9 +497,10 @@ pub fn mengxi_extract_grading_features(
 ) -> Int {
   if pixel_len < 3 { return -1 }
   if pixel_len % 3 != 0 { return -2 }
+  if hist_bins < 8 { return -4 }
 
   let num_pixels = pixel_len / 3
-  let bin_count = 64
+  let bin_count = hist_bins
 
   // Extract L, a, b channels from interleaved input, filtering non-finite values
   let l_data = FixedArray::make(num_pixels, 0.0)
@@ -554,7 +556,7 @@ pub fn mengxi_extract_grading_features(
 fn init {
   // DCE prevention: reference all exported functions to prevent dead code elimination
   let _ = mengxi_extract_grading_features(
-    FixedArray::make(0, 0.0), 0, 0,
+    FixedArray::make(0, 0.0), 0, 0, 64,
     FixedArray::make(0, 0.0), FixedArray::make(0, 0.0), FixedArray::make(0, 0.0),
     FixedArray::make(0, 0.0), FixedArray::make(0, 0.0), FixedArray::make(0, 0.0)
   )
@@ -577,7 +579,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 6, 0,
+    pixel, 6, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, 0)
@@ -603,7 +605,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 3, 0,
+    pixel, 3, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, 0)
@@ -637,7 +639,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 9, 0,
+    pixel, 9, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, 0)
@@ -664,7 +666,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 2, 0,
+    pixel, 2, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, -1)
@@ -680,7 +682,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 4, 0,
+    pixel, 4, 0, 64,
     hist_l, hist_a, hist_b, moments, hist_len, moments_len
   )
   assert_eq(result, -2)

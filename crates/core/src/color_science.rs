@@ -147,6 +147,7 @@ extern "C" {
         pixel_len: i32,
         pixel_ptr: *const f64,
         color_space_tag: i32,
+        hist_bins: i32,
         hist_l_ptr: *mut f64,
         hist_a_ptr: *mut f64,
         hist_b_ptr: *mut f64,
@@ -605,13 +606,15 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
 /// # Arguments
 /// * `oklab_data` — Interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...], length divisible by 3.
 /// * `color_space_tag` — Source color space tag (0=Linear, 1=Log/ACEScct, 2=Video/sRGB).
+/// * `hist_bins` — Number of histogram bins per channel (must be >= 8, default 64).
 ///
 /// # Returns
-/// * `Ok(GradingFeatures)` with 3 histograms (64 bins each) and 6 moments.
+/// * `Ok(GradingFeatures)` with 3 histograms (`hist_bins` bins each) and 6 moments.
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
 pub fn extract_grading_features(
     oklab_data: &[f64],
     color_space_tag: i32,
+    hist_bins: usize,
 ) -> Result<GradingFeatures, ColorScienceError> {
     if oklab_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -635,6 +638,12 @@ pub fn extract_grading_features(
             "oklab data length must be divisible by 3 (L,a,b)".to_string(),
         ));
     }
+    if hist_bins < 8 || hist_bins > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -4,
+            format!("hist_bins must be >= 8, got {}", hist_bins),
+        ));
+    }
 
     // Reject NaN/Inf input at the Rust boundary — MoonBit computation would
     // produce NaN moments and unpredictable histogram bins for non-finite values.
@@ -645,9 +654,9 @@ pub fn extract_grading_features(
         ));
     }
 
-    let mut hist_l = vec![0.0_f64; GradingFeatures::HIST_BINS];
-    let mut hist_a = vec![0.0_f64; GradingFeatures::HIST_BINS];
-    let mut hist_b = vec![0.0_f64; GradingFeatures::HIST_BINS];
+    let mut hist_l = vec![0.0_f64; hist_bins];
+    let mut hist_a = vec![0.0_f64; hist_bins];
+    let mut hist_b = vec![0.0_f64; hist_bins];
     let mut moments = [0.0_f64; GradingFeatures::MOMENTS_COUNT];
     let mut out_hist_len = [0.0_f64; 1];
     let mut out_moments_len = [0.0_f64; 1];
@@ -657,6 +666,7 @@ pub fn extract_grading_features(
             oklab_data.len() as i32,
             oklab_data.as_ptr(),
             color_space_tag,
+            hist_bins as i32,
             hist_l.as_mut_ptr(),
             hist_a.as_mut_ptr(),
             hist_b.as_mut_ptr(),
@@ -670,9 +680,10 @@ pub fn extract_grading_features(
         return Err(ColorScienceError::FfiError(
             result,
             format!(
-                "extract_grading_features pixels={} color_space_tag={}",
+                "extract_grading_features pixels={} color_space_tag={} hist_bins={}",
                 oklab_data.len() / 3,
-                color_space_tag
+                color_space_tag,
+                hist_bins
             ),
         ));
     }
@@ -1402,7 +1413,7 @@ mod tests {
     fn test_extract_grading_features_pure_black() {
         // Pure black in Oklab: L=0, a=0, b=0
         let oklab_data = [0.0_f64; 9]; // 3 pixels, all black
-        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         assert_eq!(result.hist_l.len(), 64);
         assert_eq!(result.hist_a.len(), 64);
         assert_eq!(result.hist_b.len(), 64);
@@ -1421,7 +1432,7 @@ mod tests {
     fn test_extract_grading_features_solid_color() {
         // Solid color: all pixels are L=0.5, a=0.1, b=-0.1
         let pixels: [f64; 6] = [0.5, 0.1, -0.1, 0.5, 0.1, -0.1]; // 2 identical pixels
-        let result = extract_grading_features(&pixels, 2).unwrap();
+        let result = extract_grading_features(&pixels, 2, GradingFeatures::HIST_BINS).unwrap();
         // Moments: mean should match input, std should be 0
         assert!(
             (result.moments[0] - 0.5).abs() < 1e-10,
@@ -1447,7 +1458,7 @@ mod tests {
     #[test]
     fn test_extract_grading_features_single_pixel() {
         let oklab_data = [0.75_f64, 0.0, 0.0]; // bright achromatic
-        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         assert_eq!(result.moments.len(), 6);
         // Single pixel: mean = value, std = 0
         assert!(
@@ -1466,7 +1477,7 @@ mod tests {
             0.2_f64, 0.0, 0.0,  // dark achromatic
             0.8_f64, 0.0, 0.0,  // bright achromatic
         ];
-        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         // L_mean = (0.2 + 0.8 + 0.2 + 0.8) / 4 = 0.5
         assert!(
             (result.moments[0] - 0.5).abs() < 1e-10,
@@ -1494,7 +1505,7 @@ mod tests {
             0.7_f64, -0.1, 0.1,
             0.9_f64, -0.2, 0.2,
         ];
-        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         let l_sum: f64 = result.hist_l.iter().sum();
         let a_sum: f64 = result.hist_a.iter().sum();
         let b_sum: f64 = result.hist_b.iter().sum();
@@ -1517,13 +1528,13 @@ mod tests {
 
     #[test]
     fn test_extract_grading_features_too_few_pixels() {
-        let result = extract_grading_features(&[0.5, 0.5], 2);
+        let result = extract_grading_features(&[0.5, 0.5], 2, GradingFeatures::HIST_BINS);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_extract_grading_features_not_divisible_by_3() {
-        let result = extract_grading_features(&[0.5, 0.5, 0.5, 0.5], 2);
+        let result = extract_grading_features(&[0.5, 0.5, 0.5, 0.5], 2, GradingFeatures::HIST_BINS);
         assert!(result.is_err());
     }
 
@@ -1538,7 +1549,7 @@ mod tests {
             0.5_f64, 0.0, 0.0,
             0.1_f64, 0.001, -0.001,
         ];
-        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         for (i, &val) in result.hist_l.iter().enumerate() {
             assert!(val.is_finite(), "hist_l[{}] should be finite, got {}", i, val);
         }
@@ -1565,7 +1576,7 @@ mod tests {
             oklab_data.push(a);
             oklab_data.push(b);
         }
-        let result = extract_grading_features(&oklab_data, 2).unwrap();
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS).unwrap();
         assert_eq!(result.hist_l.len(), 64);
         assert_eq!(result.moments.len(), 6);
         // L_mean should be ~0.5
@@ -1589,7 +1600,7 @@ mod tests {
     fn test_extract_grading_features_nan_input_rejected() {
         // NaN input should be rejected by the FFI function (returns -3)
         let oklab_data = [f64::NAN, 0.0, 0.0];
-        let result = extract_grading_features(&oklab_data, 2);
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS);
         assert!(result.is_err());
     }
 
@@ -1597,7 +1608,7 @@ mod tests {
     fn test_extract_grading_features_mixed_nan_rejected() {
         // Any NaN in the input causes rejection (safer than silently dropping pixels)
         let oklab_data = [0.5_f64, 0.0, 0.0, f64::NAN, 0.0, 0.0];
-        let result = extract_grading_features(&oklab_data, 2);
+        let result = extract_grading_features(&oklab_data, 2, GradingFeatures::HIST_BINS);
         assert!(result.is_err());
     }
 

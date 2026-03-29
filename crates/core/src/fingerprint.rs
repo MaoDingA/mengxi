@@ -303,7 +303,7 @@ pub fn reextract_grading_features(
     };
 
     // Extract grading features via FFI
-    let features = match crate::color_science::extract_grading_features(&oklab_data, color_space_tag_int) {
+    let features = match crate::color_science::extract_grading_features(&oklab_data, color_space_tag_int, crate::color_science::GradingFeatures::HIST_BINS) {
         Ok(f) => f,
         Err(e) => return Ok(ReextractResult::Error(format!("REEXTRACT_FFI_ERROR -- {}", e))),
     };
@@ -314,12 +314,12 @@ pub fn reextract_grading_features(
     let hist_b_blob = features.hist_b_blob();
     let moments_blob = features.moments_blob();
 
-    // Atomic UPDATE: all 4 BLOBs + feature_status in one statement
+    // Atomic UPDATE: all 4 BLOBs + hist_bins + feature_status in one statement
     if let Err(e) = conn.execute(
         "UPDATE fingerprints
-         SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, feature_status = 'fresh'
-         WHERE id = ?5",
-        rusqlite::params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, fingerprint_id],
+         SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, hist_bins = ?5, feature_status = 'fresh'
+         WHERE id = ?6",
+        rusqlite::params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, crate::color_science::GradingFeatures::HIST_BINS as i32, fingerprint_id],
     ) {
         return Ok(ReextractResult::Error(format!("REEXTRACT_DB_ERROR -- {}", e)));
     }

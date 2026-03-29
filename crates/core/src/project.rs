@@ -393,7 +393,7 @@ pub fn register_project(
                             };
                             match color_science::rgb_to_oklab_batch(&downsampled_data, &color_tag)
                                 .and_then(|oklab_data| {
-                                    color_science::extract_grading_features(&oklab_data, color_space_tag_int)
+                                    color_science::extract_grading_features(&oklab_data, color_space_tag_int, color_science::GradingFeatures::HIST_BINS)
                                 })
                             {
                                 Ok(features) => {
@@ -402,8 +402,8 @@ pub fn register_project(
                                     let hist_b_blob = features.hist_b_blob();
                                     let moments_blob = features.moments_blob();
                                     if let Err(e) = conn.execute(
-                                        "UPDATE fingerprints SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, feature_status = 'fresh' WHERE file_id = ?5",
-                                        params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, file_id],
+                                        "UPDATE fingerprints SET oklab_hist_l = ?1, oklab_hist_a = ?2, oklab_hist_b = ?3, color_moments = ?4, hist_bins = ?5, feature_status = 'fresh' WHERE file_id = ?6",
+                                        params![hist_l_blob, hist_a_blob, hist_b_blob, moments_blob, color_science::GradingFeatures::HIST_BINS as i32, file_id],
                                     ) {
                                         eprintln!("Warning: failed to store grading features for {}: {}", filename, e);
                                     } else {

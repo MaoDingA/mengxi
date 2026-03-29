@@ -3,90 +3,98 @@ use crate::color_science::ColorScienceError;
 /// Grading features extracted from Oklab pixel data: histograms and color moments.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GradingFeatures {
-    /// L-channel histogram (64 bins, range [0.0, 1.0]).
+    /// L-channel histogram (hist_bins bins, range [0.0, 1.0]).
     pub hist_l: Vec<f64>,
-    /// a-channel histogram (64 bins, range [-0.5, 0.5]).
+    /// a-channel histogram (hist_bins bins, range [-0.5, 0.5]).
     pub hist_a: Vec<f64>,
-    /// b-channel histogram (64 bins, range [-0.5, 0.5]).
+    /// b-channel histogram (hist_bins bins, range [-0.5, 0.5]).
     pub hist_b: Vec<f64>,
     /// Color moments: [L_mean, L_std, a_mean, a_std, b_mean, b_std].
     pub moments: [f64; 6],
 }
 
 impl GradingFeatures {
-    /// Number of histogram bins per channel (must match MoonBit constant).
+    /// Default number of histogram bins per channel.
     pub const HIST_BINS: usize = 64;
     /// Number of moments: mean + stddev for each of L, a, b.
     pub const MOMENTS_COUNT: usize = 6;
-    /// BLOB size for a single histogram channel: 64 bins x 8 bytes = 512.
-    pub const CHANNEL_BLOB_SIZE: usize = Self::HIST_BINS * 8;
+
+    /// Returns the number of bins in each histogram channel.
+    pub fn hist_bins(&self) -> usize {
+        self.hist_l.len()
+    }
+
+    /// BLOB size for a single histogram channel: bins * 8 bytes.
+    pub fn channel_blob_size(&self) -> usize {
+        self.hist_bins() * 8
+    }
+
     /// BLOB size for moments: 6 x 8 bytes = 48.
-    pub const MOMENTS_BLOB_SIZE: usize = Self::MOMENTS_COUNT * 8;
-    /// Total BLOB size: 3 channels x 64 bins x 8 bytes + 6 moments x 8 bytes = 1584.
-    pub const TOTAL_BLOB_SIZE: usize =
-        3 * Self::HIST_BINS * 8 + Self::MOMENTS_COUNT * 8;
+    pub const fn moments_blob_size() -> usize {
+        Self::MOMENTS_COUNT * 8
+    }
+
+    /// Total BLOB size: 3 channels * bins * 8 bytes + 6 moments * 8 bytes.
+    pub fn total_blob_size(&self) -> usize {
+        3 * self.hist_bins() * 8 + Self::MOMENTS_COUNT * 8
+    }
 
     /// Serialize grading features to a little-endian BLOB.
     ///
-    /// Layout: hist_l (512 bytes) + hist_a (512 bytes) + hist_b (512 bytes) + moments (48 bytes).
-    /// Total: 1584 bytes. No header, no padding.
+    /// Layout: hist_l (bins*8 bytes) + hist_a (bins*8 bytes) + hist_b (bins*8 bytes) + moments (48 bytes).
+    /// No header, no padding.
     ///
     /// # Panics
-    /// Panics if any histogram vector length is not `HIST_BINS` (64).
+    /// Panics if any histogram vector length differs from the others.
     pub fn to_blob(&self) -> Vec<u8> {
-        assert_eq!(
-            self.hist_l.len(),
-            Self::HIST_BINS,
-            "hist_l must have exactly {} bins, got {}",
-            Self::HIST_BINS,
-            self.hist_l.len()
-        );
+        let bins = self.hist_bins();
         assert_eq!(
             self.hist_a.len(),
-            Self::HIST_BINS,
-            "hist_a must have exactly {} bins, got {}",
-            Self::HIST_BINS,
+            bins,
+            "hist_a must have {} bins, got {}",
+            bins,
             self.hist_a.len()
         );
         assert_eq!(
             self.hist_b.len(),
-            Self::HIST_BINS,
-            "hist_b must have exactly {} bins, got {}",
-            Self::HIST_BINS,
+            bins,
+            "hist_b must have {} bins, got {}",
+            bins,
             self.hist_b.len()
         );
-        let mut blob = Vec::with_capacity(Self::TOTAL_BLOB_SIZE);
+        let mut blob = Vec::with_capacity(self.total_blob_size());
         Self::write_channel(&mut blob, &self.hist_l);
         Self::write_channel(&mut blob, &self.hist_a);
         Self::write_channel(&mut blob, &self.hist_b);
         for &m in &self.moments {
             blob.extend_from_slice(&m.to_le_bytes());
         }
-        debug_assert_eq!(blob.len(), Self::TOTAL_BLOB_SIZE);
+        debug_assert_eq!(blob.len(), self.total_blob_size());
         blob
     }
 
     /// Deserialize grading features from a little-endian BLOB.
     ///
-    /// The blob must be exactly 1584 bytes. Returns `ColorScienceError` on size mismatch.
-    pub fn from_blob(blob: &[u8]) -> Result<Self, ColorScienceError> {
-        if blob.len() != Self::TOTAL_BLOB_SIZE {
+    /// The blob must be exactly `3 * hist_bins * 8 + 48` bytes.
+    /// Returns `ColorScienceError` on size mismatch.
+    pub fn from_blob(blob: &[u8], hist_bins: usize) -> Result<Self, ColorScienceError> {
+        let expected = 3 * hist_bins * 8 + Self::MOMENTS_COUNT * 8;
+        if blob.len() != expected {
             return Err(ColorScienceError::GradingFeatureDecodeError(format!(
-                "expected {} bytes, got {}",
-                Self::TOTAL_BLOB_SIZE,
-                blob.len()
+                "expected {} bytes ({} bins), got {}",
+                expected, hist_bins, blob.len()
             )));
         }
         let mut offset = 0;
-        let hist_l = Self::read_channel(blob, &mut offset);
-        let hist_a = Self::read_channel(blob, &mut offset);
-        let hist_b = Self::read_channel(blob, &mut offset);
+        let hist_l = Self::read_channel_n(blob, &mut offset, hist_bins);
+        let hist_a = Self::read_channel_n(blob, &mut offset, hist_bins);
+        let hist_b = Self::read_channel_n(blob, &mut offset, hist_bins);
         let mut moments = [0.0_f64; Self::MOMENTS_COUNT];
         for m in &mut moments {
             *m = f64::from_le_bytes(blob[offset..offset + 8].try_into().unwrap());
             offset += 8;
         }
-        debug_assert_eq!(offset, Self::TOTAL_BLOB_SIZE);
+        debug_assert_eq!(offset, expected);
         Ok(Self {
             hist_l,
             hist_a,
@@ -95,96 +103,83 @@ impl GradingFeatures {
         })
     }
 
-    /// Serialize the L-channel histogram to a 512-byte little-endian BLOB.
-    ///
-    /// # Panics
-    /// Panics if `hist_l` length is not `HIST_BINS` (64).
+    /// Serialize the L-channel histogram to a little-endian BLOB.
     pub fn hist_l_blob(&self) -> Vec<u8> {
-        assert_eq!(self.hist_l.len(), Self::HIST_BINS);
-        let mut blob = Vec::with_capacity(Self::CHANNEL_BLOB_SIZE);
+        let mut blob = Vec::with_capacity(self.channel_blob_size());
         Self::write_channel(&mut blob, &self.hist_l);
-        debug_assert_eq!(blob.len(), Self::CHANNEL_BLOB_SIZE);
         blob
     }
 
-    /// Serialize the a-channel histogram to a 512-byte little-endian BLOB.
-    ///
-    /// # Panics
-    /// Panics if `hist_a` length is not `HIST_BINS` (64).
+    /// Serialize the a-channel histogram to a little-endian BLOB.
     pub fn hist_a_blob(&self) -> Vec<u8> {
-        assert_eq!(self.hist_a.len(), Self::HIST_BINS);
-        let mut blob = Vec::with_capacity(Self::CHANNEL_BLOB_SIZE);
+        let mut blob = Vec::with_capacity(self.channel_blob_size());
         Self::write_channel(&mut blob, &self.hist_a);
-        debug_assert_eq!(blob.len(), Self::CHANNEL_BLOB_SIZE);
         blob
     }
 
-    /// Serialize the b-channel histogram to a 512-byte little-endian BLOB.
-    ///
-    /// # Panics
-    /// Panics if `hist_b` length is not `HIST_BINS` (64).
+    /// Serialize the b-channel histogram to a little-endian BLOB.
     pub fn hist_b_blob(&self) -> Vec<u8> {
-        assert_eq!(self.hist_b.len(), Self::HIST_BINS);
-        let mut blob = Vec::with_capacity(Self::CHANNEL_BLOB_SIZE);
+        let mut blob = Vec::with_capacity(self.channel_blob_size());
         Self::write_channel(&mut blob, &self.hist_b);
-        debug_assert_eq!(blob.len(), Self::CHANNEL_BLOB_SIZE);
         blob
     }
 
     /// Serialize the color moments to a 48-byte little-endian BLOB.
     pub fn moments_blob(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(Self::MOMENTS_BLOB_SIZE);
+        let mut blob = Vec::with_capacity(Self::moments_blob_size());
         for &m in &self.moments {
             blob.extend_from_slice(&m.to_le_bytes());
         }
-        debug_assert_eq!(blob.len(), Self::MOMENTS_BLOB_SIZE);
+        debug_assert_eq!(blob.len(), Self::moments_blob_size());
         blob
     }
 
     /// Deserialize grading features from 4 separate BLOBs.
     ///
-    /// Each histogram BLOB must be exactly 512 bytes; moments BLOB must be exactly 48 bytes.
+    /// Each histogram BLOB must be exactly `hist_bins * 8` bytes; moments BLOB must be exactly 48 bytes.
     pub fn from_separate_blobs(
         hist_l: &[u8],
         hist_a: &[u8],
         hist_b: &[u8],
         moments: &[u8],
+        hist_bins: usize,
     ) -> Result<Self, ColorScienceError> {
-        if hist_l.len() != Self::CHANNEL_BLOB_SIZE {
+        let channel_size = hist_bins * 8;
+        if hist_l.len() != channel_size {
             return Err(ColorScienceError::GradingFeatureDecodeError(format!(
                 "hist_l expected {} bytes, got {}",
-                Self::CHANNEL_BLOB_SIZE,
+                channel_size,
                 hist_l.len()
             )));
         }
-        if hist_a.len() != Self::CHANNEL_BLOB_SIZE {
+        if hist_a.len() != channel_size {
             return Err(ColorScienceError::GradingFeatureDecodeError(format!(
                 "hist_a expected {} bytes, got {}",
-                Self::CHANNEL_BLOB_SIZE,
+                channel_size,
                 hist_a.len()
             )));
         }
-        if hist_b.len() != Self::CHANNEL_BLOB_SIZE {
+        if hist_b.len() != channel_size {
             return Err(ColorScienceError::GradingFeatureDecodeError(format!(
                 "hist_b expected {} bytes, got {}",
-                Self::CHANNEL_BLOB_SIZE,
+                channel_size,
                 hist_b.len()
             )));
         }
-        if moments.len() != Self::MOMENTS_BLOB_SIZE {
+        if moments.len() != Self::moments_blob_size() {
             return Err(ColorScienceError::GradingFeatureDecodeError(format!(
                 "moments expected {} bytes, got {}",
-                Self::MOMENTS_BLOB_SIZE,
+                Self::moments_blob_size(),
                 moments.len()
             )));
         }
 
         let mut offset = 0;
-        let parsed_hist_l = Self::read_channel(hist_l, &mut offset);
+        let parsed_hist_l = Self::read_channel_n(hist_l, &mut offset, hist_bins);
         let mut offset = 0;
-        let parsed_hist_a = Self::read_channel(hist_a, &mut offset);
+        let parsed_hist_a = Self::read_channel_n(hist_a, &mut offset, hist_bins);
         let mut offset = 0;
-        let parsed_hist_b = Self::read_channel(hist_b, &mut offset);
+        let parsed_hist_b = Self::read_channel_n(hist_b, &mut offset, hist_bins);
 
         let mut parsed_moments = [0.0_f64; Self::MOMENTS_COUNT];
         for (i, m) in parsed_moments.iter_mut().enumerate() {
@@ -209,9 +204,9 @@ impl GradingFeatures {
         }
     }
 
-    fn read_channel(blob: &[u8], offset: &mut usize) -> Vec<f64> {
-        let mut channel = Vec::with_capacity(Self::HIST_BINS);
-        for _ in 0..Self::HIST_BINS {
+    fn read_channel_n(blob: &[u8], offset: &mut usize, bins: usize) -> Vec<f64> {
+        let mut channel = Vec::with_capacity(bins);
+        for _ in 0..bins {
             let val = f64::from_le_bytes(blob[*offset..*offset + 8].try_into().unwrap());
             channel.push(val);
             *offset += 8;
@@ -233,8 +228,8 @@ mod tests {
             moments: [0.5, 0.2, -0.03, 0.15, 0.01, 0.08],
         };
         let blob = original.to_blob();
-        assert_eq!(blob.len(), GradingFeatures::TOTAL_BLOB_SIZE);
-        let restored = GradingFeatures::from_blob(&blob).unwrap();
+        assert_eq!(blob.len(), original.total_blob_size());
+        let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
         assert_eq!(restored, original);
     }
 
@@ -247,8 +242,8 @@ mod tests {
             moments: [0.0; 6],
         };
         let blob = original.to_blob();
-        assert_eq!(blob.len(), GradingFeatures::TOTAL_BLOB_SIZE);
-        let restored = GradingFeatures::from_blob(&blob).unwrap();
+        assert_eq!(blob.len(), original.total_blob_size());
+        let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
         assert_eq!(restored, original);
     }
 
@@ -261,7 +256,7 @@ mod tests {
             moments: [f64::NEG_INFINITY, 1.0, -1.0, 0.0, 3.14159, 2.71828],
         };
         let blob = original.to_blob();
-        let restored = GradingFeatures::from_blob(&blob).unwrap();
+        let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
         assert_eq!(restored, original);
     }
 
@@ -285,14 +280,14 @@ mod tests {
             moments: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         let blob = original.to_blob();
-        let restored = GradingFeatures::from_blob(&blob).unwrap();
+        let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
         assert_eq!(restored, original);
     }
 
     #[test]
     fn from_blob_too_short() {
         let short_blob = vec![0u8; 100];
-        let result = GradingFeatures::from_blob(&short_blob);
+        let result = GradingFeatures::from_blob(&short_blob, 64);
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("expected 1584 bytes"), "unexpected error: {}", msg);
@@ -302,7 +297,7 @@ mod tests {
     #[test]
     fn from_blob_too_long() {
         let long_blob = vec![0u8; 2000];
-        let result = GradingFeatures::from_blob(&long_blob);
+        let result = GradingFeatures::from_blob(&long_blob, 64);
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("expected 1584 bytes"), "unexpected error: {}", msg);
@@ -311,14 +306,20 @@ mod tests {
 
     #[test]
     fn from_blob_empty() {
-        let result = GradingFeatures::from_blob(&[]);
+        let result = GradingFeatures::from_blob(&[], 64);
         assert!(result.is_err());
     }
 
     #[test]
-    fn blob_size_constant() {
-        assert_eq!(GradingFeatures::TOTAL_BLOB_SIZE, 1584);
-        assert_eq!(GradingFeatures::TOTAL_BLOB_SIZE, 3 * 64 * 8 + 6 * 8);
+    fn blob_size_64_bins() {
+        let features = GradingFeatures {
+            hist_l: vec![0.0; 64],
+            hist_a: vec![0.0; 64],
+            hist_b: vec![0.0; 64],
+            moments: [0.0; 6],
+        };
+        assert_eq!(features.total_blob_size(), 1584);
+        assert_eq!(features.total_blob_size(), 3 * 64 * 8 + 6 * 8);
     }
 
     #[test]
@@ -330,7 +331,7 @@ mod tests {
             moments: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
         };
         let blob = features.to_blob();
-        assert_eq!(blob.len(), GradingFeatures::TOTAL_BLOB_SIZE);
+        assert_eq!(blob.len(), features.total_blob_size());
     }
 
     #[test]
@@ -366,8 +367,8 @@ mod tests {
             moments: [f64::NAN, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         let blob = original.to_blob();
-        assert_eq!(blob.len(), GradingFeatures::TOTAL_BLOB_SIZE);
-        let restored = GradingFeatures::from_blob(&blob).unwrap();
+        assert_eq!(blob.len(), original.total_blob_size());
+        let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
         // NaN != NaN, so compare BLOB bytes instead
         assert_eq!(original.to_blob(), restored.to_blob());
         // Verify the NaN bits are preserved exactly
@@ -377,12 +378,13 @@ mod tests {
 
     #[test]
     fn from_blob_off_by_one_short() {
-        let blob = vec![0u8; GradingFeatures::TOTAL_BLOB_SIZE - 1];
-        let result = GradingFeatures::from_blob(&blob);
+        let expected = 3 * 64 * 8 + 6 * 8;
+        let blob = vec![0u8; expected - 1];
+        let result = GradingFeatures::from_blob(&blob, 64);
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(
-            msg.contains(&format!("expected {} bytes", GradingFeatures::TOTAL_BLOB_SIZE)),
+            msg.contains(&format!("expected {} bytes", expected)),
             "unexpected error: {}",
             msg
         );
@@ -390,12 +392,13 @@ mod tests {
 
     #[test]
     fn from_blob_off_by_one_long() {
-        let blob = vec![0u8; GradingFeatures::TOTAL_BLOB_SIZE + 1];
-        let result = GradingFeatures::from_blob(&blob);
+        let expected = 3 * 64 * 8 + 6 * 8;
+        let blob = vec![0u8; expected + 1];
+        let result = GradingFeatures::from_blob(&blob, 64);
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(
-            msg.contains(&format!("expected {} bytes", GradingFeatures::TOTAL_BLOB_SIZE)),
+            msg.contains(&format!("expected {} bytes", expected)),
             "unexpected error: {}",
             msg
         );
@@ -410,7 +413,7 @@ mod tests {
             moments: [0.75, 0.18, -0.042, 0.123, 0.007, 0.091],
         };
         let blob = original.to_blob();
-        let restored = GradingFeatures::from_blob(&blob).unwrap();
+        let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
 
         // Verify each field independently, not just struct equality
         assert_eq!(restored.hist_l.len(), GradingFeatures::HIST_BINS);
@@ -442,13 +445,13 @@ mod tests {
             moments: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
         };
         let blob = gf.to_blob();
-        let restored = ReExported::from_blob(&blob).unwrap();
+        let restored = ReExported::from_blob(&blob, 64).unwrap();
         assert_eq!(restored.hist_l.len(), 64);
     }
 
     #[test]
     fn error_display_format_prefix() {
-        let result = GradingFeatures::from_blob(&[]);
+        let result = GradingFeatures::from_blob(&[], 64);
         let err = result.unwrap_err();
         let msg = format!("{}", err);
         assert!(
@@ -459,10 +462,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "hist_l must have exactly 64 bins")]
+    #[should_panic(expected = "hist_a must have 32 bins")]
     fn to_blob_panics_on_wrong_histogram_length() {
         let bad_features = GradingFeatures {
-            hist_l: vec![0.0; 32], // wrong length
+            hist_l: vec![0.0; 32], // hist_a has 64, hist_l has 32 — mismatch
             hist_a: vec![0.0; 64],
             hist_b: vec![0.0; 64],
             moments: [0.0; 6],
@@ -485,6 +488,7 @@ mod tests {
             &original.hist_a_blob(),
             &original.hist_b_blob(),
             &original.moments_blob(),
+            64,
         )
         .unwrap();
         assert_eq!(restored, original);
@@ -503,6 +507,7 @@ mod tests {
             &original.hist_a_blob(),
             &original.hist_b_blob(),
             &original.moments_blob(),
+            64,
         )
         .unwrap();
         assert_eq!(restored, original);
@@ -521,6 +526,7 @@ mod tests {
             &original.hist_a_blob(),
             &original.hist_b_blob(),
             &original.moments_blob(),
+            64,
         )
         .unwrap();
         assert_eq!(restored, original);
@@ -543,6 +549,7 @@ mod tests {
             &original.hist_a_blob(),
             &original.hist_b_blob(),
             &original.moments_blob(),
+            64,
         )
         .unwrap();
         // NaN != NaN, compare bytes
@@ -565,23 +572,25 @@ mod tests {
             &features.hist_a_blob(),
             &features.hist_b_blob(),
             &features.moments_blob(),
+            64,
         )
         .unwrap();
-        let combined_restored = GradingFeatures::from_blob(&combined_blob).unwrap();
+        let combined_restored = GradingFeatures::from_blob(&combined_blob, 64).unwrap();
         assert_eq!(separate_restored, combined_restored);
         // Verify byte-level equivalence
-        assert_eq!(features.hist_l_blob(), combined_blob[0..512]);
+        let channel_size = 64 * 8;
+        assert_eq!(features.hist_l_blob(), combined_blob[0..channel_size]);
         assert_eq!(
             features.hist_a_blob(),
-            combined_blob[512..1024]
+            combined_blob[channel_size..2 * channel_size]
         );
         assert_eq!(
             features.hist_b_blob(),
-            combined_blob[1024..1536]
+            combined_blob[2 * channel_size..3 * channel_size]
         );
         assert_eq!(
             features.moments_blob(),
-            combined_blob[1536..1584]
+            combined_blob[3 * channel_size..3 * channel_size + 48]
         );
     }
 
@@ -593,6 +602,7 @@ mod tests {
             &vec![0u8; 512],
             &vec![0u8; 512],
             &vec![0u8; 48],
+            64,
         );
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
@@ -606,6 +616,7 @@ mod tests {
             &vec![0u8; 512],
             &vec![0u8; 512],
             &vec![0u8; 40],
+            64,
         );
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
@@ -620,10 +631,10 @@ mod tests {
             hist_b: vec![3.0; 64],
             moments: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
         };
-        assert_eq!(features.hist_l_blob().len(), GradingFeatures::CHANNEL_BLOB_SIZE);
-        assert_eq!(features.hist_a_blob().len(), GradingFeatures::CHANNEL_BLOB_SIZE);
-        assert_eq!(features.hist_b_blob().len(), GradingFeatures::CHANNEL_BLOB_SIZE);
-        assert_eq!(features.moments_blob().len(), GradingFeatures::MOMENTS_BLOB_SIZE);
+        assert_eq!(features.hist_l_blob().len(), features.channel_blob_size());
+        assert_eq!(features.hist_a_blob().len(), features.channel_blob_size());
+        assert_eq!(features.hist_b_blob().len(), features.channel_blob_size());
+        assert_eq!(features.moments_blob().len(), GradingFeatures::moments_blob_size());
     }
 
     #[test]
