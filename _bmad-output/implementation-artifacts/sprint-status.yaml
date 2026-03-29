@@ -160,7 +160,7 @@ development_status:
   epic-5-v2: done
   5-1-project-level-config-cascade-and-weight-validation: done
   5-2-json-output-and-stdout-stderr-separation: done
-  5-3-evaluation-dataset-format-validation: backlog
+  5-3-evaluation-dataset-format-validation: done
   # Story 5.4 implementation completed: 2026-03-27
   5-4-feature-re-extraction: done
   epic-5-v2-retrospective: optional
