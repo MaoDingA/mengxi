@@ -188,6 +188,9 @@ development_status:
   3-2-cross-project-consistency-report: done
 
   # Epic 4: Advanced Color Processing (P2)
-  epic-4-v3: backlog
-  4-1-soft-clamp-histogram-edge-handling: backlog
-  4-2-extended-color-moments-skewness-kurtosis: backlog
+  epic-4-v3: done
+  # Story 4.1 implementation completed: 2026-03-29
+  4-1-soft-clamp-histogram-edge-handling: done
+  # Story 4.2 implementation completed: 2026-03-29
+  4-2-extended-color-moments-skewness-kurtosis: done
+  epic-4-v3-retrospective: optional
