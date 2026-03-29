@@ -51,26 +51,37 @@ fn compute_histogram(
   }
 
   let range = max_val - min_val
-  // Avoid division by zero if range is 0 (all values identical)
-  // In this case, all values map to bin 0
+  let bc = bin_count.to_double()
+  // Soft clamping: instead of dumping edge values into a single bin,
+  // distribute them proportionally to adjacent bins via linear interpolation.
+  // This prevents artificial spikes at histogram boundaries.
   let mut j = 0
   while j < data_len {
     let v = data[j]
-    let mut bin_idx : Int = 0
     if range > 0.0 {
-      if v <= min_val {
-        bin_idx = 0
-      } else if v >= max_val {
-        bin_idx = bin_count - 1
+      // Soft clamp: compute fractional bin index
+      let scaled = (v - min_val) / range * bc
+      if scaled <= 0.0 {
+        // Below min: entire weight goes to bin 0
+        out[0] = out[0] + 1.0
+      } else if scaled >= bc {
+        // Above max: entire weight goes to last bin
+        out[bin_count - 1] = out[bin_count - 1] + 1.0
       } else {
-        let scaled = (v - min_val) / range * bin_count.to_double()
-        bin_idx = scaled.to_int()
+        let lo_bin = scaled.to_int()
+        let frac = scaled - lo_bin.to_double()
+        if lo_bin < bin_count - 1 {
+          out[lo_bin] = out[lo_bin] + (1.0 - frac)
+          out[lo_bin + 1] = out[lo_bin + 1] + frac
+        } else {
+          // At upper boundary: all weight to last bin
+          out[bin_count - 1] = out[bin_count - 1] + 1.0
+        }
       }
+    } else {
+      // All values identical: everything in bin 0
+      out[0] = out[0] + 1.0
     }
-    // Clamp to valid range
-    if bin_idx < 0 { bin_idx = 0 }
-    if bin_idx >= bin_count { bin_idx = bin_count - 1 }
-    out[bin_idx] = out[bin_idx] + 1.0
     j = j + 1
   }
 
