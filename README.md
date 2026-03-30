@@ -150,7 +150,7 @@ pip install -r python/requirements.txt
 
 ```bash
 # 导入 DPX 项目文件夹
-mengxi import /path/to/project --name "流浪地球2-日夜戏"
+mengxi import /path/to/project --name "X项目-日夜戏"
 
 # 导入单个 EXR 文件
 mengxi import /path/to/scene.exr --name "夜晚外景"
@@ -169,7 +169,7 @@ mengxi search /path/to/reference.png --top 5
 mengxi search --tags "暖色调,夜晚,外景" --limit 10
 
 # 在特定项目范围内搜索
-mengxi search /path/to/reference.png --project "流浪地球2" --top 3
+mengxi search /path/to/reference.png --project "X项目" --top 3
 ```
 
 ### 导出 LUT
@@ -199,20 +199,20 @@ mengxi lut-dep style.cube
 
 ```bash
 # 查看项目标签
-mengxi tag --project "流浪地球2-日夜戏"
+mengxi tag --project "X项目-日夜戏"
 
 # 添加标签
-mengxi tag --project "流浪地球2-日夜戏" --add "科幻,冷色调"
+mengxi tag --project "X项目-日夜戏" --add "科幻,冷色调"
 
 # 修正 AI 标签（触发校准学习）
-mengxi tag --project "流浪地球2-日夜戏" --fix "夜晚" --to "黄昏"
+mengxi tag --project "X项目-日夜戏" --fix "夜晚" --to "黄昏"
 ```
 
 ### 其他命令
 
 ```bash
 # 查看指纹详情
-mengxi info --project "流浪地球2-日夜戏"
+mengxi info --project "X项目-日夜戏"
 
 # 查看使用统计
 mengxi stats
