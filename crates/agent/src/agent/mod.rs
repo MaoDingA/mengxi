@@ -11,7 +11,7 @@ pub use state::AgentState;
 use tokio::sync::mpsc;
 use futures::StreamExt;
 
-use crate::llm::{LlmProvider, ChatRequest, Message, LlmEvent};
+use crate::llm::{LlmProvider, ChatRequest, Message, LlmEvent, MessageContent};
 use crate::tool::ToolRegistry;
 
 /// The mengxi agent — orchestrates LLM calls and tool dispatch.
@@ -22,6 +22,13 @@ pub struct Agent {
     state: AgentState,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<AgentEvent>>,
+}
+
+/// Tracks an in-progress tool call being assembled from streaming deltas.
+struct PendingToolCall {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 impl Agent {
@@ -58,14 +65,16 @@ impl Agent {
         // Add user message to conversation history
         self.state.add_message(Message::user(user_message));
 
-        // Build system prompt
         let system_prompt = self.build_system_prompt();
         let tool_defs = self.registry.tool_definitions();
-
         let mut final_response = String::new();
 
+        let _ = self.event_tx.send(AgentEvent::Started);
+
         // Agent loop: LLM → tool calls → results → repeat
-        for _turn in 0..self.config.max_turns {
+        for turn in 0..self.config.max_turns {
+            let _ = self.event_tx.send(AgentEvent::TurnStart { turn });
+
             let request = ChatRequest {
                 messages: self.state.messages().to_vec(),
                 tools: tool_defs.clone(),
@@ -79,9 +88,9 @@ impl Agent {
             let mut stream = self.provider.stream_chat(request).await
                 .map_err(|e| AgentError::LlmError(e.to_string()))?;
 
-            // Collect response events
+            // Collect text and tool calls from the stream
             let mut text_response = String::new();
-            let mut tool_calls: Vec<crate::llm::ToolCall> = Vec::new(); // TODO: collect tool calls from stream
+            let mut pending_tool_calls: Vec<PendingToolCall> = Vec::new();
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -89,8 +98,22 @@ impl Agent {
                         text_response.push_str(&delta);
                         let _ = self.event_tx.send(AgentEvent::TextDelta(delta));
                     }
-                    Ok(LlmEvent::ContentBlock(_block)) => {
-                        // Handle complete content blocks — future use
+                    Ok(LlmEvent::ToolCallStart { id, name }) => {
+                        let _ = self.event_tx.send(AgentEvent::ToolCallStart {
+                            name: name.clone(),
+                            call_id: id.clone(),
+                        });
+                        pending_tool_calls.push(PendingToolCall {
+                            id,
+                            name,
+                            arguments: String::new(),
+                        });
+                    }
+                    Ok(LlmEvent::ToolCallDelta { id, delta }) => {
+                        // Append argument fragment to the matching pending tool call
+                        if let Some(tc) = pending_tool_calls.iter_mut().find(|tc| tc.id == id) {
+                            tc.arguments.push_str(&delta);
+                        }
                     }
                     Ok(LlmEvent::Done { stop_reason, usage: _ }) => {
                         let _ = self.event_tx.send(AgentEvent::TurnEnd {
@@ -108,15 +131,90 @@ impl Agent {
                 }
             }
 
-            // If no tool calls, we're done
-            if tool_calls.is_empty() {
+            self.state.advance_turn();
+
+            // If no tool calls, we're done — the LLM gave a final text answer
+            if pending_tool_calls.is_empty() {
                 final_response = text_response;
                 break;
             }
 
-            // Execute tool calls
-            // TODO: implement tool execution loop
+            // Add the assistant message (text + tool_use blocks) to history
+            let mut assistant_content: Vec<MessageContent> = Vec::new();
+            if !text_response.is_empty() {
+                assistant_content.push(MessageContent::Text { text: text_response });
+            }
+            // Note: tool_use blocks aren't stored in MessageContent currently,
+            // but the tool results need to reference the call IDs.
+
+            self.state.add_message(Message {
+                role: crate::llm::Role::Assistant,
+                content: if assistant_content.is_empty() {
+                    vec![MessageContent::Text { text: String::new() }]
+                } else {
+                    assistant_content
+                },
+            });
+
+            // Execute tool calls and collect results
+            let mut tool_results: Vec<MessageContent> = Vec::new();
+
+            for tc in &pending_tool_calls {
+                let params: serde_json::Value = serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+
+                let result = self.registry.dispatch(&tc.name, params).await;
+
+                let (content, is_error) = match result {
+                    Ok(tool_result) => {
+                        let summary = events::ToolResultSummary {
+                            success: !tool_result.is_error,
+                            content_preview: tool_result.content.chars().take(200).collect(),
+                        };
+                        let _ = self.event_tx.send(AgentEvent::ToolCallEnd {
+                            name: tc.name.clone(),
+                            call_id: tc.id.clone(),
+                            result: summary,
+                        });
+                        (tool_result.content, tool_result.is_error)
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        let summary = events::ToolResultSummary {
+                            success: false,
+                            content_preview: error_msg.chars().take(200).collect(),
+                        };
+                        let _ = self.event_tx.send(AgentEvent::ToolCallEnd {
+                            name: tc.name.clone(),
+                            call_id: tc.id.clone(),
+                            result: summary,
+                        });
+                        (error_msg, true)
+                    }
+                };
+
+                tool_results.push(MessageContent::ToolResult {
+                    tool_use_id: tc.id.clone(),
+                    content,
+                    is_error,
+                });
+            }
+
+            // Add tool results as a user message (required by Claude API convention)
+            self.state.add_message(Message {
+                role: crate::llm::Role::User,
+                content: tool_results,
+            });
+
+            // Check if we're about to exceed max turns
+            if turn + 1 >= self.config.max_turns {
+                return Err(AgentError::MaxTurnsReached(self.config.max_turns));
+            }
         }
+
+        let _ = self.event_tx.send(AgentEvent::Done {
+            response: final_response.clone(),
+        });
 
         Ok(final_response)
     }
