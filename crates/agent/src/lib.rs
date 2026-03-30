@@ -6,6 +6,7 @@
 pub mod llm;
 pub mod tool;
 pub mod agent;
+pub mod tools;
 
 // Re-export key types
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentError};
