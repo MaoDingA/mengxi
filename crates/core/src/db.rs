@@ -28,6 +28,7 @@ pub fn open_db() -> Result<Connection, Box<dyn std::error::Error>> {
     let conn = Connection::open(&path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     run_migrations(&conn)?;
+    ensure_schema_extensions(&conn)?;
 
     Ok(conn)
 }
@@ -124,6 +125,35 @@ pub fn run_migrations(conn: &Connection) -> Result<(), Box<dyn std::error::Error
             [version],
         )?;
     }
+
+    Ok(())
+}
+
+/// Ensures schema extensions that can't be expressed in migration SQL
+/// (e.g., ALTER TABLE ADD COLUMN with idempotent behavior).
+fn ensure_schema_extensions(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if branch_id column exists in session_messages
+    let has_branch_id: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('session_messages') WHERE name = 'branch_id'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if !has_branch_id {
+        conn.execute_batch(
+            "ALTER TABLE session_messages ADD COLUMN branch_id TEXT NOT NULL DEFAULT 'main';
+             ALTER TABLE session_messages ADD COLUMN is_compacted INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+
+    // Ensure the branch-seq index exists (depends on branch_id column)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_messages_branch_seq
+            ON session_messages(session_id, branch_id, seq);",
+    )?;
 
     Ok(())
 }

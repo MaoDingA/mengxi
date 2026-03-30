@@ -12,4 +12,5 @@ pub mod tools;
 // Re-export key types
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentError};
 pub use llm::{LlmProvider, LlmError, ChatRequest, Message, Role, EventStream, ClaudeProvider, OpenAICompatProvider};
+pub use session::{SessionStore, Compactor, CompactionConfig, Session, SessionError, Branch, BranchTreeNode, CompactionResult};
 pub use tool::{Tool, ToolRegistry, ToolResult, ToolError, ToolDefinition};

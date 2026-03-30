@@ -20,12 +20,42 @@ pub struct SessionInfo {
     pub updated_at: i64,
 }
 
+/// A branch within a session's conversation tree.
+#[derive(Debug, Clone)]
+pub struct Branch {
+    pub id: String,
+    pub session_id: String,
+    pub parent_branch_id: Option<String>,
+    pub branch_point_seq: Option<i64>,
+    pub name: String,
+    pub created_at: i64,
+}
+
+/// Tree node for branch navigation in the UI.
+#[derive(Debug, Clone)]
+pub struct BranchTreeNode {
+    pub branch: Branch,
+    pub message_count: i64,
+    pub children: Vec<BranchTreeNode>,
+}
+
+/// Result of a compaction operation.
+#[derive(Debug, Clone)]
+pub struct CompactionResult {
+    pub messages_compacted: usize,
+    pub summary_seq: i64,
+    pub messages_preserved: usize,
+}
+
 /// Errors from session operations.
 #[derive(Debug)]
 pub enum SessionError {
     NotFound(String),
     DbError(String),
     SerializationError(String),
+    BranchNotFound(String),
+    InvalidBranchPoint(String),
+    CompactionError(String),
 }
 
 impl std::fmt::Display for SessionError {
@@ -35,6 +65,15 @@ impl std::fmt::Display for SessionError {
             SessionError::DbError(msg) => write!(f, "SESSION_DB_ERROR -- {}", msg),
             SessionError::SerializationError(msg) => {
                 write!(f, "SESSION_SERIALIZATION_ERROR -- {}", msg)
+            }
+            SessionError::BranchNotFound(id) => {
+                write!(f, "SESSION_BRANCH_NOT_FOUND -- branch '{}' not found", id)
+            }
+            SessionError::InvalidBranchPoint(msg) => {
+                write!(f, "SESSION_INVALID_BRANCH_POINT -- {}", msg)
+            }
+            SessionError::CompactionError(msg) => {
+                write!(f, "SESSION_COMPACTION_ERROR -- {}", msg)
             }
         }
     }
