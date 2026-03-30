@@ -14,7 +14,10 @@ pub use project_mgmt::{
     ExportLutTool, ImportProjectTool, ListProjectsTool, ReextractFeaturesTool,
 };
 
+use crate::subagent::{SubagentDefinition, SubagentRuntime, SubagentTool};
 use crate::tool::ToolRegistry;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Register all mengxi tools into the registry.
 pub fn register_all(registry: &mut ToolRegistry) {
@@ -33,4 +36,23 @@ pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(ImportProjectTool);
     registry.register(ReextractFeaturesTool);
     registry.register(ExportLutTool);
+}
+
+/// Register built-in subagent tools from the `agents/` directory.
+///
+/// Loads all `.md` subagent definitions from `crates/agent/agents/`,
+/// creates a `SubagentTool` for each, and registers them in the registry.
+pub fn register_subagents(
+    registry: &mut ToolRegistry,
+    runtime: Arc<SubagentRuntime>,
+) {
+    let agents_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("agents");
+    if !agents_dir.exists() {
+        return;
+    }
+
+    let definitions = SubagentDefinition::load_from_dir(&agents_dir);
+    for defn in definitions {
+        registry.register(SubagentTool::new(defn, runtime.clone()));
+    }
 }
