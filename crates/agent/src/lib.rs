@@ -6,6 +6,7 @@
 pub mod llm;
 pub mod tool;
 pub mod agent;
+pub mod session;
 pub mod tools;
 
 // Re-export key types
