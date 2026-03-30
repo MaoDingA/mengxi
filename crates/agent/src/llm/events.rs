@@ -11,8 +11,9 @@ pub enum LlmEvent {
         name: String,
     },
     /// Streaming tool call arguments (JSON fragment).
+    /// Matched by index (content block position) not by ID.
     ToolCallDelta {
-        id: String,
+        index: usize,
         delta: String,
     },
     /// A complete content block from the response.

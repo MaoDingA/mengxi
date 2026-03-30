@@ -119,13 +119,12 @@ impl ClaudeProvider {
                         Some(LlmEvent::TextDelta(text))
                     }
                     "input_json_delta" => {
-                        let id = parsed.get("index")
+                        let index = parsed.get("index")
                             .and_then(|i| i.as_u64())
-                            .map(|i| format!("toolu_{}", i))
-                            .unwrap_or_default();
+                            .unwrap_or(0) as usize;
                         let fragment = delta.get("partial_json")?.as_str()?.to_string();
                         Some(LlmEvent::ToolCallDelta {
-                            id,
+                            index,
                             delta: fragment,
                         })
                     }
@@ -179,6 +178,16 @@ fn serialize_content(content: &[super::MessageContent]) -> Value {
             super::MessageContent::Text { text } => json!({
                 "type": "text",
                 "text": text,
+            }),
+            super::MessageContent::ToolUse {
+                tool_use_id,
+                name,
+                input,
+            } => json!({
+                "type": "tool_use",
+                "id": tool_use_id,
+                "name": name,
+                "input": input,
             }),
             super::MessageContent::ToolResult {
                 tool_use_id,

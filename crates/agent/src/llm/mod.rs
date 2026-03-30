@@ -65,6 +65,12 @@ pub enum Role {
 pub enum MessageContent {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        tool_use_id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,

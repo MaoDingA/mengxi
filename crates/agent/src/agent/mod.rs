@@ -109,9 +109,9 @@ impl Agent {
                             arguments: String::new(),
                         });
                     }
-                    Ok(LlmEvent::ToolCallDelta { id, delta }) => {
-                        // Append argument fragment to the matching pending tool call
-                        if let Some(tc) = pending_tool_calls.iter_mut().find(|tc| tc.id == id) {
+                    Ok(LlmEvent::ToolCallDelta { index, delta }) => {
+                        // Append argument fragment to the pending tool call at this index
+                        if let Some(tc) = pending_tool_calls.get_mut(index) {
                             tc.arguments.push_str(&delta);
                         }
                     }
@@ -144,8 +144,16 @@ impl Agent {
             if !text_response.is_empty() {
                 assistant_content.push(MessageContent::Text { text: text_response });
             }
-            // Note: tool_use blocks aren't stored in MessageContent currently,
-            // but the tool results need to reference the call IDs.
+            // Include tool_use blocks so subsequent API calls are valid
+            for tc in &pending_tool_calls {
+                let input: serde_json::Value = serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                assistant_content.push(MessageContent::ToolUse {
+                    tool_use_id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    input,
+                });
+            }
 
             self.state.add_message(Message {
                 role: crate::llm::Role::Assistant,

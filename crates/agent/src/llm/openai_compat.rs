@@ -54,23 +54,62 @@ impl OpenAICompatProvider {
             }));
         }
 
-        // User/assistant messages
+        // User/assistant messages — handle provider-specific format
         for m in &request.messages {
+            // Separate ToolResult blocks need role:"tool" in OpenAI format
+            let has_tool_results = m.content.iter().any(|c| matches!(c, super::MessageContent::ToolResult { .. }));
+
+            if has_tool_results {
+                for c in &m.content {
+                    match c {
+                        super::MessageContent::ToolResult { tool_use_id, content: result, .. } => {
+                            messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tool_use_id,
+                                "content": result,
+                            }));
+                        }
+                        _ => {} // skip non-tool-result blocks in tool result messages
+                    }
+                }
+                continue;
+            }
+
             let role = match m.role {
                 super::Role::System => "system",
                 super::Role::User => "user",
                 super::Role::Assistant => "assistant",
             };
-            let content: Value = m.content.iter().map(|c| {
+
+            // Collect text and tool_use blocks for this message
+            let mut text_parts: Vec<String> = Vec::new();
+            let mut tool_calls: Vec<Value> = Vec::new();
+
+            for c in &m.content {
                 match c {
-                    super::MessageContent::Text { text } => json!(text),
-                    super::MessageContent::ToolResult { content: result, .. } => json!(result),
+                    super::MessageContent::Text { text } => text_parts.push(text.clone()),
+                    super::MessageContent::ToolUse { tool_use_id, name, input } => {
+                        tool_calls.push(json!({
+                            "id": tool_use_id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": input.to_string(),
+                            }
+                        }));
+                    }
+                    super::MessageContent::ToolResult { .. } => {} // handled above
                 }
-            }).collect::<Vec<_>>().into();
-            messages.push(json!({
+            }
+
+            let mut msg = json!({
                 "role": role,
-                "content": content,
-            }));
+                "content": text_parts.join(""),
+            });
+            if !tool_calls.is_empty() {
+                msg["tool_calls"] = json!(tool_calls);
+            }
+            messages.push(msg);
         }
 
         let mut body = json!({
@@ -158,12 +197,11 @@ impl OpenAICompatProvider {
                     }
                     // Tool call delta — argument fragment
                     if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
-                        let id = tc.get("id")
-                            .and_then(|i| i.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let index = tc.get("index")
+                            .and_then(|i| i.as_u64())
+                            .unwrap_or(0) as usize;
                         return Some(LlmEvent::ToolCallDelta {
-                            id,
+                            index,
                             delta: args.to_string(),
                         });
                     }

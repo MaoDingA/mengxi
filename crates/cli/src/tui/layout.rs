@@ -91,7 +91,7 @@ fn draw_chat_panel(f: &mut Frame, app: &App, area: Rect) {
     let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Chat "))
         .wrap(Wrap { trim: false })
-        .scroll((app.scroll_offset, 0));
+        .scroll((app.scroll_offset as u16, 0));
 
     f.render_widget(paragraph, area);
 }

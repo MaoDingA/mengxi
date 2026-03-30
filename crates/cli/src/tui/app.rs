@@ -32,7 +32,7 @@ pub struct App {
     /// Current input text.
     pub input: String,
     /// Scroll offset for the chat panel.
-    pub scroll_offset: u16,
+    pub scroll_offset: usize,
     /// Whether the app should quit.
     pub should_quit: bool,
     /// Currently active panel (0 = chat, 1 = input).
@@ -92,21 +92,31 @@ impl App {
                 self.input.pop();
             }
             KeyCode::Up => {
-                if self.active_panel == 0 && self.scroll_offset > 0 {
-                    self.scroll_offset -= 1;
+                if self.active_panel == 0 {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 }
             }
             KeyCode::Down => {
-                self.scroll_offset += 1;
+                self.scroll_offset = self.scroll_offset.saturating_add(1);
             }
             KeyCode::PageUp => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(10);
             }
             KeyCode::PageDown => {
-                self.scroll_offset += 10;
+                self.scroll_offset = self.scroll_offset.saturating_add(10);
             }
             _ => {}
         }
+    }
+}
+
+/// RAII guard that restores the terminal on drop (even on panic).
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = crossterm::execute!(io::stdout(), LeaveAlternateScreen);
     }
 }
 
@@ -116,6 +126,9 @@ pub fn run() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen)?;
+
+    let _guard = TerminalGuard; // restores terminal on drop
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -125,7 +138,7 @@ pub fn run() -> io::Result<()> {
 
     let result = run_loop(&mut terminal, &mut app, tick_rate);
 
-    // Restore terminal
+    // Explicit cleanup (guard also handles this on drop)
     disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

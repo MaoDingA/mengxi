@@ -38,18 +38,14 @@ impl AgentState {
     }
 
     /// Truncate old messages to fit within a token budget.
-    /// Keeps the system message and the last N messages.
+    /// Keeps the last N messages. System prompts are sent via ChatRequest,
+    /// not stored in the message history, so no special first-message handling.
     pub fn truncate(&mut self, keep_last: usize) {
-        if self.messages.len() <= keep_last + 1 {
+        if self.messages.len() <= keep_last {
             return;
         }
-        // Keep first (system) + last N
-        let first = self.messages.first().cloned();
         let last_n: Vec<_> = self.messages.iter().rev().take(keep_last).cloned().collect();
         self.messages.clear();
-        if let Some(sys) = first {
-            self.messages.push(sys);
-        }
         self.messages.extend(last_n.into_iter().rev());
     }
 }
