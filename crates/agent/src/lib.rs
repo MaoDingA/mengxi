@@ -9,5 +9,5 @@ pub mod agent;
 
 // Re-export key types
 pub use agent::{Agent, AgentConfig, AgentEvent, AgentError};
-pub use llm::{LlmProvider, LlmError, ChatRequest, Message, Role, EventStream};
+pub use llm::{LlmProvider, LlmError, ChatRequest, Message, Role, EventStream, ClaudeProvider, OpenAICompatProvider};
 pub use tool::{Tool, ToolRegistry, ToolResult, ToolError, ToolDefinition};

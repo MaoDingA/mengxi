@@ -2,6 +2,11 @@
 
 mod provider;
 mod events;
+mod claude;
+mod openai_compat;
+
+pub use claude::ClaudeProvider;
+pub use openai_compat::OpenAICompatProvider;
 
 pub use provider::{LlmProvider, LlmError};
 pub use events::{LlmEvent, ContentBlock, ToolCall, StopReason, Usage};
@@ -10,7 +15,6 @@ use futures::Stream;
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::tool::ToolDefinition;
 

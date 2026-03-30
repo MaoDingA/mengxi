@@ -81,7 +81,7 @@ impl Agent {
 
             // Collect response events
             let mut text_response = String::new();
-            let mut tool_calls: Vec<crate::llm::ToolCall> = Vec::new();
+            let mut tool_calls: Vec<crate::llm::ToolCall> = Vec::new(); // TODO: collect tool calls from stream
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -89,10 +89,10 @@ impl Agent {
                         text_response.push_str(&delta);
                         let _ = self.event_tx.send(AgentEvent::TextDelta(delta));
                     }
-                    Ok(LlmEvent::ContentBlock(block)) => {
-                        // Handle complete content blocks
+                    Ok(LlmEvent::ContentBlock(_block)) => {
+                        // Handle complete content blocks — future use
                     }
-                    Ok(LlmEvent::Done { stop_reason, usage }) => {
+                    Ok(LlmEvent::Done { stop_reason, usage: _ }) => {
                         let _ = self.event_tx.send(AgentEvent::TurnEnd {
                             stop_reason: format!("{:?}", stop_reason),
                         });
