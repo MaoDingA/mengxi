@@ -2,5 +2,6 @@
 
 mod app;
 mod layout;
+pub mod markdown;
 
 pub use app::{App, run};

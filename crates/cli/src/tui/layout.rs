@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use super::app::{App, ChatMessage, ToolStatus};
+use super::markdown;
 
 /// Draw the full TUI layout.
 pub fn draw(f: &mut Frame, app: &App) {
@@ -49,10 +50,12 @@ fn draw_chat_panel(f: &mut Frame, app: &App, area: Rect) {
                 ])]
             }
             ChatMessage::Assistant(text) => {
-                vec![Line::from(vec![
+                let mut result = vec![Line::from(vec![
                     Span::styled("Mengxi: ", Style::default().fg(Color::Green)),
-                    Span::raw(text),
-                ])]
+                ])];
+                let md_lines = markdown::render_markdown(text);
+                result.extend(md_lines);
+                result
             }
             ChatMessage::System(text) => {
                 vec![Line::from(vec![
@@ -93,20 +96,32 @@ fn draw_chat_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_result_panel(f: &mut Frame, _app: &App, area: Rect) {
-    let content = vec![
-        Line::from(Span::styled(
+fn draw_result_panel(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Show the last result data if any
+    if let Some(data) = &app.last_result {
+        lines.push(Line::from(Span::styled(
+            "Results & Visualizations",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        let md_lines = markdown::render_markdown(data);
+        lines.extend(md_lines);
+    } else {
+        lines.push(Line::from(Span::styled(
             "Results & Visualizations",
             Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
             "Search results and charts will appear here.",
             Style::default().fg(Color::DarkGray),
-        )),
-    ];
+        )));
+    }
 
-    let paragraph = Paragraph::new(content)
+    let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Results "))
         .wrap(Wrap { trim: false });
 

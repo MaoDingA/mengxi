@@ -37,6 +37,12 @@ pub struct App {
     pub should_quit: bool,
     /// Currently active panel (0 = chat, 1 = input).
     pub active_panel: usize,
+    /// Last result data for the result panel.
+    pub last_result: Option<String>,
+    /// Command history for Up/Down navigation.
+    pub history: Vec<String>,
+    /// Current position in command history (-1 means not navigating).
+    pub history_pos: isize,
 }
 
 impl App {
@@ -49,6 +55,9 @@ impl App {
             scroll_offset: 0,
             should_quit: false,
             active_panel: 1,
+            last_result: None,
+            history: Vec::new(),
+            history_pos: -1,
         }
     }
 
