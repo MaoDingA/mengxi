@@ -441,6 +441,39 @@ pub fn delete_fingerprint_tiles(
     Ok(count)
 }
 
+/// Resolve a file ID from project name and filename.
+pub fn resolve_file_id(
+    conn: &Connection,
+    project: &str,
+    filename: &str,
+) -> Result<i64, rusqlite::Error> {
+    conn.query_row(
+        "SELECT f.id FROM files f
+         JOIN projects p ON p.id = f.project_id
+         WHERE p.name = ?1 AND f.filename = ?2
+         LIMIT 1",
+        rusqlite::params![project, filename],
+        |row| row.get::<_, i64>(0),
+    )
+}
+
+/// Resolve a fingerprint ID from project name and filename.
+pub fn resolve_fingerprint_id(
+    conn: &Connection,
+    project: &str,
+    filename: &str,
+) -> Result<i64, rusqlite::Error> {
+    conn.query_row(
+        "SELECT fp.id FROM fingerprints fp
+         JOIN files f ON f.id = fp.file_id
+         JOIN projects p ON p.id = f.project_id
+         WHERE p.name = ?1 AND f.filename = ?2
+         LIMIT 1",
+        rusqlite::params![project, filename],
+        |row| row.get::<_, i64>(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1314,5 +1347,35 @@ mod tests {
         let (_dir, conn) = setup_test_db_with_fingerprint();
         let deleted = delete_fingerprint_tiles(&conn, 999).unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    // --- Resolve helper tests ---
+
+    #[test]
+    fn test_resolve_file_id_found() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+        let file_id = resolve_file_id(&conn, "test_project", "test.dpx").unwrap();
+        assert_eq!(file_id, 1);
+    }
+
+    #[test]
+    fn test_resolve_file_id_not_found() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+        let result = resolve_file_id(&conn, "nonexistent", "nofile.dpx");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_fingerprint_id_found() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+        let fp_id = resolve_fingerprint_id(&conn, "test_project", "test.dpx").unwrap();
+        assert_eq!(fp_id, 1);
+    }
+
+    #[test]
+    fn test_resolve_fingerprint_id_not_found() {
+        let (_dir, conn) = setup_test_db_with_fingerprint();
+        let result = resolve_fingerprint_id(&conn, "test_project", "nonexistent.dpx");
+        assert!(result.is_err());
     }
 }
