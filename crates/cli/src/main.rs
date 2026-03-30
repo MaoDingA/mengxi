@@ -1,4 +1,5 @@
 mod config;
+mod tui;
 mod validate;
 mod validate_dataset;
 
@@ -245,6 +246,15 @@ enum Commands {
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
     },
+    /// Start interactive AI chat (TUI)
+    Chat {
+        /// LLM provider (claude, openai, ollama)
+        #[arg(long, value_parser = ["claude", "openai", "ollama"], default_value = "claude")]
+        provider: String,
+        /// Model name override
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Browse and query the database
     Db {
         #[command(subcommand)]
@@ -356,6 +366,10 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
         Some(Commands::Embed { .. }) => ("embed".to_string(), "{}".to_string(), None),
         Some(Commands::ValidateDataset { .. }) => ("validate-dataset".to_string(), "{}".to_string(), None),
         Some(Commands::Db { .. }) => ("db".to_string(), "{}".to_string(), None),
+        Some(Commands::Chat { provider, model }) => {
+            let obj = serde_json::json!({ "provider": provider, "model": model });
+            ("chat".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
         None => ("help".to_string(), "{}".to_string(), None),
     }
 }
@@ -2977,6 +2991,12 @@ fn main() {
             let is_json = format == "json";
             let exit_code = validate_dataset::run_validate_dataset(&dir, is_json);
             process::exit(exit_code);
+        }
+        Some(Commands::Chat { provider: _, model: _ }) => {
+            if let Err(e) = tui::run() {
+                eprintln!("TUI_ERROR -- {}", e);
+                process::exit(1);
+            }
         }
         Some(Commands::Db { command }) => {
             let conn = match db::open_db() {
