@@ -2992,8 +2992,9 @@ fn main() {
             let exit_code = validate_dataset::run_validate_dataset(&dir, is_json);
             process::exit(exit_code);
         }
-        Some(Commands::Chat { provider: _, model: _ }) => {
-            if let Err(e) = tui::run() {
+        Some(Commands::Chat { provider, model }) => {
+            let model_str = model.as_deref().unwrap_or("");
+            if let Err(e) = tui::run(&provider, model_str) {
                 eprintln!("TUI_ERROR -- {}", e);
                 process::exit(1);
             }

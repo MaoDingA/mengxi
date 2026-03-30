@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::{Concurrency, Tool, ToolDefinition, ToolError, ToolResult};
 
 /// Registry of available tools for the agent.
+#[derive(Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
 }
