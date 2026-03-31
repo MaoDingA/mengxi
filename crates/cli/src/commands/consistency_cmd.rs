@@ -1,29 +1,8 @@
 use std::process;
 
 use mengxi_core::db;
-use unicode_width::UnicodeWidthStr;
 
-fn truncate_str(s: &str, max_len: usize) -> String {
-    let width = UnicodeWidthStr::width(s);
-    if width <= max_len {
-        s.to_string()
-    } else {
-        let ellipsis_width = UnicodeWidthStr::width("…");
-        let target = max_len.saturating_sub(ellipsis_width);
-        let mut result = String::new();
-        let mut current_width = 0usize;
-        for ch in s.chars() {
-            let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
-            if current_width + ch_width > target {
-                break;
-            }
-            result.push(ch);
-            current_width += ch_width;
-        }
-        result.push('…');
-        result
-    }
-}
+use super::helpers::truncate_str;
 
 pub fn execute(projects: Vec<String>, format: String) {
     let is_json = format == "json";

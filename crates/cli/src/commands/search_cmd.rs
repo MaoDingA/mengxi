@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process;
 
-use unicode_width::UnicodeWidthStr;
+use super::helpers::truncate_str;
 
 use mengxi_core::db;
 use mengxi_core::hybrid_scoring;
@@ -838,26 +838,3 @@ fn record_feedback_if_needed(
     }
 }
 
-/// Truncate a string to max_len display columns, appending "…" if truncated.
-/// Uses unicode-width for correct CJK/emoji column counting.
-fn truncate_str(s: &str, max_len: usize) -> String {
-    let width = UnicodeWidthStr::width(s);
-    if width <= max_len {
-        s.to_string()
-    } else {
-        let ellipsis_width = UnicodeWidthStr::width("…");
-        let target = max_len.saturating_sub(ellipsis_width);
-        let mut result = String::new();
-        let mut current_width = 0usize;
-        for ch in s.chars() {
-            let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
-            if current_width + ch_width > target {
-                break;
-            }
-            result.push(ch);
-            current_width += ch_width;
-        }
-        result.push('…');
-        result
-    }
-}

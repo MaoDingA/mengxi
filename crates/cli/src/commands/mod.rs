@@ -1,3 +1,4 @@
+pub mod helpers;
 pub mod import_cmd;
 pub mod search_cmd;
 pub mod export_cmd;
