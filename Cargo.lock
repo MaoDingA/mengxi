@@ -1170,6 +1170,7 @@ dependencies = [
  "futures",
  "log",
  "mengxi-core",
+ "mengxi-format",
  "reqwest",
  "reqwest-eventsource",
  "rusqlite",

@@ -15,3 +15,4 @@ pub use agent::{Agent, AgentConfig, AgentEvent, AgentError};
 pub use session::{SessionStore, Compactor, CompactionConfig, Session, SessionError, Branch, BranchTreeNode, CompactionResult};
 pub use subagent::{SubagentDefinition, SubagentDefinitionError, SubagentRuntime, SubagentTool, ProviderFactory};
 pub use tool::{Tool, ToolRegistry, ToolResult, ToolError, ToolDefinition};
+pub use tools::LutEditStore;

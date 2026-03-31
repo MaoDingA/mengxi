@@ -4,6 +4,9 @@ mod db_util;
 mod search;
 mod analyze;
 mod project_mgmt;
+pub mod hash_anchor;
+mod lut_edit;
+mod lut_diff;
 
 pub use search::{
     SearchByColorTool, SearchByImageTool, SearchByTagTool, SearchSimilarRegionTool,
@@ -13,6 +16,10 @@ pub use analyze::{AnalyzeProjectTool, CompareStylesTool, GetFingerprintInfoTool}
 pub use project_mgmt::{
     ExportLutTool, ImportProjectTool, ListProjectsTool, ReextractFeaturesTool,
 };
+pub use lut_edit::{
+    LoadLutTool, EditLutTool, SaveLutTool, UndoLutEditTool, LutEditStore, new_store as new_lut_edit_store,
+};
+pub use lut_diff::{DiffLutTool, RenderLutCurvesTool};
 
 use crate::subagent::{SubagentDefinition, SubagentRuntime, SubagentTool};
 use crate::tool::ToolRegistry;
@@ -20,7 +27,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Register all mengxi tools into the registry.
-pub fn register_all(registry: &mut ToolRegistry) {
+///
+/// Creates a shared LutEditStore for LUT editing session management.
+/// Returns the store for use in TUI/CLI integration if needed.
+pub fn register_all(registry: &mut ToolRegistry) -> LutEditStore {
+    let lut_store = new_lut_edit_store();
+
     // Search tools (Story 3.1)
     registry.register(SearchByImageTool);
     registry.register(SearchByTagTool);
@@ -36,6 +48,16 @@ pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(ImportProjectTool);
     registry.register(ReextractFeaturesTool);
     registry.register(ExportLutTool);
+    // LUT editing tools (Story 6.1)
+    registry.register(LoadLutTool::new(lut_store.clone()));
+    registry.register(EditLutTool::new(lut_store.clone()));
+    registry.register(SaveLutTool::new(lut_store.clone()));
+    registry.register(UndoLutEditTool::new(lut_store.clone()));
+    // LUT diff/curve tools (Story 6.2)
+    registry.register(DiffLutTool);
+    registry.register(RenderLutCurvesTool);
+
+    lut_store
 }
 
 /// Register built-in subagent tools from the `agents/` directory.

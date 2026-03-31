@@ -73,9 +73,9 @@ fn create_main_provider(provider: &str, model: &str) -> Box<dyn LlmProvider> {
 
 /// Build a fully-configured Agent with all tools and subagents.
 fn create_agent(provider: &str, model: &str) -> Agent {
-    // 1. Register base tools (12)
+    // 1. Register base tools (18)
     let mut registry = ToolRegistry::new();
-    register_all(&mut registry);
+    let _lut_store = register_all(&mut registry);
 
     // 2. Clone registry for SubagentRuntime (base tools only, no subagent tools)
     let subagent_base = registry.clone();
