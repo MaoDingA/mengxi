@@ -3,32 +3,22 @@
 use crate::grading_features::GradingFeatures;
 use rusqlite::Connection;
 
+type ProjectFeatures = Vec<(String, Vec<(i64, String, GradingFeatures)>)>;
+type CentroidData = Vec<(String, Vec<f64>, Vec<f64>, Vec<f64>)>;
+
 /// Error type for consistency operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConsistencyError {
     /// One or more projects not found.
+    #[error("CONSISTENCY_PROJECT_NOT_FOUND -- project '{0}' not found")]
     ProjectNotFound(String),
     /// No fingerprints found in the specified projects.
+    #[error("CONSISTENCY_NO_FINGERPRINTS -- no fingerprints found in specified projects")]
     NoFingerprints,
     /// Database error.
+    #[error("CONSISTENCY_DB_ERROR -- {0}")]
     DbError(String),
 }
-
-impl std::fmt::Display for ConsistencyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConsistencyError::ProjectNotFound(name) => {
-                write!(f, "CONSISTENCY_PROJECT_NOT_FOUND -- project '{}' not found", name)
-            }
-            ConsistencyError::NoFingerprints => {
-                write!(f, "CONSISTENCY_NO_FINGERPRINTS -- no fingerprints found in specified projects")
-            }
-            ConsistencyError::DbError(msg) => write!(f, "CONSISTENCY_DB_ERROR -- {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ConsistencyError {}
 
 /// Summary statistics for a single project's fingerprints.
 #[derive(Debug, Clone)]
@@ -145,7 +135,7 @@ fn histogram_centroid<'a, I>(features: I) -> (Vec<f64>, Vec<f64>, Vec<f64>)
 where
     I: Iterator<Item = &'a GradingFeatures>,
 {
-    let mut features_vec: Vec<&GradingFeatures> = features.collect();
+    let features_vec: Vec<&GradingFeatures> = features.collect();
     let n = features_vec.len().max(1) as f64;
     let bins = features_vec.first().map(|f| f.hist_l.len()).unwrap_or(0);
 
@@ -187,7 +177,7 @@ pub fn generate_consistency_report(
     }
 
     // Load features for each project
-    let mut project_features: Vec<(String, Vec<(i64, String, GradingFeatures)>)> = Vec::new();
+    let mut project_features: ProjectFeatures = Vec::new();
     for name in project_names {
         let features = load_project_features(conn, name)?;
         if features.is_empty() {
@@ -202,7 +192,7 @@ pub fn generate_consistency_report(
 
     // Compute per-project summaries
     let mut project_summaries = Vec::new();
-    let mut centroids: Vec<(String, Vec<f64>, Vec<f64>, Vec<f64>)> = Vec::new();
+    let mut centroids: CentroidData = Vec::new();
 
     for (name, features) in &project_features {
         let (l_c, a_c, b_c) = histogram_centroid(features.iter().map(|(_, _, f)| f));

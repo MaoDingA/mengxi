@@ -61,16 +61,13 @@ impl OpenAICompatProvider {
 
             if has_tool_results {
                 for c in &m.content {
-                    match c {
-                        super::MessageContent::ToolResult { tool_use_id, content: result, .. } => {
+                    if let super::MessageContent::ToolResult { tool_use_id, content: result, .. } = c {
                             messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": tool_use_id,
                                 "content": result,
                             }));
                         }
-                        _ => {} // skip non-tool-result blocks in tool result messages
-                    }
                 }
                 continue;
             }
@@ -156,7 +153,7 @@ impl OpenAICompatProvider {
 
         // Check for finish_reason
         if let Some(finish) = choice.get("finish_reason").and_then(|f| f.as_str()) {
-            if finish != "null" && finish != "stop" || finish == "stop" {
+            if finish != "null" || finish == "stop" {
                 let stop_reason = match finish {
                     "stop" => StopReason::EndTurn,
                     "tool_calls" => StopReason::ToolUse,

@@ -15,7 +15,7 @@ Requires: Rust nightly, MoonBit v0.8.x. Python 3.11+ is optional (runtime subpro
 ## Architecture
 
 ```
-crates/cli    → binary "mengxi" (clap 4.5, 9 subcommands)
+crates/cli    → binary "mx" (clap 4.5, 9 subcommands)
 crates/core   → library "mengxi-core" (rusqlite 0.38, FFI bridge, Python bridge)
 crates/format → library "mengxi-format" (DPX, EXR, MOV, LUT parsers)
 moonbit/src/  → pure functions compiled to libmoonbit_core.a

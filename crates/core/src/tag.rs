@@ -7,33 +7,18 @@ use rusqlite::Connection;
 // ---------------------------------------------------------------------------
 
 /// Errors from tag operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TagError {
     /// Tag not found on the specified fingerprint.
+    #[error("TAG_NOT_FOUND -- {0}")]
     NotFound(String),
     /// A database error occurred.
+    #[error("TAG_DB_ERROR -- {0}")]
     DatabaseError(String),
     /// Duplicate tag on the same fingerprint.
+    #[error("TAG_DUPLICATE -- {0}")]
     DuplicateTag(String),
 }
-
-impl std::fmt::Display for TagError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TagError::NotFound(msg) => {
-                write!(f, "TAG_NOT_FOUND -- {}", msg)
-            }
-            TagError::DatabaseError(msg) => {
-                write!(f, "TAG_DB_ERROR -- {}", msg)
-            }
-            TagError::DuplicateTag(msg) => {
-                write!(f, "TAG_DUPLICATE -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for TagError {}
 
 // ---------------------------------------------------------------------------
 // Tag CRUD functions

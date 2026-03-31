@@ -37,29 +37,18 @@ impl Point for EmbeddingPoint {
 }
 
 /// Errors from vector index operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum VectorIndexError {
     /// Database query failed.
+    #[error("VECTOR_INDEX_DB_ERROR -- {0}")]
     DbError(String),
     /// File I/O error (read/write index file).
+    #[error("VECTOR_INDEX_IO_ERROR -- {0}")]
     IoError(String),
     /// Serialization/deserialization error.
+    #[error("VECTOR_INDEX_SERIALIZE_ERROR -- {0}")]
     SerializeError(String),
 }
-
-impl std::fmt::Display for VectorIndexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VectorIndexError::DbError(msg) => write!(f, "VECTOR_INDEX_DB_ERROR -- {}", msg),
-            VectorIndexError::IoError(msg) => write!(f, "VECTOR_INDEX_IO_ERROR -- {}", msg),
-            VectorIndexError::SerializeError(msg) => {
-                write!(f, "VECTOR_INDEX_SERIALIZE_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for VectorIndexError {}
 
 /// HNSW vector index for approximate nearest neighbor search on CLIP embeddings.
 ///
@@ -216,7 +205,7 @@ impl VectorIndex {
 
 /// Deserialize f32 little-endian BLOB to Vec<f32>.
 fn deserialize_embedding_f32(blob: &[u8]) -> Option<Vec<f32>> {
-    if blob.len() % 4 != 0 || blob.is_empty() {
+    if !blob.len().is_multiple_of(4) || blob.is_empty() {
         return None;
     }
     Some(

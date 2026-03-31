@@ -1,6 +1,5 @@
 // powergrade.rs — DaVinci Resolve PowerGrade read-only parser
 
-use std::fmt;
 use std::io;
 use std::path::Path;
 
@@ -13,30 +12,15 @@ pub enum PowerGradeVersion {
 }
 
 /// Errors from PowerGrade parsing.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PowerGradeError {
+    #[error("LUT_UNSUPPORTED_FORMAT -- unsupported PowerGrade version: {0}")]
     UnsupportedVersion(String),
+    #[error("LUT_PARSE_ERROR -- PowerGrade parse error: {0}")]
     ParseError(String),
+    #[error("LUT_IO_ERROR -- PowerGrade I/O error: {0}")]
     IoError(String),
 }
-
-impl fmt::Display for PowerGradeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PowerGradeError::UnsupportedVersion(ver) => {
-                write!(f, "LUT_UNSUPPORTED_FORMAT -- unsupported PowerGrade version: {}", ver)
-            }
-            PowerGradeError::ParseError(msg) => {
-                write!(f, "LUT_PARSE_ERROR -- PowerGrade parse error: {}", msg)
-            }
-            PowerGradeError::IoError(msg) => {
-                write!(f, "LUT_IO_ERROR -- PowerGrade I/O error: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for PowerGradeError {}
 
 impl From<io::Error> for PowerGradeError {
     fn from(e: io::Error) -> Self {
@@ -208,8 +192,7 @@ fn parse_powergrade_v2(data: &[u8]) -> Result<PowerGradeData, PowerGradeError> {
     let content = std::str::from_utf8(data)
         .map_err(|e| PowerGradeError::ParseError(format!("invalid UTF-8: {}", e)))?;
 
-    let mut pg = PowerGradeData::default();
-    pg.version = PowerGradeVersion::V2;
+    let mut pg = PowerGradeData { version: PowerGradeVersion::V2, ..Default::default() };
 
     for line in content.lines() {
         let trimmed = line.trim();

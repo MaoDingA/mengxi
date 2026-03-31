@@ -56,59 +56,26 @@ pub struct LutExportResult {
 // ---------------------------------------------------------------------------
 
 /// Errors from LUT generation and export.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LutGenerationError {
     /// No fingerprint found for the given project/fingerprint_id.
+    #[error("EXPORT_FINGERPRINT_NOT_FOUND -- no fingerprint data found for this project")]
     FingerprintNotFound,
     /// FFI error from color science engine.
-    FfiError(ColorScienceError),
+    #[error("EXPORT_FFI_ERROR -- {0}")]
+    FfiError(#[from] ColorScienceError),
     /// LUT format error (validation, serialization).
-    FormatError(LutError),
+    #[error("EXPORT_FORMAT_ERROR -- {0}")]
+    FormatError(#[from] LutError),
     /// File write error.
+    #[error("EXPORT_WRITE_ERROR -- {0}")]
     WriteError(String),
     /// File already exists and overwrite was denied.
+    #[error("EXPORT_FILE_EXISTS -- {} already exists. Use --force to overwrite.", .0.display())]
     OverwriteDenied(PathBuf),
     /// Overwrite prompt required in scripted mode.
+    #[error("EXPORT_FILE_EXISTS -- {}", .0.display())]
     FileExists(PathBuf),
-}
-
-impl std::fmt::Display for LutGenerationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LutGenerationError::FingerprintNotFound => {
-                write!(f, "EXPORT_FINGERPRINT_NOT_FOUND -- no fingerprint data found for this project")
-            }
-            LutGenerationError::FfiError(e) => {
-                write!(f, "EXPORT_FFI_ERROR -- {}", e)
-            }
-            LutGenerationError::FormatError(e) => {
-                write!(f, "EXPORT_FORMAT_ERROR -- {}", e)
-            }
-            LutGenerationError::WriteError(msg) => {
-                write!(f, "EXPORT_WRITE_ERROR -- {}", msg)
-            }
-            LutGenerationError::OverwriteDenied(path) => {
-                write!(f, "EXPORT_FILE_EXISTS -- {} already exists. Use --force to overwrite.", path.display())
-            }
-            LutGenerationError::FileExists(path) => {
-                write!(f, "EXPORT_FILE_EXISTS -- {}", path.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for LutGenerationError {}
-
-impl From<ColorScienceError> for LutGenerationError {
-    fn from(e: ColorScienceError) -> Self {
-        LutGenerationError::FfiError(e)
-    }
-}
-
-impl From<LutError> for LutGenerationError {
-    fn from(e: LutError) -> Self {
-        LutGenerationError::FormatError(e)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +106,7 @@ pub fn export_lut(
 
     // Validate format
     let lut_fmt = LutFormat::from_extension(&config.format)
-        .map_err(|e| LutGenerationError::FormatError(e))?;
+        .map_err(LutGenerationError::FormatError)?;
 
     // Reject CDL format (parametric, not a 3D LUT)
     if matches!(lut_fmt, LutFormat::AscCdl) {
@@ -225,7 +192,7 @@ fn resolve_color_space(
 
     match result {
         Ok(color_space_tag) => {
-            let src_cs = ACESColorSpace::from_str(&color_space_tag);
+            let src_cs = ACESColorSpace::parse(&color_space_tag);
             if src_cs.is_log() {
                 Ok((ACESColorSpace::ACEScg, Some(format!("LUT: {}", config.format))))
             } else {

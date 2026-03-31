@@ -169,8 +169,8 @@ fn initialize_centers(
     let mut centers = Vec::with_capacity(k);
     let mut ki = 0;
 
-    let grid_cols = (width + s - 1) / s;
-    let grid_rows = (height + s - 1) / s;
+    let grid_cols = width.div_ceil(s);
+    let grid_rows = height.div_ceil(s);
 
     for gr in 0..grid_rows {
         for gc in 0..grid_cols {
@@ -393,7 +393,7 @@ pub fn extract_segment_features(
     color_tag: &str,
     hist_bins: usize,
 ) -> Result<Vec<SegmentFeatures>, crate::feature_pipeline::FeaturePipelineError> {
-    if oklab_data.len() % 3 != 0 || labels.len() != width * height {
+    if !oklab_data.len().is_multiple_of(3) || labels.len() != width * height {
         return Err(crate::feature_pipeline::FeaturePipelineError::ExtractionError(
             "invalid input dimensions".to_string(),
         ));

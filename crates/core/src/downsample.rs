@@ -3,31 +3,18 @@
 /// Area-average downsampling preserves color distribution accuracy for
 /// histogram-based features while dramatically reducing pixel count
 /// (e.g., 4K 4096x2160 → 512x270, ~34x reduction).
-
+///
 /// Maximum dimension for downsampling (FR9: 512x512).
 pub const MAX_DIMENSION: usize = 512;
 
 /// Errors for downsampling operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DownsampleError {
+    #[error("DOWNSAMPLE_INVALID_DIMENSIONS -- width={width} height={height} {reason}")]
     InvalidDimensions { width: usize, height: usize, reason: String },
+    #[error("DOWNSAMPLE_DATA_LENGTH_MISMATCH -- expected {expected} bytes, got {actual}")]
     DataLengthMismatch { expected: usize, actual: usize },
 }
-
-impl std::fmt::Display for DownsampleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DownsampleError::InvalidDimensions { width, height, reason } => {
-                write!(f, "DOWNSAMPLE_INVALID_DIMENSIONS -- width={} height={} {}", width, height, reason)
-            }
-            DownsampleError::DataLengthMismatch { expected, actual } => {
-                write!(f, "DOWNSAMPLE_DATA_LENGTH_MISMATCH -- expected {} bytes, got {}", expected, actual)
-            }
-        }
-    }
-}
-
-impl std::error::Error for DownsampleError {}
 
 /// Downsample interleaved RGB f64 data using area-average.
 ///

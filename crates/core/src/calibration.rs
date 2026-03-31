@@ -7,23 +7,12 @@ use rusqlite::Connection;
 // ---------------------------------------------------------------------------
 
 /// Errors from calibration operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CalibrationError {
     /// A database error occurred.
+    #[error("CALIBRATION_DB_ERROR -- {0}")]
     DatabaseError(String),
 }
-
-impl std::fmt::Display for CalibrationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CalibrationError::DatabaseError(msg) => {
-                write!(f, "CALIBRATION_DB_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for CalibrationError {}
 
 // ---------------------------------------------------------------------------
 // Calibration record functions

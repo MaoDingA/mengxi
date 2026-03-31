@@ -33,8 +33,8 @@ pub enum ChatMessage {
 #[derive(Debug, Clone)]
 pub enum ToolStatus {
     Running,
-    Success(String),
-    Error(String),
+    Success(#[allow(dead_code)] String),
+    Error(#[allow(dead_code)] String),
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ pub fn run(provider: &str, model: &str) -> io::Result<()> {
 
     // Create tokio runtime for the agent
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     // Create channels
     let (user_msg_tx, user_msg_rx) = tokio::sync::mpsc::unbounded_channel::<String>();

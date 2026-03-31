@@ -9,28 +9,15 @@ use crate::search::cosine_similarity;
 // ---------------------------------------------------------------------------
 
 /// Errors from hybrid scoring operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum HybridScoringError {
     /// Weight validation failed.
+    #[error("HYBRID_SCORING_WEIGHT_ERROR -- {0}")]
     WeightError(String),
     /// No signals available for scoring.
+    #[error("HYBRID_SCORING_NO_SIGNALS -- no signals available for scoring")]
     NoSignalsAvailable,
 }
-
-impl std::fmt::Display for HybridScoringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HybridScoringError::WeightError(msg) => {
-                write!(f, "HYBRID_SCORING_WEIGHT_ERROR -- {}", msg)
-            }
-            HybridScoringError::NoSignalsAvailable => {
-                write!(f, "HYBRID_SCORING_NO_SIGNALS -- no signals available for scoring")
-            }
-        }
-    }
-}
-
-impl std::error::Error for HybridScoringError {}
 
 // ---------------------------------------------------------------------------
 // Data types

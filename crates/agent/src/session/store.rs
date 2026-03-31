@@ -7,6 +7,12 @@ use mengxi_core::db::DbConnection;
 /// Session persistence store. Stateless — opens a DB connection per operation.
 pub struct SessionStore;
 
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionStore {
     pub fn new() -> Self {
         Self

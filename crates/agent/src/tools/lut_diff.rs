@@ -91,7 +91,7 @@ impl Tool for DiffLutTool {
                 let ba = lut_a.values[idx + 2];
                 let lum = 0.2126 * ra + 0.7152 * ga + 0.0722 * ba;
 
-                if lum > *lo && lum <= *hi || (*lo == 0.0 && lum <= *hi) {
+                if (*lo == 0.0 || lum > *lo) && lum <= *hi {
                     region_entries += 1;
                     for ch in 0..3 {
                         let delta = (lut_a.values[idx + ch] - lut_b.values[idx + ch]).abs();
@@ -242,15 +242,16 @@ fn extract_diagonal_curves(lut: &LutData) -> [Vec<f64>; 3] {
 }
 
 /// Render a single channel curve as ASCII art.
+#[allow(clippy::needless_range_loop)]
 fn render_ascii_curve(values: &[f64], width: usize, height: usize, label: char) -> String {
     let mut grid = vec![vec![' '; width]; height];
 
     // Axis labels
-    for row in 0..height {
-        grid[row][0] = '│';
+    for row in grid.iter_mut().take(height) {
+        row[0] = '│';
     }
-    for col in 0..width {
-        grid[height - 1][col] = if col == 0 { '└' } else { '─' };
+    for (col, cell) in grid[height - 1].iter_mut().enumerate().take(width) {
+        *cell = if col == 0 { '└' } else { '─' };
     }
 
     // Plot the curve
@@ -281,8 +282,9 @@ fn render_ascii_curve(values: &[f64], width: usize, height: usize, label: char) 
 }
 
 /// Render all three channels overlaid on one grid.
+#[allow(clippy::needless_range_loop)]
 fn render_combined_curve(curves: &[Vec<f64>; 3], width: usize, height: usize) -> String {
-    let mut grid = vec![vec![' ' as u8; width]; height];
+    let mut grid = vec![vec![b' '; width]; height];
     let chars = [b'*', b'+', b'~']; // R, G, B
 
     for (ch, curve) in curves.iter().enumerate() {

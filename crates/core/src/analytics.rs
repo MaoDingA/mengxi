@@ -7,23 +7,12 @@ use rusqlite::{Connection, OptionalExtension};
 // ---------------------------------------------------------------------------
 
 /// Errors from analytics operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AnalyticsError {
     /// A database error occurred.
+    #[error("ANALYTICS_DB_ERROR -- {0}")]
     DatabaseError(String),
 }
-
-impl std::fmt::Display for AnalyticsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AnalyticsError::DatabaseError(msg) => {
-                write!(f, "ANALYTICS_DB_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for AnalyticsError {}
 
 // ---------------------------------------------------------------------------
 // Session record
@@ -50,37 +39,27 @@ pub struct SessionRecord {
 /// Record a session.
 pub fn record_session(
     conn: &Connection,
-    session_id: &str,
-    command: &str,
-    args_json: &str,
-    started_at: i64,
-    ended_at: i64,
-    duration_ms: i64,
-    exit_code: i32,
-    search_to_export_ms: Option<i64>,
-    user: &str,
+    record: &SessionRecord,
 ) -> Result<(), AnalyticsError> {
     conn.execute(
         "INSERT OR REPLACE INTO analytics_sessions (session_id, command, args_json, started_at, ended_at, duration_ms, exit_code, search_to_export_ms, user)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
-            session_id,
-            command,
-            args_json,
-            started_at,
-            ended_at,
-            duration_ms,
-            exit_code,
-            search_to_export_ms,
-            user,
+            record.session_id,
+            record.command,
+            record.args_json,
+            record.started_at,
+            record.ended_at,
+            record.duration_ms,
+            record.exit_code,
+            record.search_to_export_ms,
+            record.user,
         ],
     )
     .map_err(|e| AnalyticsError::DatabaseError(e.to_string()))?;
 
     Ok(())
-}
-
-/// Get the started_at timestamp of the most recent search session.
+}/// Get the started_at timestamp of the most recent search session.
 pub fn get_last_search_started_at(conn: &Connection) -> Result<Option<i64>, AnalyticsError> {
     let mut stmt = conn
         .prepare(
@@ -877,9 +856,17 @@ mod tests {
     #[test]
     fn test_record_session_basic() {
         let conn = setup_test_db();
-        record_session(
-            &conn, "ses_001", "import", r#"{"name":"film"}"#, ts(0), ts(5000), 5000, 0, None, "test_user",
-        )
+        record_session(&conn, &SessionRecord {
+            session_id: "ses_001".to_string(),
+            command: "import".to_string(),
+            args_json: r#"{"name":"film"}"#.to_string(),
+            started_at: ts(0),
+            ended_at: ts(5000),
+            duration_ms: 5000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "test_user".to_string(),
+        })
         .unwrap();
 
         let (cmd, dur): (String, i64) = conn
@@ -896,9 +883,17 @@ mod tests {
     #[test]
     fn test_record_session_with_search_to_export() {
         let conn = setup_test_db();
-        record_session(
-            &conn, "ses_002", "export", "{}", ts(10000), ts(15000), 5000, 0, Some(8000), "test_user",
-        )
+        record_session(&conn, &SessionRecord {
+            session_id: "ses_002".to_string(),
+            command: "export".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(10000),
+            ended_at: ts(15000),
+            duration_ms: 5000,
+            exit_code: 0,
+            search_to_export_ms: Some(8000),
+            user: "test_user".to_string(),
+        })
         .unwrap();
 
         let ste: Option<i64> = conn
@@ -914,8 +909,28 @@ mod tests {
     #[test]
     fn test_record_session_upsert() {
         let conn = setup_test_db();
-        record_session(&conn, "ses_003", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "ses_003", "import", "{}", ts(0), ts(3000), 3000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "ses_003".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "ses_003".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(3000),
+            duration_ms: 3000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let dur: i64 = conn
             .query_row(
@@ -930,9 +945,39 @@ mod tests {
     #[test]
     fn test_get_last_search_started_at() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(5000), ts(8000), 3000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "search", "{}", ts(10000), ts(12000), 2000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(5000),
+            ended_at: ts(8000),
+            duration_ms: 3000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(10000),
+            ended_at: ts(12000),
+            duration_ms: 2000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let result = get_last_search_started_at(&conn).unwrap();
         assert_eq!(result, Some(ts(10000))); // most recent
@@ -941,7 +986,17 @@ mod tests {
     #[test]
     fn test_get_last_search_started_at_none() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let result = get_last_search_started_at(&conn).unwrap();
         assert_eq!(result, None);
@@ -950,8 +1005,28 @@ mod tests {
     #[test]
     fn test_get_last_search_started_at_before_export() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "search", "{}", ts(0), ts(8000), 8000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "export", "{}", ts(20000), ts(25000), 5000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(8000),
+            duration_ms: 8000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "export".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(20000),
+            ended_at: ts(25000),
+            duration_ms: 5000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let result = get_last_search_started_at(&conn).unwrap();
         assert_eq!(result, Some(ts(0))); // still the search session, not export
@@ -960,9 +1035,39 @@ mod tests {
     #[test]
     fn test_get_session_count_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(4000), ts(5000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(4000),
+            ended_at: ts(5000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         assert_eq!(get_session_count(&conn, None).unwrap(), 3);
     }
@@ -970,9 +1075,39 @@ mod tests {
     #[test]
     fn test_get_session_count_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(7000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         // Only sessions starting at or after ts(5000)
         assert_eq!(get_session_count(&conn, Some(ts(5000))).unwrap(), 1);
@@ -981,9 +1116,39 @@ mod tests {
     #[test]
     fn test_get_average_duration_ms_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(2000), 2000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(3000), ts(5000), 2000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(11000), 5000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(2000),
+            duration_ms: 2000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(3000),
+            ended_at: ts(5000),
+            duration_ms: 2000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(11000),
+            duration_ms: 5000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         // Average of 2000 + 2000 + 5000 = 3000
         assert_eq!(get_average_duration_ms(&conn, None).unwrap(), 3000);
@@ -992,9 +1157,39 @@ mod tests {
     #[test]
     fn test_get_average_duration_ms_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(2000), 2000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(3000), ts(5000), 2000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(11000), 5000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(2000),
+            duration_ms: 2000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(3000),
+            ended_at: ts(5000),
+            duration_ms: 2000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(11000),
+            duration_ms: 5000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         // Only sessions starting at or after ts(5000): avg of [5000] = 5000
         assert_eq!(get_average_duration_ms(&conn, Some(ts(5000))).unwrap(), 5000);
@@ -1010,10 +1205,50 @@ mod tests {
     #[test]
     fn test_get_command_breakdown_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "import", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s4", "tag", "{}", ts(6000), ts(7000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(4000),
+            ended_at: ts(5000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s4".to_string(),
+            command: "tag".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(7000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let breakdown = get_command_breakdown(&conn, None).unwrap();
         assert_eq!(breakdown.len(), 3); // import(2), search(1), tag(1)
@@ -1025,9 +1260,39 @@ mod tests {
     #[test]
     fn test_get_command_breakdown_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(7000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let breakdown = get_command_breakdown(&conn, Some(ts(5000))).unwrap();
         assert_eq!(breakdown.len(), 1);
@@ -1037,8 +1302,28 @@ mod tests {
     #[test]
     fn test_get_sessions_all() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let sessions = get_sessions(&conn, None, 10).unwrap();
         assert_eq!(sessions.len(), 2);
@@ -1052,10 +1337,18 @@ mod tests {
     fn test_get_sessions_with_limit() {
         let conn = setup_test_db();
         for i in 0..5 {
-            record_session(
-                &conn, &format!("s{}", i), "import", "{}", ts(i * 1000), ts(i * 1000 + 500), 500, 0, None, "default",
-            )
-            .unwrap();
+            record_session(&conn, &SessionRecord {
+            session_id: format!("s{}", i),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(i * 1000),
+            ended_at: ts(i * 1000 + 500),
+            duration_ms: 500,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        })
+        .unwrap();
         }
 
         let sessions = get_sessions(&conn, None, 3).unwrap();
@@ -1066,9 +1359,39 @@ mod tests {
     #[test]
     fn test_get_sessions_with_filter() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None, "default").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(10000), ts(11000), 1000, 0, None, "default").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(5000),
+            ended_at: ts(6000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(10000),
+            ended_at: ts(11000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "default".to_string(),
+        }).unwrap();
 
         let sessions = get_sessions(&conn, Some(ts(6000)), 10).unwrap();
         assert_eq!(sessions.len(), 1);
@@ -1301,9 +1624,39 @@ mod tests {
     #[test]
     fn test_get_user_stats_basic() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None, "bob").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(4000),
+            ended_at: ts(5000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "bob".to_string(),
+        }).unwrap();
 
         let stats = get_user_stats(&conn, "alice", None).unwrap();
         assert_eq!(stats.user, "alice");
@@ -1316,8 +1669,28 @@ mod tests {
     #[test]
     fn test_get_user_stats_filtered_by_period() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(5000),
+            ended_at: ts(6000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
 
         let stats = get_user_stats(&conn, "alice", Some(ts(3000))).unwrap();
         assert_eq!(stats.session_count, 1);
@@ -1326,7 +1699,17 @@ mod tests {
     #[test]
     fn test_get_user_stats_no_sessions() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
 
         let stats = get_user_stats(&conn, "nonexistent", None).unwrap();
         assert_eq!(stats.user, "nonexistent");
@@ -1339,11 +1722,51 @@ mod tests {
     #[test]
     fn test_get_all_users() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "bob").unwrap();
-        record_session(&conn, "s3", "tag", "{}", ts(4000), ts(5000), 1000, 0, None, "alice").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "bob".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "tag".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(4000),
+            ended_at: ts(5000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
         // Empty user should be excluded
-        record_session(&conn, "s4", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s4".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(7000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "".to_string(),
+        }).unwrap();
 
         let users = get_all_users(&conn).unwrap();
         assert_eq!(users.len(), 2);
@@ -1361,10 +1784,50 @@ mod tests {
     #[test]
     fn test_get_per_user_breakdown() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(2000), ts(3000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s3", "search", "{}", ts(4000), ts(5000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s4", "import", "{}", ts(6000), ts(7000), 1000, 0, None, "bob").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(2000),
+            ended_at: ts(3000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(4000),
+            ended_at: ts(5000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s4".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(6000),
+            ended_at: ts(7000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "bob".to_string(),
+        }).unwrap();
 
         let breakdown = get_per_user_breakdown(&conn, None).unwrap();
         assert_eq!(breakdown.len(), 2);
@@ -1379,9 +1842,39 @@ mod tests {
     #[test]
     fn test_get_per_user_breakdown_filtered() {
         let conn = setup_test_db();
-        record_session(&conn, "s1", "import", "{}", ts(0), ts(1000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s2", "search", "{}", ts(5000), ts(6000), 1000, 0, None, "alice").unwrap();
-        record_session(&conn, "s3", "import", "{}", ts(10000), ts(11000), 1000, 0, None, "bob").unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s1".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(0),
+            ended_at: ts(1000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s2".to_string(),
+            command: "search".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(5000),
+            ended_at: ts(6000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "alice".to_string(),
+        }).unwrap();
+        record_session(&conn, &SessionRecord {
+            session_id: "s3".to_string(),
+            command: "import".to_string(),
+            args_json: "{}".to_string(),
+            started_at: ts(10000),
+            ended_at: ts(11000),
+            duration_ms: 1000,
+            exit_code: 0,
+            search_to_export_ms: None,
+            user: "bob".to_string(),
+        }).unwrap();
 
         let breakdown = get_per_user_breakdown(&conn, Some(ts(3000))).unwrap();
         assert_eq!(breakdown.len(), 2);

@@ -13,33 +13,18 @@ use crate::downsample;
 // ---------------------------------------------------------------------------
 
 /// Errors from the feature extraction pipeline.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum FeaturePipelineError {
     /// Downsampling failed.
+    #[error("PIPELINE_DOWNSAMPLE_ERROR -- {0}")]
     DownsampleError(String),
     /// RGB → Oklab conversion failed.
+    #[error("PIPELINE_OKLAB_ERROR -- {0}")]
     OklabError(String),
     /// FFI grading feature extraction failed.
+    #[error("PIPELINE_EXTRACTION_ERROR -- {0}")]
     ExtractionError(String),
 }
-
-impl std::fmt::Display for FeaturePipelineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FeaturePipelineError::DownsampleError(msg) => {
-                write!(f, "PIPELINE_DOWNSAMPLE_ERROR -- {}", msg)
-            }
-            FeaturePipelineError::OklabError(msg) => {
-                write!(f, "PIPELINE_OKLAB_ERROR -- {}", msg)
-            }
-            FeaturePipelineError::ExtractionError(msg) => {
-                write!(f, "PIPELINE_EXTRACTION_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for FeaturePipelineError {}
 
 // ---------------------------------------------------------------------------
 // Color space helpers
@@ -160,7 +145,7 @@ pub fn extract_tile_features(
     if grid_size == 0 {
         return Ok(Vec::new());
     }
-    if oklab_data.len() % 3 != 0 {
+    if !oklab_data.len().is_multiple_of(3) {
         return Err(FeaturePipelineError::ExtractionError(
             "oklab data length not divisible by 3".to_string(),
         ));
@@ -169,8 +154,8 @@ pub fn extract_tile_features(
         return Ok(Vec::new());
     }
 
-    let tile_w = (width + grid_size - 1) / grid_size;
-    let tile_h = (height + grid_size - 1) / grid_size;
+    let tile_w = width.div_ceil(grid_size);
+    let tile_h = height.div_ceil(grid_size);
     let color_space_tag_int = color_tag_to_int(color_tag);
 
     let mut tiles = Vec::with_capacity(grid_size * grid_size);

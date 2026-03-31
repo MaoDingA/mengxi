@@ -247,6 +247,13 @@ pub fn mengxi_aces_transform(
 
     let (or, og, ob) = apply_transform(r, g, b, src_tag, dst_tag)
 
+    // Detect unsupported transform: apply_transform returns NaN for
+    // unsupported src/dst combinations. Check first pixel to fail fast.
+    if i == 0 {
+      // NaN is the only value not equal to itself
+      if or != or || og != og || ob != ob { return -4 }
+    }
+
     if idx < out_ptr.length() { out_ptr[idx] = or }
     let idx1 = idx + 1
     if idx1 < out_ptr.length() { out_ptr[idx1] = og }
@@ -280,8 +287,9 @@ fn apply_transform(r : Double, g : Double, b : Double, src : Int, dst : Int) -> 
   // Same space: identity
   if src == dst { return (r, g, b) }
 
-  // Unsupported transform
-  return (r, g, b)
+  // Unsupported transform — return NaN to signal error to caller
+  let nan = 0.0 / 0.0
+  return (nan, nan, nan)
 }
 
 // ---------- Unit tests ----------

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use crate::agent::{Agent, AgentConfig, AgentError};
+use crate::agent::{Agent, AgentConfig};
 use crate::llm::LlmProvider;
 use crate::tool::{Tool, ToolError, ToolRegistry, ToolResult};
 

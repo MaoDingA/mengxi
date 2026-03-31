@@ -12,7 +12,7 @@ pub enum ACESColorSpace {
 }
 
 impl ACESColorSpace {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "aces2065-1" | "aces2065_1" | "ap0" => ACESColorSpace::ACES2065_1,
             "acescg" | "ap1" => ACESColorSpace::ACEScg,
@@ -37,43 +37,24 @@ impl ACESColorSpace {
 }
 
 /// Errors from ACES color science operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ColorScienceError {
     /// MoonBit library not available (not linked).
+    #[error("COLOR_SCIENCE_UNAVAILABLE -- MoonBit FFI library not linked")]
     FfiUnavailable,
     /// MoonBit returned an error code.
+    #[error("COLOR_SCIENCE_FFI_ERROR -- code {0} for {1}")]
     FfiError(i32, String),
     /// Log-encoded data requires explicit conversion before ACES transform.
+    #[error("COLOR_SCIENCE_LOG_REQUIRED -- {0}")]
     LogDataRequiresConversion(String),
     /// Unsupported color space transform.
+    #[error("COLOR_SCIENCE_UNSUPPORTED -- {0}")]
     UnsupportedTransform(String),
     /// Failed to deserialize grading features BLOB.
+    #[error("GRADING_FEATURE_DECODE_ERROR -- {0}")]
     GradingFeatureDecodeError(String),
 }
-
-impl std::fmt::Display for ColorScienceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ColorScienceError::FfiUnavailable => {
-                write!(f, "COLOR_SCIENCE_UNAVAILABLE -- MoonBit FFI library not linked")
-            }
-            ColorScienceError::FfiError(code, context) => {
-                write!(f, "COLOR_SCIENCE_FFI_ERROR -- code {} for {}", code, context)
-            }
-            ColorScienceError::LogDataRequiresConversion(msg) => {
-                write!(f, "COLOR_SCIENCE_LOG_REQUIRED -- {}", msg)
-            }
-            ColorScienceError::UnsupportedTransform(msg) => {
-                write!(f, "COLOR_SCIENCE_UNSUPPORTED -- {}", msg)
-            }
-            ColorScienceError::GradingFeatureDecodeError(msg) => {
-                write!(f, "GRADING_FEATURE_DECODE_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ColorScienceError {}
 
 extern "C" {
     fn mengxi_aces_transform(
@@ -188,7 +169,7 @@ pub fn apply_aces_transform(
             ),
         ));
     }
-    if pixel_data.len() % 3 != 0 {
+    if !pixel_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "pixel data length must be divisible by 3 (RGB)".to_string(),
@@ -221,6 +202,14 @@ pub fn apply_aces_transform(
             result,
             format!("{:?} -> {:?}", src, dst),
         ));
+    }
+
+    // Detect NaN in output — signals unsupported transform from MoonBit layer
+    if output.iter().any(|v| v.is_nan()) {
+        return Err(ColorScienceError::UnsupportedTransform(format!(
+            "{:?} -> {:?}",
+            src, dst
+        )));
     }
 
     Ok(output)
@@ -280,6 +269,14 @@ pub fn generate_lut(
         ));
     }
 
+    // Detect NaN in output — signals unsupported transform from MoonBit layer
+    if output.iter().any(|v| v.is_nan()) {
+        return Err(ColorScienceError::UnsupportedTransform(format!(
+            "generate_lut {:?} -> {:?}",
+            src, dst
+        )));
+    }
+
     Ok(output)
 }
 
@@ -308,7 +305,7 @@ pub fn srgb_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> 
             ),
         ));
     }
-    if pixel_data.len() % 3 != 0 {
+    if !pixel_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "pixel data length must be divisible by 3 (RGB)".to_string(),
@@ -361,7 +358,7 @@ pub fn oklab_to_srgb(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> 
             ),
         ));
     }
-    if oklab_data.len() % 3 != 0 {
+    if !oklab_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "oklab data length must be divisible by 3 (L,a,b)".to_string(),
@@ -414,7 +411,7 @@ pub fn acescct_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceErro
             ),
         ));
     }
-    if pixel_data.len() % 3 != 0 {
+    if !pixel_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "pixel data length must be divisible by 3 (RGB)".to_string(),
@@ -467,7 +464,7 @@ pub fn oklab_to_acescct(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceErro
             ),
         ));
     }
-    if oklab_data.len() % 3 != 0 {
+    if !oklab_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "oklab data length must be divisible by 3 (L,a,b)".to_string(),
@@ -520,7 +517,7 @@ pub fn linear_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
             ),
         ));
     }
-    if pixel_data.len() % 3 != 0 {
+    if !pixel_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "pixel data length must be divisible by 3 (RGB)".to_string(),
@@ -573,7 +570,7 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
             ),
         ));
     }
-    if oklab_data.len() % 3 != 0 {
+    if !oklab_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "oklab data length must be divisible by 3 (L,a,b)".to_string(),
@@ -632,7 +629,7 @@ pub fn extract_grading_features(
             ),
         ));
     }
-    if oklab_data.len() % 3 != 0 {
+    if !oklab_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "oklab data length must be divisible by 3 (L,a,b)".to_string(),
@@ -837,15 +834,15 @@ mod tests {
 
     #[test]
     fn test_color_space_from_str() {
-        assert_eq!(ACESColorSpace::from_str("aces2065-1"), ACESColorSpace::ACES2065_1);
-        assert_eq!(ACESColorSpace::from_str("aces2065_1"), ACESColorSpace::ACES2065_1);
-        assert_eq!(ACESColorSpace::from_str("ap0"), ACESColorSpace::ACES2065_1);
-        assert_eq!(ACESColorSpace::from_str("ACEScg"), ACESColorSpace::ACEScg);
-        assert_eq!(ACESColorSpace::from_str("ap1"), ACESColorSpace::ACEScg);
-        assert_eq!(ACESColorSpace::from_str("acescct"), ACESColorSpace::ACEScct);
-        assert_eq!(ACESColorSpace::from_str("rec709"), ACESColorSpace::Rec709);
-        assert_eq!(ACESColorSpace::from_str("srgb"), ACESColorSpace::Rec709);
-        assert_eq!(ACESColorSpace::from_str("unknown"), ACESColorSpace::ACEScg);
+        assert_eq!(ACESColorSpace::parse("aces2065-1"), ACESColorSpace::ACES2065_1);
+        assert_eq!(ACESColorSpace::parse("aces2065_1"), ACESColorSpace::ACES2065_1);
+        assert_eq!(ACESColorSpace::parse("ap0"), ACESColorSpace::ACES2065_1);
+        assert_eq!(ACESColorSpace::parse("ACEScg"), ACESColorSpace::ACEScg);
+        assert_eq!(ACESColorSpace::parse("ap1"), ACESColorSpace::ACEScg);
+        assert_eq!(ACESColorSpace::parse("acescct"), ACESColorSpace::ACEScct);
+        assert_eq!(ACESColorSpace::parse("rec709"), ACESColorSpace::Rec709);
+        assert_eq!(ACESColorSpace::parse("srgb"), ACESColorSpace::Rec709);
+        assert_eq!(ACESColorSpace::parse("unknown"), ACESColorSpace::ACEScg);
     }
 
     #[test]

@@ -184,8 +184,8 @@ impl SubagentDefinition {
             }
 
             // YAML list item: "  - item"
-            if trimmed_line.starts_with("- ") {
-                let item = trimmed_line[2..].trim().to_string();
+            if let Some(stripped) = trimmed_line.strip_prefix("- ") {
+                let item = stripped.trim().to_string();
                 if !item.is_empty() {
                     tools.push(item);
                 }

@@ -18,7 +18,7 @@ pub enum ColorSpaceTag {
 }
 
 impl ColorSpaceTag {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "log" => ColorSpaceTag::Log,
             "video" => ColorSpaceTag::Video,
@@ -47,33 +47,18 @@ pub struct Fingerprint {
 }
 
 /// Errors from fingerprint extraction.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum FingerprintError {
     /// MoonBit library not available (not linked).
+    #[error("FINGERPRINT_UNAVAILABLE -- MoonBit FFI library not linked")]
     FfiUnavailable,
     /// MoonBit returned an error code.
+    #[error("FINGERPRINT_FFI_ERROR -- code {0} for {1}")]
     FfiError(i32, String),
     /// Invalid input data.
+    #[error("FINGERPRINT_INVALID_INPUT -- {0}")]
     InvalidInput(String),
 }
-
-impl std::fmt::Display for FingerprintError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FingerprintError::FfiUnavailable => {
-                write!(f, "FINGERPRINT_UNAVAILABLE -- MoonBit FFI library not linked")
-            }
-            FingerprintError::FfiError(code, context) => {
-                write!(f, "FINGERPRINT_FFI_ERROR -- code {} for {}", code, context)
-            }
-            FingerprintError::InvalidInput(msg) => {
-                write!(f, "FINGERPRINT_INVALID_INPUT -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for FingerprintError {}
 
 extern "C" {
     fn mengxi_compute_fingerprint(
@@ -108,13 +93,13 @@ pub fn extract_fingerprint(
             format!("pixel data too large for FFI ({} elements, max {})", pixel_data.len(), i32::MAX),
         ));
     }
-    if pixel_data.len() % 3 != 0 {
+    if !pixel_data.len().is_multiple_of(3) {
         return Err(FingerprintError::InvalidInput(
             "pixel data length must be divisible by 3 (RGB)".to_string(),
         ));
     }
 
-    let tag = ColorSpaceTag::from_str(color_space_tag);
+    let tag = ColorSpaceTag::parse(color_space_tag);
     let mut output = vec![0.0_f64; OUTPUT_SIZE];
 
     let result = unsafe {
@@ -183,21 +168,12 @@ pub enum ReextractResult {
 }
 
 /// Errors from re-extraction that prevent the operation from being attempted.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ReextractError {
     /// Database query failed (fingerprint not found, connection error).
+    #[error("REEXTRACT_DB_ERROR -- {0}")]
     DbError(String),
 }
-
-impl std::fmt::Display for ReextractError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ReextractError::DbError(msg) => write!(f, "REEXTRACT_DB_ERROR -- {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ReextractError {}
 
 /// Re-extract grading features for a single fingerprint by reading its source file.
 ///
@@ -467,10 +443,10 @@ mod tests {
 
     #[test]
     fn test_color_space_tag_from_str() {
-        assert_eq!(ColorSpaceTag::from_str("linear"), ColorSpaceTag::Linear);
-        assert_eq!(ColorSpaceTag::from_str("log"), ColorSpaceTag::Log);
-        assert_eq!(ColorSpaceTag::from_str("video"), ColorSpaceTag::Video);
-        assert_eq!(ColorSpaceTag::from_str("unknown"), ColorSpaceTag::Linear);
+        assert_eq!(ColorSpaceTag::parse("linear"), ColorSpaceTag::Linear);
+        assert_eq!(ColorSpaceTag::parse("log"), ColorSpaceTag::Log);
+        assert_eq!(ColorSpaceTag::parse("video"), ColorSpaceTag::Video);
+        assert_eq!(ColorSpaceTag::parse("unknown"), ColorSpaceTag::Linear);
     }
 
     #[test]

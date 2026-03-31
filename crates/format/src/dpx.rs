@@ -1,5 +1,4 @@
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::fmt;
 use std::io::{self, Cursor, Write};
 use std::path::Path;
 
@@ -26,28 +25,17 @@ pub struct DpxHeader {
 }
 
 /// Errors returned by DPX parsing.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DpxError {
+    #[error("Invalid DPX magic number: {:02X} {:02X} {:02X} {:02X}", .0[0], .0[1], .0[2], .0[3])]
     InvalidMagic([u8; 4]),
+    #[error("Truncated DPX file: {0}")]
     TruncatedFile(String),
+    #[error("Unsupported DPX variant: {0}")]
     UnsupportedVariant(String),
+    #[error("I/O error: {0}")]
     IoError(String),
 }
-
-impl fmt::Display for DpxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DpxError::InvalidMagic(bytes) => {
-                write!(f, "Invalid DPX magic number: {:02X} {:02X} {:02X} {:02X}", bytes[0], bytes[1], bytes[2], bytes[3])
-            }
-            DpxError::TruncatedFile(reason) => write!(f, "Truncated DPX file: {}", reason),
-            DpxError::UnsupportedVariant(reason) => write!(f, "Unsupported DPX variant: {}", reason),
-            DpxError::IoError(msg) => write!(f, "I/O error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for DpxError {}
 
 impl From<io::Error> for DpxError {
     fn from(e: io::Error) -> Self {

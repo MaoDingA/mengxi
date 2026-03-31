@@ -1143,26 +1143,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
-name = "mengxi"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm",
- "dirs",
- "mengxi-agent",
- "mengxi-core",
- "ratatui",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "tui-textarea",
- "unicode-width 0.2.0",
-]
-
-[[package]]
 name = "mengxi-agent"
 version = "0.1.0"
 dependencies = [
@@ -1196,6 +1176,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1208,6 +1189,7 @@ dependencies = [
  "mp4parse",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1255,6 +1237,26 @@ dependencies = [
  "log",
  "num-traits",
  "static_assertions",
+]
+
+[[package]]
+name = "mx"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "dirs",
+ "mengxi-agent",
+ "mengxi-core",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tui-textarea",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

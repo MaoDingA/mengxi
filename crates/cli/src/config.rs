@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 /// Root configuration structure matching ~/.mengxi/config TOML schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -98,17 +99,6 @@ fn default_keyframe_extraction() -> String { "auto".to_string() }
 fn default_output_dir() -> String { "~/lut".to_string() }
 fn default_user() -> String { "default".to_string() }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            ai: AiConfig::default(),
-            import: ImportConfig::default(),
-            export: ExportConfig::default(),
-            search: SearchConfig::default(),
-        }
-    }
-}
 
 impl Default for GeneralConfig {
     fn default() -> Self {

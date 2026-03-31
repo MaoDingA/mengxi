@@ -3,43 +3,30 @@
 // Compares per-tile grading features between a query fingerprint and candidates.
 // Supports spatial alignment (same position only) and position-invariant matching.
 
-use crate::color_science::{self, bhattacharyya_distance};
+use crate::color_science::{self};
 use crate::db;
 use crate::grading_features::GradingFeatures;
 use crate::segmentation;
+
+type TileCandidate = (i64, String, String, String, Vec<(usize, usize, GradingFeatures)>);
 
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
 
 /// Errors from tile-level search.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TileSearchError {
     /// Query fingerprint has no tiles.
+    #[error("TILE_SEARCH_NO_QUERY_TILES -- query fingerprint has no tile features")]
     NoQueryTiles,
     /// Database error during tile lookup.
+    #[error("TILE_SEARCH_DB_ERROR -- {0}")]
     DbError(String),
     /// Feature extraction error.
+    #[error("TILE_SEARCH_FEATURE_ERROR -- {0}")]
     FeatureError(String),
 }
-
-impl std::fmt::Display for TileSearchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TileSearchError::NoQueryTiles => {
-                write!(f, "TILE_SEARCH_NO_QUERY_TILES -- query fingerprint has no tile features")
-            }
-            TileSearchError::DbError(msg) => {
-                write!(f, "TILE_SEARCH_DB_ERROR -- {}", msg)
-            }
-            TileSearchError::FeatureError(msg) => {
-                write!(f, "TILE_SEARCH_FEATURE_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for TileSearchError {}
 
 // ---------------------------------------------------------------------------
 // Tile match result
@@ -247,7 +234,7 @@ fn load_tile_candidates(
     conn: &rusqlite::Connection,
     exclude_fingerprint_id: i64,
     project: Option<&str>,
-) -> Result<Vec<(i64, String, String, String, Vec<(usize, usize, GradingFeatures)>)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<TileCandidate>, Box<dyn std::error::Error>> {
     // Find all fingerprints that have tiles (excluding query)
     let mut sql = String::from(
         "SELECT DISTINCT ft.fingerprint_id, p.name, p.path || '/' || f.filename, f.format

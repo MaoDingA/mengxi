@@ -59,7 +59,7 @@ impl Tool for SearchByImageTool {
             120,
             "clip-vit-b-32",
         )
-        .map_err(|e| handle_search_error(e))?;
+        .map_err(handle_search_error)?;
 
         let display = db_util::search_results_to_json(&results, self.name());
         let summary = db_util::format_results_summary(display["results"].as_array().unwrap());
@@ -105,7 +105,7 @@ impl Tool for SearchByTagTool {
         let options = db_util::build_search_options(&params, 20);
 
         let results =
-            mengxi_core::search::search_by_tag(&conn, tag, &options).map_err(|e| handle_search_error(e))?;
+            mengxi_core::search::search_by_tag(&conn, tag, &options).map_err(handle_search_error)?;
 
         let display = db_util::search_results_to_json(&results, self.name());
         let summary = db_util::format_results_summary(display["results"].as_array().unwrap());
@@ -158,7 +158,7 @@ impl Tool for SearchByColorTool {
 
         // Delegate to tag search — description text is used as tag query
         let results = mengxi_core::search::search_by_tag(&conn, description, &options)
-            .map_err(|e| handle_search_error(e))?;
+            .map_err(handle_search_error)?;
 
         let display = db_util::search_results_to_json(&results, self.name());
         let results_arr = display["results"].as_array().unwrap();
@@ -250,7 +250,7 @@ impl Tool for SearchSimilarTool {
         }
 
         let results = mengxi_core::search::hybrid_search(&conn, file_id, &weights, &options)
-            .map_err(|e| handle_search_error(e))?;
+            .map_err(handle_search_error)?;
 
         let display = db_util::hybrid_results_to_json(&results, self.name());
         let summary = db_util::format_results_summary(display["results"].as_array().unwrap());

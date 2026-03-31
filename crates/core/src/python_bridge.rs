@@ -1,7 +1,6 @@
 // python_bridge.rs — Rust ↔ Python subprocess bridge for AI inference
 
 use serde_json::Value;
-use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
@@ -9,30 +8,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// Error types for AI subprocess operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AiError {
+    #[error("AI_SUBPROCESS_NOT_FOUND -- {0}")]
     SubprocessNotFound(String),
+    #[error("AI_SUBPROCESS_CRASHED -- {0}")]
     SubprocessCrashed(String),
+    #[error("AI_TIMEOUT -- {0}")]
     Timeout(String),
+    #[error("AI_PROTOCOL_ERROR -- {0}")]
     ProtocolError(String),
+    #[error("AI_INFERENCE_ERROR -- {0}")]
     InferenceError(String),
+    #[error("AI_MODEL_NOT_FOUND -- {0}")]
     ModelNotFound(String),
 }
-
-impl fmt::Display for AiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SubprocessNotFound(msg) => write!(f, "AI_SUBPROCESS_NOT_FOUND -- {}", msg),
-            Self::SubprocessCrashed(msg) => write!(f, "AI_SUBPROCESS_CRASHED -- {}", msg),
-            Self::Timeout(msg) => write!(f, "AI_TIMEOUT -- {}", msg),
-            Self::ProtocolError(msg) => write!(f, "AI_PROTOCOL_ERROR -- {}", msg),
-            Self::InferenceError(msg) => write!(f, "AI_INFERENCE_ERROR -- {}", msg),
-            Self::ModelNotFound(msg) => write!(f, "AI_MODEL_NOT_FOUND -- {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for AiError {}
 
 /// Internal subprocess handles: child process, stdin writer, stdout reader thread.
 struct Subprocess {
@@ -70,7 +60,7 @@ impl Subprocess {
         let (tx, rx) = mpsc::channel();
         let _reader_thread = thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 let _ = tx.send(line);
             }
         });
@@ -696,7 +686,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let _reader = thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 tx.send(line).unwrap();
             }
         });
@@ -743,7 +733,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<String>();
         let _reader = thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 tx.send(line).unwrap();
             }
         });

@@ -62,8 +62,7 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         }
 
         // Code block markers
-        if raw_line.starts_with("```") {
-            let lang = &raw_line[3..];
+        if let Some(lang) = raw_line.strip_prefix("```") {
             lines.push(Line::from(vec![Span::styled(
                 format!("── {} ──", if lang.is_empty() { "code" } else { lang }),
                 Style::default().fg(Color::DarkGray),
@@ -84,7 +83,7 @@ fn parse_inline_styles(text: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut chars = text.char_indices().peekable();
     let mut current_start = 0;
-    let mut current_style = Style::default();
+    let current_style = Style::default();
 
     while let Some((i, ch)) = chars.next() {
         // Inline code: `text`
@@ -97,7 +96,7 @@ fn parse_inline_styles(text: &str) -> Vec<Span<'static>> {
             // Find closing backtick
             let code_start = i + 1;
             let mut code_end = None;
-            while let Some((j, c)) = chars.next() {
+            for (j, c) in chars.by_ref() {
                 if c == '`' {
                     code_end = Some(j);
                     break;
@@ -132,7 +131,7 @@ fn parse_inline_styles(text: &str) -> Vec<Span<'static>> {
             let bold_start = i + 2;
             let mut bold_end = None;
             let mut prev_was_star = false;
-            while let Some((j, c)) = chars.next() {
+            for (j, c) in chars.by_ref() {
                 if c == '*' && prev_was_star {
                     bold_end = Some(j - 1);
                     break;

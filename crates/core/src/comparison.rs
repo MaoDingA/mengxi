@@ -3,25 +3,18 @@
 use crate::grading_features::GradingFeatures;
 use rusqlite::Connection;
 
+type FingerprintFeatureRow = (String, String, String, usize, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
 /// Error type for comparison operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CompareError {
     /// Fingerprint not found in database.
+    #[error("COMPARE_NOT_FOUND -- fingerprint {0} not found")]
     NotFound(i64),
     /// Database error.
+    #[error("COMPARE_DB_ERROR -- {0}")]
     DbError(String),
 }
-
-impl std::fmt::Display for CompareError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompareError::NotFound(id) => write!(f, "COMPARE_NOT_FOUND -- fingerprint {} not found", id),
-            CompareError::DbError(msg) => write!(f, "COMPARE_DB_ERROR -- {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for CompareError {}
 
 /// Per-channel histogram delta (difference between two fingerprints).
 #[derive(Debug, Clone)]
@@ -83,9 +76,7 @@ fn load_features(
     conn: &Connection,
     fp_id: i64,
 ) -> Result<(String, String, String, GradingFeatures), CompareError> {
-    let (project, file, color_tag, hist_bins, hist_l, hist_a, hist_b, moments): (
-        String, String, String, usize, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>,
-    ) = conn
+    let (project, file, color_tag, hist_bins, hist_l, hist_a, hist_b, moments): FingerprintFeatureRow = conn
         .query_row(
             "SELECT p.name, p.path || '/' || f.filename, fp.color_space_tag, \
                     fp.hist_bins, fp.oklab_hist_l, fp.oklab_hist_a, fp.oklab_hist_b, fp.color_moments \

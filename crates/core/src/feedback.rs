@@ -7,28 +7,15 @@ use rusqlite::Connection;
 // ---------------------------------------------------------------------------
 
 /// Errors from feedback operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum FeedbackError {
     /// A database error occurred.
+    #[error("FEEDBACK_DB_ERROR -- {0}")]
     DatabaseError(String),
     /// Invalid action (must be 'accepted' or 'rejected').
+    #[error("FEEDBACK_INVALID_ACTION -- {0}")]
     InvalidAction(String),
 }
-
-impl std::fmt::Display for FeedbackError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FeedbackError::DatabaseError(msg) => {
-                write!(f, "FEEDBACK_DB_ERROR -- {}", msg)
-            }
-            FeedbackError::InvalidAction(msg) => {
-                write!(f, "FEEDBACK_INVALID_ACTION -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for FeedbackError {}
 
 // ---------------------------------------------------------------------------
 // Feedback functions

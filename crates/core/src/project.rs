@@ -56,38 +56,17 @@ pub struct VariantBreakdown {
 }
 
 /// Error types for import operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ImportError {
+    #[error("IMPORT_PATH_NOT_FOUND — Path {0} does not exist")]
     PathNotFound(String),
+    #[error("IMPORT_DUPLICATE_NAME — Project '{0}' already exists")]
     DuplicateName(String),
+    #[error("DB_ERROR — {0}")]
     DbError(String),
+    #[error("IMPORT_CORRUPT_FILE -- Failed to decode {filename}: {reason}")]
     CorruptFile { filename: String, reason: String },
 }
-
-impl std::fmt::Display for ImportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ImportError::PathNotFound(path) => {
-                write!(f, "IMPORT_PATH_NOT_FOUND — Path {} does not exist", path)
-            }
-            ImportError::DuplicateName(name) => {
-                write!(f, "IMPORT_DUPLICATE_NAME — Project '{}' already exists", name)
-            }
-            ImportError::DbError(msg) => {
-                write!(f, "DB_ERROR — {}", msg)
-            }
-            ImportError::CorruptFile { filename, reason } => {
-                write!(
-                    f,
-                    "IMPORT_CORRUPT_FILE -- Failed to decode {}: {}",
-                    filename, reason
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ImportError {}
 
 /// Supported file extensions and their format labels.
 const SUPPORTED_EXTENSIONS: &[(&str, &str)] = &[
@@ -411,7 +390,7 @@ pub fn register_project(
                                                     ) {
                                                         Ok(tiles) => {
                                                             if let Err(e) = crate::db::store_fingerprint_tiles(
-                                                                &conn, fingerprint_id, &tiles,
+                                                                conn, fingerprint_id, &tiles,
                                                                 color_science::GradingFeatures::HIST_BINS,
                                                             ) {
                                                                 eprintln!("Warning: failed to store tile features for {}: {}", filename, e);
@@ -486,6 +465,7 @@ pub fn register_project(
 
 /// Map DPX transfer characteristic string to a color space tag for fingerprint extraction.
 /// Delegates to the shared feature_pipeline module.
+#[allow(dead_code)]
 pub(crate) fn map_transfer_string_to_color_tag(transfer: &str) -> String {
     crate::feature_pipeline::map_transfer_string_to_color_tag(transfer)
 }

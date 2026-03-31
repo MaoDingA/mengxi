@@ -3,6 +3,11 @@
 use rusqlite::Connection;
 
 use crate::color_science::{bhattacharyya_distance, GradingFeatures};
+
+type FingerprintSearchRow = (String, String, String, Option<Vec<u8>>, Option<String>);
+type TagSearchRow = (i64, String, String, String, Option<Vec<u8>>, Option<String>);
+type FeatureSearchRow = (i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32);
+type CombinedSearchRow = (i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32, Option<Vec<u8>>, String, Option<String>);
 use crate::fingerprint::BINS_PER_CHANNEL;
 use crate::hybrid_scoring::{self, HybridSearchResult, SignalWeights};
 use crate::python_bridge::{AiError, PythonBridge};
@@ -13,48 +18,27 @@ use crate::vector_index::VectorIndex;
 // ---------------------------------------------------------------------------
 
 /// Errors from search operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SearchError {
     /// No fingerprints exist in the database.
+    #[error("SEARCH_NO_FINGERPRINTS -- No indexed projects found")]
     NoFingerprints,
     /// No results found for the specified project.
+    #[error("SEARCH_PROJECT_NOT_FOUND -- No results found for project '{0}'")]
     ProjectNotFound(String),
     /// A database error occurred.
+    #[error("SEARCH_DB_ERROR -- {0}")]
     DatabaseError(String),
     /// Invalid format parameter.
+    #[error("SEARCH_INVALID_FORMAT -- {0}")]
     InvalidFormat(String),
     /// AI embedding generation is unavailable.
+    #[error("SEARCH_AI_UNAVAILABLE -- {0}")]
     AiUnavailable(String),
     /// Error during embedding computation or storage.
+    #[error("SEARCH_EMBEDDING_ERROR -- {0}")]
     EmbeddingError(String),
 }
-
-impl std::fmt::Display for SearchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SearchError::NoFingerprints => {
-                write!(f, "SEARCH_NO_FINGERPRINTS -- No indexed projects found")
-            }
-            SearchError::ProjectNotFound(name) => {
-                write!(f, "SEARCH_PROJECT_NOT_FOUND -- No results found for project '{}'", name)
-            }
-            SearchError::DatabaseError(msg) => {
-                write!(f, "SEARCH_DB_ERROR -- {}", msg)
-            }
-            SearchError::InvalidFormat(msg) => {
-                write!(f, "SEARCH_INVALID_FORMAT -- {}", msg)
-            }
-            SearchError::AiUnavailable(msg) => {
-                write!(f, "SEARCH_AI_UNAVAILABLE -- {}", msg)
-            }
-            SearchError::EmbeddingError(msg) => {
-                write!(f, "SEARCH_EMBEDDING_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for SearchError {}
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -300,7 +284,7 @@ pub fn serialize_embedding(embedding: &[f64]) -> Vec<u8> {
 /// Deserialize a BLOB back to Vec<f64>.
 /// Returns None if the blob length is not a multiple of 4 bytes.
 pub fn deserialize_embedding(blob: &[u8]) -> Option<Vec<f64>> {
-    if blob.len() % 4 != 0 {
+    if !blob.len().is_multiple_of(4) {
         return None;
     }
     Some(
@@ -355,7 +339,7 @@ pub fn search_by_image(
 
     let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
 
-    let rows: Vec<(String, String, String, Option<Vec<u8>>, Option<String>)> =
+    let rows: Vec<FingerprintSearchRow> =
         match &options.project {
             Some(proj) => stmt
                 .query_map([proj], |row| {
@@ -595,7 +579,7 @@ pub fn search_by_image_and_tag(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, String, String, String, Option<Vec<u8>>, Option<String>)> = stmt
+    let rows: Vec<TagSearchRow> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -845,7 +829,7 @@ pub fn bhattacharyya_search(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32)> = stmt
+    let rows: Vec<FeatureSearchRow> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -1101,7 +1085,7 @@ fn hybrid_search_impl(
 
     // Decide whether to use HNSW pre-filtering
     let hnsw_candidate_ids: Option<Vec<i64>> = match (&query_embedding, vector_index) {
-        (Some(ref q_emb), Some(ref idx)) if idx.should_use_hnsw() => {
+        (Some(ref q_emb), Some(idx)) if idx.should_use_hnsw() => {
             let pre_filter_k = std::cmp::max(options.limit * 5, 200);
             let results = idx.search(q_emb, pre_filter_k);
             if results.is_empty() {
@@ -1148,7 +1132,7 @@ fn hybrid_search_impl(
         params.push(Box::new(proj.clone()));
     }
 
-    let rows: Vec<(i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32, Option<Vec<u8>>, String, Option<String>)> =
+    let rows: Vec<CombinedSearchRow> =
         stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,   // fp.id
@@ -1246,20 +1230,27 @@ fn hybrid_search_impl(
         };
 
         // Compute grading similarity
-        let grading_sim = if options.use_pyramid && query_pyramid.is_some() {
-            // Pyramid mode: use spatial pyramid comparison
-            let query_pyr = query_pyramid.as_ref().unwrap();
-            let candidate_tiles = crate::db::load_fingerprint_tiles(conn, _fp_id).unwrap_or_default();
-            if candidate_tiles.is_empty() {
-                // Fallback to flat grading when candidate has no tiles
+        let grading_sim = if options.use_pyramid {
+            if let Some(query_pyr) = query_pyramid.as_ref() {
+                // Pyramid mode: use spatial pyramid comparison
+                let candidate_tiles = crate::db::load_fingerprint_tiles(conn, _fp_id).unwrap_or_default();
+                if candidate_tiles.is_empty() {
+                    // Fallback to flat grading when candidate has no tiles
+                    match bhattacharyya_distance(&query_features, &candidate_features) {
+                        Ok(score) => Some(score),
+                        Err(_) => continue,
+                    }
+                } else {
+                    let candidate_pyr = crate::spatial_pyramid::build_spatial_pyramid_from_tiles(&candidate_tiles);
+                    let result = crate::spatial_pyramid::compare_pyramids(query_pyr, &candidate_pyr);
+                    Some(result.score)
+                }
+            } else {
+                // Pyramid requested but no pyramid available — flat fallback
                 match bhattacharyya_distance(&query_features, &candidate_features) {
                     Ok(score) => Some(score),
                     Err(_) => continue,
                 }
-            } else {
-                let candidate_pyr = crate::spatial_pyramid::build_spatial_pyramid_from_tiles(&candidate_tiles);
-                let result = crate::spatial_pyramid::compare_pyramids(query_pyr, &candidate_pyr);
-                Some(result.score)
             }
         } else {
             // Standard flat Bhattacharyya
@@ -1277,10 +1268,7 @@ fn hybrid_search_impl(
             (Some(ref q_emb), Some(ref c_blob)) => {
                 if let Some(c_emb) = deserialize_embedding(c_blob) {
                     if q_emb.len() == c_emb.len() {
-                        match hybrid_scoring::clip_similarity(q_emb, &c_emb) {
-                            Ok(sim) => Some(sim),
-                            Err(_) => None, // Skip on dimension mismatch
-                        }
+                        hybrid_scoring::clip_similarity(q_emb, &c_emb).ok()
                     } else {
                         None // Dimension mismatch, skip CLIP signal
                     }

@@ -11,42 +11,17 @@ use mengxi_format::lut::{self, LutError};
 // ---------------------------------------------------------------------------
 
 /// Errors from LUT diff operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LutDiffError {
     /// One of the LUT files could not be read.
+    #[error("LUTDIFF_IO_ERROR -- file not found: {}", .0.display())]
     FileNotFound(PathBuf),
     /// Failed to parse a LUT file.
-    ParseError(LutError),
+    #[error("LUTDIFF_PARSE_ERROR -- {0}")]
+    ParseError(#[from] LutError),
     /// Grid sizes differ between the two LUTs.
+    #[error("LUTDIFF_GRID_MISMATCH -- grid sizes differ: {a} vs {b}")]
     GridSizeMismatch { a: u32, b: u32 },
-}
-
-impl std::fmt::Display for LutDiffError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LutDiffError::FileNotFound(p) => {
-                write!(f, "LUTDIFF_IO_ERROR -- file not found: {}", p.display())
-            }
-            LutDiffError::ParseError(e) => {
-                write!(f, "LUTDIFF_PARSE_ERROR -- {}", e)
-            }
-            LutDiffError::GridSizeMismatch { a, b } => {
-                write!(
-                    f,
-                    "LUTDIFF_GRID_MISMATCH -- grid sizes differ: {} vs {}",
-                    a, b
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for LutDiffError {}
-
-impl From<LutError> for LutDiffError {
-    fn from(e: LutError) -> Self {
-        LutDiffError::ParseError(e)
-    }
 }
 
 /// Compare two LUT files and return the diff result.
@@ -85,33 +60,18 @@ pub struct LutDependency {
 }
 
 /// Errors from LUT dependency queries.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LutDepError {
     /// Missing required argument.
+    #[error("LUTDEP_MISSING_ARG -- {0}")]
     MissingArg(String),
     /// Database initialization failed.
+    #[error("LUTDEP_DB_ERROR -- {0}")]
     DbError(String),
     /// Database query error.
+    #[error("LUTDEP_DB_ERROR -- {0}")]
     QueryError(String),
 }
-
-impl std::fmt::Display for LutDepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LutDepError::MissingArg(msg) => {
-                write!(f, "LUTDEP_MISSING_ARG -- {}", msg)
-            }
-            LutDepError::DbError(msg) => {
-                write!(f, "LUTDEP_DB_ERROR -- {}", msg)
-            }
-            LutDepError::QueryError(msg) => {
-                write!(f, "LUTDEP_DB_ERROR -- {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for LutDepError {}
 
 /// Query the database for dependency records matching a LUT file path.
 ///

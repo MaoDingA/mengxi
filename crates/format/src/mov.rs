@@ -20,28 +20,19 @@ pub struct KeyframeInfo {
 }
 
 /// MOV parsing error.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum MovError {
+    #[error("{0}")]
     ParseError(String),
+    #[error("MOV file contains no video track")]
     NoVideoTrack,
+    #[error("missing metadata: {0}")]
     MissingMetadata(String),
+    #[error("ffmpeg failed: {0}")]
     FfmpegFailed(String),
+    #[error("IO error: {0}")]
     IoError(String),
 }
-
-impl std::fmt::Display for MovError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MovError::ParseError(msg) => write!(f, "{}", msg),
-            MovError::NoVideoTrack => write!(f, "MOV file contains no video track"),
-            MovError::MissingMetadata(field) => write!(f, "missing metadata: {}", field),
-            MovError::FfmpegFailed(msg) => write!(f, "ffmpeg failed: {}", msg),
-            MovError::IoError(msg) => write!(f, "IO error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for MovError {}
 
 /// Parse an MOV/MP4 file header, extracting metadata using mp4parse.
 pub fn parse_mov_header(path: &Path) -> Result<MovHeader, MovError> {

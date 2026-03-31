@@ -215,7 +215,7 @@ fn validate_entry(entry: &ValidationEntry, vocabulary: &[String]) -> EntryResult
         errors.push("grading_style_tags is empty".to_string());
     }
     for tag in &metadata.grading_style_tags {
-        if !vocabulary.contains(&tag) {
+        if !vocabulary.contains(tag) {
             errors.push(format!(
                 "unknown grading_style_tag: '{}' (not in controlled vocabulary)",
                 tag
@@ -567,5 +567,193 @@ mod tests {
         // Capture stdout
         let code = run_validate_dataset(dir.path().to_str().unwrap(), true);
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_validate_entry_unknown_color_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("frame.dpx");
+        fs::write(&image_path, "fake").unwrap();
+        let meta = EntryMetadata {
+            material_type: "dpx".to_string(),
+            color_space: "adobe_rgb".to_string(),
+            grading_style_tags: vec!["warm".to_string()],
+        };
+        fs::write(dir.path().join("frame.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let entry = ValidationEntry {
+            image_path,
+            metadata_path: dir.path().join("frame.json"),
+        };
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
+        assert_eq!(result.status, "invalid");
+        assert!(result.errors.iter().any(|e| e.contains("unknown color_space")));
+    }
+
+    #[test]
+    fn test_validate_entry_multiple_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("frame.dpx");
+        fs::write(&image_path, "fake").unwrap();
+        // Both unknown material_type and unknown color_space, plus unknown tag
+        let meta = EntryMetadata {
+            material_type: "tiff".to_string(),
+            color_space: "adobe_rgb".to_string(),
+            grading_style_tags: vec!["nonexistent_tag".to_string()],
+        };
+        fs::write(dir.path().join("frame.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let entry = ValidationEntry {
+            image_path,
+            metadata_path: dir.path().join("frame.json"),
+        };
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
+        assert_eq!(result.status, "invalid");
+        // Should have 3 errors: unknown material_type, unknown color_space, unknown tag
+        assert_eq!(result.errors.len(), 3);
+    }
+
+    #[test]
+    fn test_validate_entry_exr_with_linear_color_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("shot.exr");
+        fs::write(&image_path, "fake").unwrap();
+        let meta = EntryMetadata {
+            material_type: "exr".to_string(),
+            color_space: "linear".to_string(),
+            grading_style_tags: vec!["cool".to_string(), "low_contrast".to_string()],
+        };
+        fs::write(dir.path().join("shot.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let entry = ValidationEntry {
+            image_path,
+            metadata_path: dir.path().join("shot.json"),
+        };
+        let default_vocab: Vec<String> = DEFAULT_VOCABULARY.iter().map(|s| s.to_string()).collect();
+        let result = validate_entry(&entry, &default_vocab);
+        assert_eq!(result.status, "valid");
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_discover_entries_sorted_alphabetically() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("z_frame.dpx"), "fake").unwrap();
+        fs::write(dir.path().join("a_frame.dpx"), "fake").unwrap();
+        fs::write(dir.path().join("m_frame.dpx"), "fake").unwrap();
+        let entries = discover_entries(dir.path());
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].image_path.to_str().unwrap().contains("a_frame"));
+        assert!(entries[1].image_path.to_str().unwrap().contains("m_frame"));
+        assert!(entries[2].image_path.to_str().unwrap().contains("z_frame"));
+    }
+
+    #[test]
+    fn test_discover_entries_ignores_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("subdir.dpx")).unwrap();
+        let entries = discover_entries(dir.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_supported_extensions_constant() {
+        assert!(SUPPORTED_EXTENSIONS.contains(&"dpx"));
+        assert!(SUPPORTED_EXTENSIONS.contains(&"exr"));
+        assert_eq!(SUPPORTED_EXTENSIONS.len(), 2);
+    }
+
+    #[test]
+    fn test_valid_material_types_constant() {
+        assert!(VALID_MATERIAL_TYPES.contains(&"dpx"));
+        assert!(VALID_MATERIAL_TYPES.contains(&"exr"));
+        assert!(VALID_MATERIAL_TYPES.contains(&"mov"));
+        assert_eq!(VALID_MATERIAL_TYPES.len(), 3);
+    }
+
+    #[test]
+    fn test_valid_color_spaces_constant() {
+        assert!(VALID_COLOR_SPACES.contains(&"srgb"));
+        assert!(VALID_COLOR_SPACES.contains(&"acescct"));
+        assert!(VALID_COLOR_SPACES.contains(&"linear"));
+        assert!(VALID_COLOR_SPACES.contains(&"rec709"));
+        assert!(VALID_COLOR_SPACES.contains(&"log"));
+        assert_eq!(VALID_COLOR_SPACES.len(), 5);
+    }
+
+    #[test]
+    fn test_run_validate_dataset_json_nonexistent_dir() {
+        let code = run_validate_dataset("/nonexistent/path", true);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn test_run_validate_dataset_json_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_validate_dataset(dir.path().to_str().unwrap(), true);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn test_run_validate_dataset_text_mode_with_valid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("frame.dpx");
+        fs::write(&image_path, "fake").unwrap();
+        let meta = EntryMetadata {
+            material_type: "dpx".to_string(),
+            color_space: "srgb".to_string(),
+            grading_style_tags: vec!["warm".to_string(), "high_contrast".to_string()],
+        };
+        fs::write(dir.path().join("frame.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let code = run_validate_dataset(dir.path().to_str().unwrap(), false);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_run_validate_dataset_text_mode_with_invalid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("frame.dpx");
+        fs::write(&image_path, "fake").unwrap();
+        let meta = EntryMetadata {
+            material_type: "tiff".to_string(),
+            color_space: "adobe_rgb".to_string(),
+            grading_style_tags: vec![],
+        };
+        fs::write(dir.path().join("frame.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let code = run_validate_dataset(dir.path().to_str().unwrap(), false);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn test_load_vocabulary_empty_tags_field() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("vocabulary.toml"), r#"tags = []"#).unwrap();
+        let vocab = load_vocabulary(dir.path());
+        assert!(vocab.is_empty());
+    }
+
+    #[test]
+    fn test_load_vocabulary_trims_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("vocabulary.toml"),
+            r#"tags = [" warm ", " cool ", " high_contrast "]"#,
+        ).unwrap();
+        let vocab = load_vocabulary(dir.path());
+        assert_eq!(vocab.len(), 3);
+        assert!(vocab.contains(&"warm".to_string()));
+        assert!(vocab.contains(&"cool".to_string()));
+        assert!(vocab.contains(&"high_contrast".to_string()));
+    }
+
+    #[test]
+    fn test_load_vocabulary_deduplicates_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("vocabulary.toml"),
+            r#"tags = ["warm", "Warm", "WARM"]"#,
+        ).unwrap();
+        let vocab = load_vocabulary(dir.path());
+        // All three map to lowercase "warm" so only 1 after dedup
+        assert_eq!(vocab.len(), 1);
     }
 }

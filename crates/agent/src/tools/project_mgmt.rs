@@ -112,7 +112,7 @@ impl Tool for ImportProjectTool {
         let conn = db_util::open_connection()?;
         let (_project, breakdown) =
             mengxi_core::project::register_project(&conn, name, path, 0, |_, _, _| {})
-                .map_err(|e| handle_import_error(e))?;
+                .map_err(handle_import_error)?;
 
         let display = variant_breakdown_to_json(&breakdown, name);
         let summary = format_import_result(name, &breakdown);

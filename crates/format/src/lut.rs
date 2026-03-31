@@ -1,7 +1,6 @@
 // lut.rs — Multi-format LUT file parser and serializer
 // Supports: .cube, .3dl, .look, .csp, ASC-CDL
 
-use std::fmt;
 use std::io;
 use std::path::Path;
 
@@ -128,21 +127,21 @@ impl LutData {
         ];
 
         for i in 0..total_points {
-            for ch in 0..3 {
+            for (ch, channel) in channels.iter_mut().enumerate() {
                 let idx = i * 3 + ch;
                 let delta = (self.values[idx] - other.values[idx]).abs();
-                channels[ch].mean_delta += delta;
-                if delta > channels[ch].max_delta {
-                    channels[ch].max_delta = delta;
+                channel.mean_delta += delta;
+                if delta > channel.max_delta {
+                    channel.max_delta = delta;
                 }
                 if delta > epsilon {
-                    channels[ch].changed_count += 1;
+                    channel.changed_count += 1;
                 }
             }
         }
 
-        for ch in 0..3 {
-            channels[ch].mean_delta /= total_points as f64;
+        for channel in &mut channels {
+            channel.mean_delta /= total_points as f64;
         }
 
         Ok(LutDiffResult { channels, total_points })
@@ -193,54 +192,27 @@ impl LutFormat {
 // ---------------------------------------------------------------------------
 
 /// Errors from LUT parsing and serialization.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LutError {
+    #[error("LUT_PARSE_ERROR -- {0}")]
     ParseError(String),
+    #[error("LUT_UNSUPPORTED_FORMAT -- unknown format: {0}")]
     UnsupportedFormat(String),
+    #[error("LUT_PARSE_ERROR -- invalid grid size: {0}")]
     InvalidGridSize(u32),
+    #[error("LUT_PARSE_ERROR -- invalid domain range")]
     InvalidDomainRange,
+    #[error("LUT_PARSE_ERROR -- expected {expected} values, got {actual}")]
     InvalidValueCount { expected: usize, actual: usize },
-    GridSizeMismatch { a: u32, b: u32 },
+    #[error("LUT_WRITE_ERROR -- {0}")]
     WriteError(String),
+    #[error("LUT_UNSUPPORTED_FORMAT -- unsupported PowerGrade version: {0}")]
     UnsupportedPowerGradeVersion(String),
+    #[error("LUT_IO_ERROR -- {0}")]
     IoError(String),
+    #[error("LUTDIFF_GRID_MISMATCH -- grid sizes differ: {a} vs {b}")]
+    GridSizeMismatch { a: u32, b: u32 },
 }
-
-impl fmt::Display for LutError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LutError::ParseError(msg) => write!(f, "LUT_PARSE_ERROR -- {}", msg),
-            LutError::UnsupportedFormat(fmt) => {
-                write!(f, "LUT_UNSUPPORTED_FORMAT -- unknown format: {}", fmt)
-            }
-            LutError::InvalidGridSize(n) => {
-                write!(f, "LUT_PARSE_ERROR -- invalid grid size: {}", n)
-            }
-            LutError::InvalidDomainRange => write!(f, "LUT_PARSE_ERROR -- invalid domain range"),
-            LutError::InvalidValueCount { expected, actual } => {
-                write!(
-                    f,
-                    "LUT_PARSE_ERROR -- expected {} values, got {}",
-                    expected, actual
-                )
-            }
-            LutError::WriteError(msg) => write!(f, "LUT_WRITE_ERROR -- {}", msg),
-            LutError::UnsupportedPowerGradeVersion(ver) => {
-                write!(f, "LUT_UNSUPPORTED_FORMAT -- unsupported PowerGrade version: {}", ver)
-            }
-            LutError::IoError(msg) => write!(f, "LUT_IO_ERROR -- {}", msg),
-            LutError::GridSizeMismatch { a, b } => {
-                write!(
-                    f,
-                    "LUTDIFF_GRID_MISMATCH -- grid sizes differ: {} vs {}",
-                    a, b
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for LutError {}
 
 impl From<io::Error> for LutError {
     fn from(e: io::Error) -> Self {
@@ -294,7 +266,7 @@ fn parse_cube_from_str(content: &str) -> Result<LutData, LutError> {
             let n: u32 = rest.trim().parse().map_err(|_| {
                 LutError::ParseError(format!("invalid LUT_3D_SIZE: {}", rest.trim()))
             })?;
-            if n < 2 || n > 256 {
+            if !(2..=256).contains(&n) {
                 return Err(LutError::InvalidGridSize(n));
             }
             grid_size = Some(n);
@@ -642,9 +614,9 @@ fn parse_look_from_str(content: &str) -> Result<LutData, LutError> {
         if let Some(size_start) = tag.find("size=") {
             let rest = &tag[size_start + 5..];
             // Extract quoted or unquoted value
-            let num_str = if rest.starts_with('"') {
-                let end = rest[1..].find('"').unwrap_or(rest.len() - 1);
-                &rest[1..1 + end]
+            let num_str = if let Some(stripped) = rest.strip_prefix('"') {
+                let end = stripped.find('"').unwrap_or(rest.len() - 1);
+                &stripped[..end]
             } else {
                 let end = rest.find(|c: char| c.is_whitespace() || c == '>')
                     .unwrap_or(rest.len());
@@ -822,7 +794,7 @@ fn parse_csp_from_str(content: &str) -> Result<LutData, LutError> {
         // Skip input values — may span multiple lines
         let mut collected = 0;
         while collected < count && idx < remaining.len() {
-            let tokens: Vec<&str> = remaining[idx].trim().split_whitespace().collect();
+            let tokens: Vec<&str> = remaining[idx].split_whitespace().collect();
             collected += tokens.len();
             idx += 1;
         }
@@ -834,7 +806,7 @@ fn parse_csp_from_str(content: &str) -> Result<LutData, LutError> {
         // Skip output values — may span multiple lines
         collected = 0;
         while collected < count && idx < remaining.len() {
-            let tokens: Vec<&str> = remaining[idx].trim().split_whitespace().collect();
+            let tokens: Vec<&str> = remaining[idx].split_whitespace().collect();
             collected += tokens.len();
             idx += 1;
         }

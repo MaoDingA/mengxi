@@ -43,7 +43,7 @@ impl Tool for AnalyzeProjectTool {
             &conn,
             &[project.to_string()],
         )
-        .map_err(|e| handle_consistency_error(e))?;
+        .map_err(handle_consistency_error)?;
 
         let display = consistency_report_to_json(&report);
         let summary = format_consistency_report(&report);
@@ -147,7 +147,7 @@ impl Tool for GetFingerprintInfoTool {
 
         let conn = db_util::open_connection()?;
         let info = mengxi_core::search::fingerprint_info_with_tags(&conn, project, file)
-            .map_err(|e| handle_search_error(e))?;
+            .map_err(handle_search_error)?;
 
         let display = fingerprint_info_to_json(&info);
         let summary = format_fingerprint_info(&info);

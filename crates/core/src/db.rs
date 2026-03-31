@@ -4,6 +4,9 @@ use std::path::PathBuf;
 
 pub type DbConnection = Connection;
 
+type QueryResult = (Vec<String>, Vec<Vec<String>>);
+type FingerprintTiles = Vec<(usize, usize, crate::grading_features::GradingFeatures)>;
+
 /// Returns the database directory path.
 /// Uses hardcoded default; can be overridden via config in future stories.
 pub fn db_dir() -> PathBuf {
@@ -270,7 +273,7 @@ pub fn db_list_tags(conn: &Connection, project_name: Option<&str>) -> Result<Vec
     let mut stmt = conn.prepare(sql)?;
     let rows = if let Some(pn) = project_name {
         let mut rows = Vec::new();
-        let mut mapped = stmt.query_map(rusqlite::params![pn], |row| {
+        let mapped = stmt.query_map(rusqlite::params![pn], |row| {
             Ok(TagRow {
                 id: row.get(0)?,
                 tag: row.get(1)?,
@@ -280,13 +283,13 @@ pub fn db_list_tags(conn: &Connection, project_name: Option<&str>) -> Result<Vec
                 created_at: row.get(5)?,
             })
         })?;
-        while let Some(row) = mapped.next() {
+        for row in mapped {
             rows.push(row?);
         }
         rows
     } else {
         let mut rows = Vec::new();
-        let mut mapped = stmt.query_map([], |row| {
+        let mapped = stmt.query_map([], |row| {
             Ok(TagRow {
                 id: row.get(0)?,
                 tag: row.get(1)?,
@@ -296,7 +299,7 @@ pub fn db_list_tags(conn: &Connection, project_name: Option<&str>) -> Result<Vec
                 created_at: row.get(5)?,
             })
         })?;
-        while let Some(row) = mapped.next() {
+        for row in mapped {
             rows.push(row?);
         }
         rows
@@ -339,23 +342,16 @@ pub fn db_list_luts(conn: &Connection) -> Result<Vec<LutRow>, rusqlite::Error> {
 }
 
 /// Error returned by `db_run_query` when SQL is not a read-only SELECT.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("DB_NON_SELECT -- only SELECT queries are allowed")]
 pub struct NonSelectError;
-
-impl std::fmt::Display for NonSelectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DB_NON_SELECT -- only SELECT queries are allowed")
-    }
-}
-
-impl std::error::Error for NonSelectError {}
 
 /// Execute a raw read-only SQL query. Returns (column_names, rows).
 /// Only SELECT statements are allowed.
 pub fn db_run_query(
     conn: &Connection,
     sql: &str,
-) -> Result<(Vec<String>, Vec<Vec<String>>), Box<dyn std::error::Error>> {
+) -> Result<QueryResult, Box<dyn std::error::Error>> {
     let trimmed = sql.trim();
     if !trimmed.to_uppercase().starts_with("SELECT") {
         return Err(Box::new(NonSelectError));
@@ -429,7 +425,7 @@ pub fn store_fingerprint_tiles(
 pub fn load_fingerprint_tiles(
     conn: &Connection,
     fingerprint_id: i64,
-) -> Result<Vec<(usize, usize, crate::grading_features::GradingFeatures)>, Box<dyn std::error::Error>> {
+) -> Result<FingerprintTiles, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
         "SELECT tile_row, tile_col, oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, hist_bins
          FROM fingerprint_tiles

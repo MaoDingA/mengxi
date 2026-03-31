@@ -49,26 +49,17 @@ impl ExrCompression {
 }
 
 /// EXR parsing error.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ExrError {
+    #[error("{0}")]
     ParseError(String),
+    #[error("EXR file contains no layers")]
     NoLayers,
+    #[error("IO error: {0}")]
     IoError(String),
+    #[error("Unsupported EXR variant: {0}")]
     UnsupportedVariant(String),
 }
-
-impl std::fmt::Display for ExrError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExrError::ParseError(msg) => write!(f, "{}", msg),
-            ExrError::NoLayers => write!(f, "EXR file contains no layers"),
-            ExrError::IoError(msg) => write!(f, "IO error: {}", msg),
-            ExrError::UnsupportedVariant(msg) => write!(f, "Unsupported EXR variant: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ExrError {}
 
 /// Parse an EXR file header, extracting metadata.
 pub fn parse_exr_header(path: &Path) -> Result<ExrHeader, ExrError> {
