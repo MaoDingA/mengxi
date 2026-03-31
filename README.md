@@ -35,7 +35,9 @@
 - **LUT 导出** — 将匹配的风格导出为 `.cube`、`.3dl`、`.look`、`.csp` 和 ASC-CDL 格式的 LUT 文件，可直接导入 DaVinci Resolve
 - **LUT 版本管理** — LUT 文件差异对比和依赖关系追踪
 - **人机协同标签校准** — AI 自动生成语义标签，调色师修正后系统持续学习优化
-- **命令行界面** — 9 个子命令，支持交互模式和脚本批处理模式，支持文本表格和 JSON 两种输出格式
+- **命令行界面** — 10 个子命令，支持交互模式和脚本批处理模式，支持文本表格和 JSON 两种输出格式
+- **智能对话代理** — `mengxi chat` 启动内置 AI 代理，通过自然语言交互完成搜索、分析和 LUT 编辑。支持 Claude、OpenAI、Ollama 三种 LLM 后端，配备 22 个工具和 4 个子代理
+- **LUT 智能编辑** — 在对话代理中加载、编辑、对比 LUT，支持 6 种调色操作（lift/gain/gamma/offset/saturation/hue_shift），按明度区域（shadows/midtones/highlights）选择性编辑，带 hash 锚验证和 undo 栈
 
 ## Architecture
 
@@ -45,6 +47,13 @@ Mengxi 采用三层语言架构，各取所长：
 flowchart TD
     subgraph CLI["CLI Layer (Rust)"]
         A[clap v4.6.0]
+    end
+
+    subgraph Agent["Agent Layer (Rust)"]
+        M[LLM Provider]
+        N[Tool Registry — 22 tools]
+        O[Subagent Runtime]
+        P[TUI — ratatui]
     end
 
     subgraph Core["Core Layer (Rust)"]
@@ -67,7 +76,8 @@ flowchart TD
         L[Tagging]
     end
 
-    CLI --> Core
+    CLI --> Agent
+    Agent --> Core
     C --> MoonBit
     D --> Python
     Core -->|decode| E
@@ -78,7 +88,8 @@ flowchart TD
 
 | 层 | 语言 | 职责 |
 |----|------|------|
-| **CLI 外壳、系统 I/O、FFI 桥接** | Rust | CLI 入口、文件格式解码（DPX/EXR/MOV）、数据库操作、Python 子进程管理 |
+| **CLI 外壳、系统 I/O** | Rust | CLI 入口、TUI 界面、文件格式解码（DPX/EXR/MOV）、数据库操作、Python 子进程管理 |
+| **Agent 层** | Rust | LLM 对话代理（Claude/OpenAI/Ollama）、22 个工具（搜索/分析/项目管理/LUT 编辑）、4 个子代理、会话持久化 |
 | **核心算法** | MoonBit | 色彩科学（ACES 1.3）、指纹计算、相似度搜索、LUT 生成/对比、类型安全的色彩空间封装 |
 | **AI 推理** | Python | ONNX Runtime 向量嵌入生成、AI 标签生成、校准学习循环 |
 
@@ -88,6 +99,7 @@ flowchart TD
 - **类型安全的色彩空间**：MoonBit 类型系统在编译期强制区分 Linear/Log/Video，从根源上杜绝一整类色彩科学 bug
 - **嵌入式 SQLite**：单文件数据库，WAL 模式，零外部依赖
 - **Python 可选**：AI 功能可优雅降级；无 Python 环境时工具仍完全可用（导入、指纹、直方图搜索、LUT 导出均可正常工作）
+- **Provider-agnostic 代理**：`ProviderFactory` 抽象使支持新 LLM 后端只需实现两个 trait，无需修改已有代码
 
 ## Project Structure
 
@@ -104,7 +116,8 @@ mengxi/
 │   ├── 006_create_analytics.sql
 │   └── 007_create_calibration.sql
 ├── crates/
-│   ├── cli/                # CLI 入口（9 个子命令）
+│   ├── cli/                # CLI 入口（10 个子命令）+ TUI 界面
+│   ├── agent/              # AI 对话代理（LLM 集成、工具系统、子代理、会话管理）
 │   ├── core/               # 领域逻辑、数据库、Python 桥接、分析统计
 │   └── format/             # 格式解码器（DPX, EXR, MOV, LUT, PowerGrade）
 ├── moonbit/                # MoonBit 核心算法
@@ -221,6 +234,30 @@ mengxi stats
 mengxi config --show
 ```
 
+### 智能对话代理
+
+```bash
+# 启动 AI 代理（默认使用 Claude）
+mengxi chat
+
+# 使用 Ollama 本地模型
+mengxi chat --provider ollama
+
+# 指定 OpenAI 模型
+mengxi chat --provider openai --model gpt-4o
+```
+
+代理内置 22 个工具，支持自然语言交互：
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| 搜索 | `search_by_image`, `search_by_tag`, `search_by_color`, `search_similar`, `search_similar_region` | 图像/标签/颜色/区域搜索 |
+| 分析 | `analyze_project`, `compare_styles`, `get_fingerprint_info` | 项目分析、风格对比、指纹详情 |
+| 管理 | `list_projects`, `import_project`, `reextract_features`, `export_lut` | 项目列表、导入、重提取、LUT 导出 |
+| LUT 编辑 | `load_lut`, `edit_lut`, `save_lut`, `undo_lut_edit`, `diff_lut`, `render_lut_curves` | LUT 加载/编辑/保存/撤销/对比/曲线渲染 |
+
+代理还会根据任务自动启动子代理（explore、search、review、compare）进行并行处理。
+
 ## Configuration
 
 所有配置通过 `~/.mengxi/config` TOML 文件管理，首次运行时自动创建。
@@ -260,7 +297,7 @@ cargo build
 ### 运行测试
 
 ```bash
-# Rust 单元测试 + 集成测试
+# Rust 单元测试 + 集成测试（807 tests）
 cargo test
 
 # FFI 边界测试
@@ -307,11 +344,13 @@ flowchart LR
 
 ## Roadmap
 
-| 阶段 | 重点 |
-|------|------|
-| **MVP** | 核心 7 项功能——导入、指纹、搜索、导出、LUT 对比、标签校准、CLI |
-| **成长期** | 自然语言搜索、增量索引、gRPC DaVinci 集成、TUI 仪表盘 |
-| **扩展期** | GUI 界面、风格分析教学、DIT 现场集成、流媒体平台审片 |
+| 阶段 | 重点 | 状态 |
+|------|------|------|
+| **v1 — MVP** | 核心 7 项功能——导入、指纹、搜索、导出、LUT 对比、标签校准、CLI | ✅ 完成 |
+| **v2 — 算法增强** | ACES 1.3 色彩管线、CDL 参数提取、PowerGrade 支持、增量索引 | ✅ 完成 |
+| **v3 — 规模与智能** | 区域搜索、特征增强、分析统计、gRPC 接口 | ✅ 完成 |
+| **v5 — 智能代理** | AI 对话代理、22 工具、4 子代理、TUI 界面、LUT 智能编辑、会话持久化 | ✅ 完成 |
+| **v4 — 区域搜索** | 区域级别特征提取与匹配、空间感知搜索 | 🔜 计划中 |
 
 ## Contributing
 
