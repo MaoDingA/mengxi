@@ -284,6 +284,85 @@ enum Commands {
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
     },
+    /// Detect scene boundaries in a fingerprint strip image
+    #[command(name = "scene-detect")]
+    SceneDetect {
+        /// Fingerprint strip image path (PNG)
+        strip_image: Option<String>,
+        /// Change threshold [0.0, 1.0]
+        #[arg(long, default_value_t = 0.3)]
+        threshold: f64,
+        /// Minimum frames between boundaries
+        #[arg(long, default_value_t = 5)]
+        min_scene_length: usize,
+        /// Maximum number of boundaries to detect
+        #[arg(long, default_value_t = 50)]
+        max_boundaries: usize,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
+    /// Compute color mood timeline from a fingerprint strip image
+    #[command(name = "color-mood")]
+    ColorMood {
+        /// Fingerprint strip image path (PNG)
+        strip_image: Option<String>,
+        /// Comma-separated scene boundary frame indices (optional)
+        #[arg(long)]
+        boundaries: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
+    /// Generate color transfer LUT between two fingerprint strip images
+    #[command(name = "color-transfer")]
+    ColorTransfer {
+        /// Source strip image path (PNG)
+        source: Option<String>,
+        /// Target strip image path (PNG)
+        target: Option<String>,
+        /// LUT grid size
+        #[arg(long, default_value_t = 33)]
+        grid_size: usize,
+        /// Output .cube file path
+        #[arg(long)]
+        output: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
+    /// Compare two fingerprint strip images by color DNA
+    #[command(name = "movie-compare")]
+    MovieCompare {
+        /// First strip image path (PNG)
+        strip_a: Option<String>,
+        /// Second strip image path (PNG)
+        strip_b: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
+    /// Interactive fingerprint strip explorer (TUI)
+    #[command(name = "fingerprint-explore")]
+    FingerprintExplore {
+        /// Fingerprint strip image path (PNG)
+        strip_image: Option<String>,
+    },
+    /// Visual search for similar movies by color DNA
+    #[command(name = "visual-search")]
+    VisualSearch {
+        /// Query fingerprint strip image path (PNG)
+        query: Option<String>,
+        /// Library directory containing strip images
+        #[arg(long)]
+        library: Option<String>,
+        /// Maximum number of results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -397,6 +476,24 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
         Some(Commands::FingerprintGen { mode, .. }) => {
             let obj = serde_json::json!({ "mode": mode });
             ("fingerprint-gen".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::SceneDetect { threshold, max_boundaries, .. }) => {
+            let obj = serde_json::json!({ "threshold": threshold, "max_boundaries": max_boundaries });
+            ("scene-detect".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::ColorMood { boundaries, .. }) => {
+            let obj = serde_json::json!({ "boundaries": boundaries });
+            ("color-mood".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::ColorTransfer { grid_size, .. }) => {
+            let obj = serde_json::json!({ "grid_size": grid_size });
+            ("color-transfer".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::MovieCompare { .. }) => ("movie-compare".to_string(), "{}".to_string(), None),
+        Some(Commands::FingerprintExplore { .. }) => ("fingerprint-explore".to_string(), "{}".to_string(), None),
+        Some(Commands::VisualSearch { limit, .. }) => {
+            let obj = serde_json::json!({ "limit": limit });
+            ("visual-search".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
         }
         None => ("help".to_string(), "{}".to_string(), None),
     }
@@ -516,6 +613,24 @@ fn main() {
         }
         Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format }) => {
             commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format);
+        }
+        Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
+            commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);
+        }
+        Some(Commands::ColorMood { strip_image, boundaries, format }) => {
+            commands::color_mood_cmd::execute(strip_image, boundaries, format);
+        }
+        Some(Commands::ColorTransfer { source, target, grid_size, output, format }) => {
+            commands::color_transfer_cmd::execute(source, target, grid_size, output, format);
+        }
+        Some(Commands::MovieCompare { strip_a, strip_b, format }) => {
+            commands::movie_compare_cmd::execute(strip_a, strip_b, format);
+        }
+        Some(Commands::FingerprintExplore { strip_image }) => {
+            commands::fingerprint_explorer_cmd::execute(strip_image);
+        }
+        Some(Commands::VisualSearch { query, library, limit, format }) => {
+            commands::visual_search_cmd::execute(query, library, limit, format);
         }
         None => {
             // No subcommand — clap displays help automatically

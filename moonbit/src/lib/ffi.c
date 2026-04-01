@@ -121,6 +121,66 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib27mengxi__cineiris__transform(
   int32_t,
   double*
 );
+extern int32_t _M0FP216mengxi_2dmoonbit3lib27mengxi__extract__color__dna(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib27mengxi__compare__color__dna(
+  double*,
+  double*,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib33mengxi__detect__scene__boundaries(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib31mengxi__compute__mood__timeline(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib38mengxi__generate__color__transfer__lut(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib35mengxi__extract__temporal__features(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
 
 static atomic_int runtime_initialized = 0;
 
@@ -782,6 +842,340 @@ int32_t mengxi_cineiris_transform(
 
   moonbit_drop_object(mb_out);
   moonbit_drop_object(mb_pixels);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_extract_color_dna — Extract color DNA from fingerprint strip
+ * Output: 18 f64 (avg_L,a,b + hue_distribution[12] + contrast + warmth + saturation)
+ * ============================================================ */
+
+int32_t mengxi_extract_color_dna(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib27mengxi__extract__color__dna(
+    strip_len, mb_strip, width, height, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_compare_color_dna — Compare two color DNA signatures
+ * Output: 4 f64 (overall_similarity, hue_similarity, contrast_diff, warmth_diff)
+ * ============================================================ */
+
+int32_t mengxi_compare_color_dna(
+  double* dna_a_ptr,
+  double* dna_b_ptr,
+  int32_t dna_len,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (dna_len <= 0) return -1;
+
+  double* mb_a = moonbit_make_double_array(dna_len, 0.0);
+  if (!mb_a) return -3;
+
+  double* mb_b = moonbit_make_double_array(dna_len, 0.0);
+  if (!mb_b) {
+    moonbit_drop_object(mb_a);
+    return -3;
+  }
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_b);
+    moonbit_drop_object(mb_a);
+    return -3;
+  }
+
+  memcpy(mb_a, dna_a_ptr, dna_len * sizeof(double));
+  memcpy(mb_b, dna_b_ptr, dna_len * sizeof(double));
+
+  Moonbit_object_header(mb_a)->rc += 6;
+  Moonbit_object_header(mb_b)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib27mengxi__compare__color__dna(
+    mb_a, mb_b, dna_len, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_b);
+  moonbit_drop_object(mb_a);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_detect_scene_boundaries — Detect scene changes in fingerprint strip
+ * Output: 1 + N*8 f64
+ * ============================================================ */
+
+int32_t mengxi_detect_scene_boundaries(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t threshold_permille,
+  int32_t min_scene_frames,
+  int32_t max_boundaries,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib33mengxi__detect__scene__boundaries(
+    strip_len, mb_strip, width, height,
+    threshold_permille, min_scene_frames, max_boundaries,
+    out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_compute_mood_timeline — Compute mood timeline from strip + boundaries
+ * Output: 1 + segments*6 f64
+ * ============================================================ */
+
+int32_t mengxi_compute_mood_timeline(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  double* boundaries_ptr,
+  int32_t boundaries_len,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  /* Allocate at least 1 element for avoid 0-length array issues */
+  int32_t safe_bounds_len = boundaries_len > 0 ? boundaries_len : 1;
+  double* mb_bounds = moonbit_make_double_array(safe_bounds_len, 0.0);
+  if (!mb_bounds) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_bounds);
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+  if (boundaries_len > 0) {
+    memcpy(mb_bounds, boundaries_ptr, boundaries_len * sizeof(double));
+  }
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_bounds)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__compute__mood__timeline(
+    strip_len, mb_strip, width, height,
+    mb_bounds, boundaries_len,
+    out_len, mb_out  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_bounds);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_generate_color_transfer_lut — Generate color transfer 3D LUT
+ * Output: grid_size^3 * 3 f64
+ * ============================================================ */
+
+int32_t mengxi_generate_color_transfer_lut(
+  int32_t src_len,
+  double* src_ptr,
+  int32_t src_w,
+  int32_t src_h,
+  int32_t tgt_len,
+  double* tgt_ptr,
+  int32_t tgt_w,
+  int32_t tgt_h,
+  int32_t grid_size,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (src_len <= 0 || src_w <= 0 || src_h <= 0) return -1;
+  if (tgt_len <= 0 || tgt_w <= 0 || tgt_h <= 0) return -1;
+
+  double* mb_src = moonbit_make_double_array(src_len, 0.0);
+  if (!mb_src) return -3;
+
+  double* mb_tgt = moonbit_make_double_array(tgt_len, 0.0);
+  if (!mb_tgt) {
+    moonbit_drop_object(mb_src);
+    return -3;
+  }
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_tgt);
+    moonbit_drop_object(mb_src);
+    return -3;
+  }
+
+  memcpy(mb_src, src_ptr, src_len * sizeof(double));
+  memcpy(mb_tgt, tgt_ptr, tgt_len * sizeof(double));
+
+  Moonbit_object_header(mb_src)->rc += 6;
+  Moonbit_object_header(mb_tgt)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib38mengxi__generate__color__transfer__lut(
+    src_len, mb_src, src_w, src_h,
+    tgt_len, mb_tgt, tgt_w, tgt_h,
+    grid_size, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_tgt);
+  moonbit_drop_object(mb_src);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_extract_temporal_features — Extract temporal features per segment
+ * Output: segments * (hist_bins*3 + 12) f64
+ * ============================================================ */
+
+int32_t mengxi_extract_temporal_features(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  double* segments_ptr,
+  int32_t segments_len,
+  int32_t hist_bins,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_segs = moonbit_make_double_array(segments_len, 0.0);
+  if (!mb_segs) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_segs);
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+  memcpy(mb_segs, segments_ptr, segments_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_segs)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib35mengxi__extract__temporal__features(
+    strip_len, mb_strip, width, height,
+    mb_segs, segments_len, hist_bins,
+    out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_segs);
+  moonbit_drop_object(mb_strip);
 
   return result;
 }

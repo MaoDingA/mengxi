@@ -434,6 +434,21 @@ pub fn save_fingerprint_png(
     Ok(())
 }
 
+/// Read a fingerprint strip PNG and convert to interleaved f64 [0.0, 1.0].
+///
+/// Returns `(width, height, pixel_data)`.
+pub fn read_strip_png(path: &Path) -> Result<(usize, usize, Vec<f64>)> {
+    let data = std::fs::read(path).map_err(MovieFingerprintError::IoError)?;
+    let img = image::load_from_memory(&data)
+        .map_err(|e| MovieFingerprintError::IoError(std::io::Error::other(
+            format!("failed to decode image: {}", e),
+        )))?;
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width() as usize, rgb.height() as usize);
+    let pixels: Vec<f64> = rgb.iter().map(|&v| v as f64 / 255.0).collect();
+    Ok((w, h, pixels))
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline types
 // ---------------------------------------------------------------------------

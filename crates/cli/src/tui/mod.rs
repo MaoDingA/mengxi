@@ -2,6 +2,7 @@
 
 mod agent_bridge;
 mod app;
+pub mod fingerprint_explorer;
 mod layout;
 pub mod markdown;
 

@@ -7,12 +7,16 @@ mod project_mgmt;
 pub mod hash_anchor;
 mod lut_edit;
 mod lut_diff;
+mod movie_analysis;
 
 pub use search::{
     SearchByColorTool, SearchByImageTool, SearchByTagTool, SearchSimilarRegionTool,
     SearchSimilarTool,
 };
 pub use analyze::{AnalyzeProjectTool, CompareStylesTool, GetFingerprintInfoTool};
+pub use movie_analysis::{
+    AnalyzeMovieColorTool, DetectMovieScenesTool, GetMovieMoodTimelineTool, CompareMoviesTool,
+};
 pub use project_mgmt::{
     ExportLutTool, ImportProjectTool, ListProjectsTool, ReextractFeaturesTool,
 };
@@ -56,6 +60,11 @@ pub fn register_all(registry: &mut ToolRegistry) -> LutEditStore {
     // LUT diff/curve tools (Story 6.2)
     registry.register(DiffLutTool);
     registry.register(RenderLutCurvesTool);
+    // Movie fingerprint analysis tools (Phase 2)
+    registry.register(AnalyzeMovieColorTool);
+    registry.register(DetectMovieScenesTool);
+    registry.register(GetMovieMoodTimelineTool);
+    registry.register(CompareMoviesTool);
 
     lut_store
 }

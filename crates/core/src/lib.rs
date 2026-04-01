@@ -1,10 +1,14 @@
 // mengxi-core: Domain logic, database, and data models
 
 pub mod analytics;
+pub mod audio_waveform;
 pub mod calibration;
+pub mod color_dna;
+pub mod color_mood;
+pub mod color_science;
+pub mod color_transfer;
 pub mod comparison;
 pub mod consistency;
-pub mod color_science;
 pub mod downsample;
 pub mod grading_features;
 pub mod hybrid_scoring;
@@ -16,11 +20,14 @@ pub mod fingerprint;
 pub mod lut_diff;
 pub mod lut_generation;
 pub mod movie_fingerprint;
+pub mod movie_search;
 pub mod project;
 pub mod python_bridge;
+pub mod scene_boundary;
 pub mod search;
 pub mod segmentation;
 pub mod spatial_pyramid;
 pub mod tag;
+pub mod temporal_pyramid;
 pub mod tile_search;
 pub mod vector_index;
