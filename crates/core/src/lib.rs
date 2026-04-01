@@ -5,6 +5,8 @@ pub mod audio_waveform;
 pub mod calibration;
 pub mod color_dna;
 pub mod color_mood;
+pub mod color_pairs;
+pub mod color_scatter;
 pub mod color_science;
 pub mod color_transfer;
 pub mod comparison;

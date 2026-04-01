@@ -182,7 +182,38 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib35mengxi__extract__temporal__features
   double*
 );
 
+extern int32_t _M0FP216mengxi_2dmoonbit3lib31mengxi__extract__frame__scatter(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib33mengxi__compute__scatter__density(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib31mengxi__detect__dominant__pairs(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+
 static atomic_int runtime_initialized = 0;
+
+
 
 static void ensure_runtime_init(void) {
   if (!atomic_load(&runtime_initialized)) {
@@ -1175,6 +1206,152 @@ int32_t mengxi_extract_temporal_features(
 
   moonbit_drop_object(mb_out);
   moonbit_drop_object(mb_segs);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_extract_frame_scatter — Frame-level Oklab scatter on a-b plane
+ *
+ * For each frame column, samples the center row pixel and converts to Oklab.
+ * Output: width * 3 f64 (L, a, b per frame)
+ * ============================================================ */
+
+int32_t mengxi_extract_frame_scatter(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__extract__frame__scatter(
+    strip_len, mb_strip, width, height, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_compute_scatter_density — Compute a-b scatter density grid
+ *
+ * Output: grid_size * grid_size f64 (density values normalized to [0,1])
+ * ============================================================ */
+
+int32_t mengxi_compute_scatter_density(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t grid_size,
+  int32_t a_range_permille,
+  int32_t b_range_permille,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0 || grid_size <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib33mengxi__compute__scatter__density(
+    strip_len, mb_strip, width, height,
+    grid_size, a_range_permille, b_range_permille,
+    out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_detect_dominant_pairs — Detect complementary color pairs
+ *
+ * Output: 1 + N*4 f64 (count + up to 6 pairs × 4 values)
+ * ============================================================ */
+
+int32_t mengxi_detect_dominant_pairs(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t min_chroma_permille,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__detect__dominant__pairs(
+    strip_len, mb_strip, width, height,
+    min_chroma_permille, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
   moonbit_drop_object(mb_strip);
 
   return result;

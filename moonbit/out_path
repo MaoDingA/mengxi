@@ -1,0 +1,22 @@
+ WARN Package `mengxi-moonbit/lib` uses legacy array syntax for `supported-targets`; use expression syntax like `<backend>` instead
+ WARN Package `mengxi-moonbit/lib` uses legacy array syntax for `supported-targets`; use expression syntax like `<backend>` instead
+Undefined symbols for architecture arm64:
+  "_main", referenced from:
+Undefined symbols for architecture arm64:
+  "_main", referenced from:
+      <initial-undefines>
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+      <initial-undefines>
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+Failed with 0 warnings, 0 errors.
+Failed with 0 warnings, 0 errors.
+error: failed to run build for target Native
+
+Caused by:
+    failed when building projecterror: failed to run build for target Native
+
+Caused by:
+    failed when building project
+
