@@ -485,7 +485,7 @@ mod tests {
     fn test_slic_two_region_image() {
         // Left half bright, right half dark
         let mut data = Vec::with_capacity(20 * 10 * 3);
-        for y in 0..10 {
+        for _y in 0..10 {
             for x in 0..20 {
                 let l = if x < 10 { 0.9 } else { 0.1 };
                 data.push(l);

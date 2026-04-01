@@ -12,6 +12,7 @@ mengxi-format = { path = "../format" }
 instant-distance.workspace = true
 bincode.workspace = true
 thiserror.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

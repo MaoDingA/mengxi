@@ -17,3 +17,4 @@ log = "0.4"
 instant-distance = { version = "0.6", features = ["with-serde"] }
 bincode = "1"
 thiserror = "2"
+image = "0.25"

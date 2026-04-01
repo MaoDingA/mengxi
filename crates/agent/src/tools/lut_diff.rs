@@ -324,7 +324,6 @@ fn render_combined_curve(curves: &[Vec<f64>; 3], width: usize, height: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn test_extract_diagonal_identity() {

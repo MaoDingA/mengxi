@@ -15,6 +15,7 @@ pub mod feature_translation;
 pub mod fingerprint;
 pub mod lut_diff;
 pub mod lut_generation;
+pub mod movie_fingerprint;
 pub mod project;
 pub mod python_bridge;
 pub mod search;

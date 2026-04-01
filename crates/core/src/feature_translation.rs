@@ -181,6 +181,7 @@ fn fallback_closest_dimension(features: &GradingFeatures) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn make_features(l_std: f64, a_mean: f64, b_mean: f64, hist_l_peak_bin: usize) -> GradingFeatures {
         let mut hist_l = vec![1.0; 64];
         // Shift histogram peak to simulate different L distributions

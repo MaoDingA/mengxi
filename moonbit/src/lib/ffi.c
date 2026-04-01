@@ -96,6 +96,31 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib31mengxi__bhattacharyya__distance(
   int32_t,
   double*
 );
+extern int32_t _M0FP216mengxi_2dmoonbit3lib31mengxi__extract__center__column(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib34mengxi__stitch__fingerprint__strip(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib27mengxi__cineiris__transform(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
 
 static atomic_int runtime_initialized = 0;
 
@@ -612,6 +637,151 @@ int32_t mengxi_bhattacharyya_distance(
   moonbit_drop_object(mb_out);
   moonbit_drop_object(mb_candidate);
   moonbit_drop_object(mb_query);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_extract_center_column — Movie fingerprint center column
+ *
+ * Extracts the center column of pixels from a frame.
+ * Input: pixels (width * height * 3 doubles)
+ * Output: height * 3 doubles (center column RGB)
+ * ============================================================ */
+
+int32_t mengxi_extract_center_column(
+  int32_t pixel_len,
+  double* pixel_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (pixel_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_pixels = moonbit_make_double_array(pixel_len, 0.0);
+  if (!mb_pixels) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_pixels);
+    return -3;
+  }
+
+  memcpy(mb_pixels, pixel_ptr, pixel_len * sizeof(double));
+
+  Moonbit_object_header(mb_pixels)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__extract__center__column(
+    pixel_len, mb_pixels, width, height, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_pixels);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_stitch_fingerprint_strip — Stitch center columns into strip
+ *
+ * Stitches per-frame center columns into a fingerprint strip.
+ * Input: columns (num_frames * frame_height * 3 doubles)
+ * Output: num_frames * frame_height * 3 doubles
+ * ============================================================ */
+
+int32_t mengxi_stitch_fingerprint_strip(
+  int32_t columns_len,
+  double* columns_ptr,
+  int32_t num_frames,
+  int32_t frame_height,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (columns_len <= 0 || num_frames <= 0 || frame_height <= 0) return -1;
+
+  double* mb_columns = moonbit_make_double_array(columns_len, 0.0);
+  if (!mb_columns) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_columns);
+    return -3;
+  }
+
+  memcpy(mb_columns, columns_ptr, columns_len * sizeof(double));
+
+  Moonbit_object_header(mb_columns)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib34mengxi__stitch__fingerprint__strip(
+    columns_len, mb_columns, num_frames, frame_height, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_columns);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_cineiris_transform — Cineiris circular iris transform
+ *
+ * Applies circular iris transformation to fingerprint strip.
+ * Input: strip_pixels (strip_width * strip_height * 3 doubles)
+ * Output: iris_diameter * iris_diameter * 3 doubles
+ * ============================================================ */
+
+int32_t mengxi_cineiris_transform(
+  int32_t strip_pixel_len,
+  double* strip_pixel_ptr,
+  int32_t strip_width,
+  int32_t strip_height,
+  int32_t iris_diameter,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_pixel_len <= 0 || strip_width <= 0 || strip_height <= 0 || iris_diameter <= 0) return -1;
+
+  double* mb_pixels = moonbit_make_double_array(strip_pixel_len, 0.0);
+  if (!mb_pixels) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_pixels);
+    return -3;
+  }
+
+  memcpy(mb_pixels, strip_pixel_ptr, strip_pixel_len * sizeof(double));
+
+  Moonbit_object_header(mb_pixels)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib27mengxi__cineiris__transform(
+    strip_pixel_len, mb_pixels, strip_width, strip_height, iris_diameter, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_pixels);
 
   return result;
 }

@@ -73,6 +73,77 @@ pub fn extract_keyframe_images(
     Ok(extracted)
 }
 
+/// Extract frames from a video file as PPM format using FFmpeg.
+///
+/// PPM is chosen because it requires zero decode dependencies — just raw RGB pixels
+/// with a trivial text header.
+///
+/// # Arguments
+/// * `video_path` - Path to the input video file
+/// * `output_dir` - Directory to write PPM frames to
+/// * `interval_secs` - Time interval between extracted frames in seconds (e.g., 1.0 = one frame per second)
+/// * `max_frames` - Optional maximum number of frames to extract
+///
+/// # Returns
+/// Sorted vector of paths to extracted PPM files
+pub fn extract_frames_ppm(
+    video_path: &Path,
+    output_dir: &Path,
+    interval_secs: f64,
+    max_frames: Option<usize>,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    if !check_ffmpeg_available() {
+        return Err("ffmpeg not found on system".to_string());
+    }
+
+    if !video_path.exists() {
+        return Err(format!("video file not found: {}", video_path.display()));
+    }
+
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| format!("failed to create output dir: {}", e))?;
+
+    let fps_filter = format!("fps=1/{}", interval_secs);
+    let output_pattern = output_dir.join("frame_%06d.ppm");
+
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.arg("-i")
+        .arg(video_path)
+        .arg("-vf")
+        .arg(&fps_filter)
+        .arg("-y");
+
+    if let Some(max) = max_frames {
+        cmd.arg("-frames:v").arg(max.to_string());
+    }
+
+    let output = cmd
+        .arg(&output_pattern)
+        .output()
+        .map_err(|e| format!("failed to run ffmpeg: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg failed: {}", stderr));
+    }
+
+    let mut ppm_files: Vec<std::path::PathBuf> = std::fs::read_dir(output_dir)
+        .map_err(|e| format!("failed to read output dir: {}", e))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ppm"))
+                && p.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("frame_"))
+        })
+        .collect();
+
+    ppm_files.sort();
+
+    Ok(ppm_files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

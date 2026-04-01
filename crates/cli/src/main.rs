@@ -260,6 +260,30 @@ enum Commands {
         #[command(subcommand)]
         command: DbSubcommand,
     },
+    /// Generate movie fingerprint visualization from video
+    #[command(name = "fingerprint-gen")]
+    FingerprintGen {
+        /// Video file path
+        video: Option<String>,
+        /// Output mode: strip, cineiris, both
+        #[arg(long, value_parser = ["strip", "cineiris", "both"], default_value = "strip")]
+        mode: String,
+        /// Frame extraction interval in seconds
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
+        /// Maximum number of frames to extract
+        #[arg(long)]
+        max_frames: Option<usize>,
+        /// CineIris diameter in pixels
+        #[arg(long, default_value_t = 1080)]
+        diameter: usize,
+        /// Output directory
+        #[arg(long)]
+        output: Option<String>,
+        /// Output format (text, json)
+        #[arg(long, value_parser = ["text", "json"], default_value = "text")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -369,6 +393,10 @@ fn extract_command_info(cli: &Cli) -> (String, String, Option<i64>) {
         Some(Commands::Chat { provider, model }) => {
             let obj = serde_json::json!({ "provider": provider, "model": model });
             ("chat".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
+        }
+        Some(Commands::FingerprintGen { mode, .. }) => {
+            let obj = serde_json::json!({ "mode": mode });
+            ("fingerprint-gen".to_string(), serde_json::to_string(&obj).unwrap_or_default(), None)
         }
         None => ("help".to_string(), "{}".to_string(), None),
     }
@@ -485,6 +513,9 @@ fn main() {
         }
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
+        }
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format);
         }
         None => {
             // No subcommand — clap displays help automatically
@@ -615,6 +646,7 @@ fn resolve_hybrid_weights(
 
 /// Resolve an image path to a file_id in the database.
 #[cfg(test)]
+#[allow(dead_code)]
 fn resolve_image_to_file_id(
     conn: &mengxi_core::db::DbConnection,
     image_path: &str,
@@ -700,6 +732,7 @@ fn low_result_explanation(count: usize) -> Option<String> {
 
 /// Record accept/reject feedback for a search result.
 #[cfg(test)]
+#[allow(dead_code)]
 fn record_feedback_if_needed(
     conn: &mengxi_core::db::DbConnection,
     results: &[mengxi_core::search::SearchResult],
@@ -1746,14 +1779,14 @@ mod tests {
     #[test]
     fn test_extract_command_info_validate() {
         let cli = Cli::try_parse_from(["mx", "validate"]).unwrap();
-        let (name, args, _) = extract_command_info(&cli);
+        let (name, _args, _) = extract_command_info(&cli);
         assert_eq!(name, "validate");
     }
 
     #[test]
     fn test_extract_command_info_none_is_help() {
         let cli = Cli::try_parse_from(["mx"]).unwrap();
-        let (name, args, _) = extract_command_info(&cli);
+        let (name, _args, _) = extract_command_info(&cli);
         assert_eq!(name, "help");
     }
 
@@ -1768,7 +1801,7 @@ mod tests {
     #[test]
     fn test_extract_command_info_compare() {
         let cli = Cli::try_parse_from(["mx", "compare", "1", "2"]).unwrap();
-        let (name, args, _) = extract_command_info(&cli);
+        let (name, _args, _) = extract_command_info(&cli);
         assert_eq!(name, "compare");
     }
 
@@ -1842,7 +1875,7 @@ mod tests {
         assert!(cli.is_ok());
         match cli.unwrap().command {
             Some(Commands::Config { show: false, edit: true }) => {}
-            other => panic!("Expected Config with --edit"),
+            _other => panic!("Expected Config with --edit"),
         }
     }
 
@@ -1860,7 +1893,7 @@ mod tests {
         assert!(cli.is_ok());
         match cli.unwrap().command {
             Some(Commands::Config { show: false, edit: false }) => {}
-            other => panic!("Expected Config with neither flag"),
+            _other => panic!("Expected Config with neither flag"),
         }
     }
 

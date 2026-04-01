@@ -591,7 +591,6 @@ fn format_anchors(anchored: &AnchoredLut) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn make_store() -> LutEditStore {
         new_store()
@@ -644,7 +643,7 @@ mod tests {
     fn test_edit_op_region_filter() {
         let op = EditOp::Offset { r: 1.0, g: 1.0, b: 1.0 };
         // Shadow pixel should be affected
-        let (r, g, b) = op.apply(0.1, 0.1, 0.1, Some(LuminanceRegion::Shadows));
+        let (r, _g, _b) = op.apply(0.1, 0.1, 0.1, Some(LuminanceRegion::Shadows));
         assert!(r > 0.1);
         // Highlight pixel should NOT be affected when targeting shadows
         let (r, _, _) = op.apply(0.9, 0.9, 0.9, Some(LuminanceRegion::Shadows));

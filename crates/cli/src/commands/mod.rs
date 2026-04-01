@@ -16,3 +16,4 @@ pub mod embed_cmd;
 pub mod validate_dataset_cmd;
 pub mod chat_cmd;
 pub mod db_cmd;
+pub mod fingerprint_cmd;
