@@ -35,9 +35,32 @@
 - **LUT 导出** — 将匹配的风格导出为 `.cube`、`.3dl`、`.look`、`.csp` 和 ASC-CDL 格式的 LUT 文件，可直接导入 DaVinci Resolve
 - **LUT 版本管理** — LUT 文件差异对比和依赖关系追踪
 - **人机协同标签校准** — AI 自动生成语义标签，调色师修正后系统持续学习优化
-- **命令行界面** — 10 个子命令，支持交互模式和脚本批处理模式，支持文本表格和 JSON 两种输出格式
-- **智能对话代理** — `mengxi chat` 启动内置 AI 代理，通过自然语言交互完成搜索、分析和 LUT 编辑。支持 Claude、OpenAI、Ollama 三种 LLM 后端，配备 22 个工具和 4 个子代理
+- **命令行界面** — 20+ 子命令，支持交互模式和脚本批处理模式，支持文本表格和 JSON 两种输出格式
+- **智能对话代理** — `mx chat` 启动内置 AI 代理，通过自然语言交互完成搜索、分析和 LUT 编辑。支持 Claude、OpenAI、Ollama 三种 LLM 后端，配备 26 个工具和 5 个子代理
 - **LUT 智能编辑** — 在对话代理中加载、编辑、对比 LUT，支持 6 种调色操作（lift/gain/gamma/offset/saturation/hue_shift），按明度区域（shadows/midtones/highlights）选择性编辑，带 hash 锚验证和 undo 栈
+
+### Movie Fingerprint（电影指纹）
+
+将一部电影压缩为一张可视化指纹图，支持 9 大高级色彩分析功能：
+
+| 功能 | 命令 | 说明 |
+|------|------|------|
+| **指纹生成** | `fingerprint-gen` | 从视频提取帧，生成条带指纹（strip）和圆形虹膜指纹（CineIris），支持自定义采样间隔和直径 |
+| **场景检测** | `scene-detect` | 基于相邻帧 L1 距离自动检测场景切换点，可调阈值和最小场景长度 |
+| **色彩情绪** | `color-mood` | 按场景段分析情绪分类（Dark/Vivid/Warm/Cool/Neutral），生成情绪变化时间线 |
+| **色彩 DNA** | `movie-compare` | 提取 18 维色彩签名（L\*a\*b\* 均值 + 12-bin 色相分布 + 对比度/暖度/饱和度），对比两部影片 |
+| **色彩迁移** | `color-transfer` | 从源视频提取色彩风格，生成 3D LUT 映射到目标视频 |
+| **视觉搜索** | `visual-search` | 按色彩 DNA 相似度在影片库中批量搜索匹配影片 |
+| **交互探索** | `fingerprint-explore` | TUI 交互式指纹浏览，组合所有分析功能 |
+| **色彩散点** | _(内部)_ | Oklab a-b 平面帧级散点分布和密度热力图 |
+| **主导色调对** | _(内部)_ | 检测互补色对（青橙/蓝黄/红青/品绿），分析影片色彩张力 |
+
+**CineIris 渲染引擎特性：**
+- 4x 超采样（SSAA）空间抗锯齿
+- 角方向高斯帧融合（±4帧，σ=2.0），平滑帧间色彩过渡
+- 3×3 高斯模糊后处理
+- 环绕无缝接缝（strip 首尾帧圆滑过渡）
+- 默认 2160px 直径高清输出
 
 ## Architecture
 
@@ -67,7 +90,14 @@ flowchart TD
         F[fingerprint.mbt]
         G[similarity.mbt]
         H[lut_engine.mbt]
-        I[types.mbt]
+        I[movie_fingerprint.mbt — CineIris 引擎]
+        J[color_dna.mbt]
+        K[scene_boundary.mbt]
+        L[color_mood.mbt]
+        M[color_transfer.mbt]
+        N[temporal_pyramid.mbt]
+        O[color_scatter.mbt]
+        P[color_pairs.mbt]
     end
 
     subgraph Python["Python Layer (Optional)"]
@@ -234,6 +264,32 @@ mengxi stats
 mengxi config --show
 ```
 
+### 电影指纹
+
+```bash
+# 生成指纹图（条带 + 圆形虹膜）
+mx fingerprint-gen movie.mp4 --mode both
+mx fingerprint-gen movie.mp4 --mode cineiris --diameter 2160
+
+# 场景边界检测
+mx scene-detect fingerprint_strip.png --threshold 0.15 --min-scene-length 5
+
+# 色彩情绪时间线
+mx color-mood fingerprint_strip.png --boundaries 159,570,2623
+
+# 两部电影色彩 DNA 对比
+mx movie-compare strip_a.png strip_b.png
+
+# 色彩迁移（把 A 的风格迁移到 B）
+mx color-transfer source.png target.png --grid-size 33 --output style.cube
+
+# 视觉搜索（在影片库中查找色彩相似的影片）
+mx visual-search query.png --library ./movies/ --limit 10
+
+# 交互式 TUI 探索器
+mx fingerprint-explore fingerprint_strip.png
+```
+
 ### 智能对话代理
 
 ```bash
@@ -297,7 +353,7 @@ cargo build
 ### 运行测试
 
 ```bash
-# Rust 单元测试 + 集成测试（807 tests）
+# Rust 单元测试 + 集成测试（280 tests）
 cargo test
 
 # FFI 边界测试
@@ -350,7 +406,8 @@ flowchart LR
 | **v2 — 算法增强** | ACES 1.3 色彩管线、CDL 参数提取、PowerGrade 支持、增量索引 | ✅ 完成 |
 | **v3 — 规模与智能** | 区域搜索、特征增强、分析统计、gRPC 接口 | ✅ 完成 |
 | **v5 — 智能代理** | AI 对话代理、22 工具、4 子代理、TUI 界面、LUT 智能编辑、会话持久化 | ✅ 完成 |
-| **v4 — 区域搜索** | 区域级别特征提取与匹配、空间感知搜索 | 🔜 计划中 |
+| **v6 — 电影指纹** | Movie Fingerprint 全套功能——条带/虹膜指纹、场景检测、色彩情绪、色彩 DNA、色彩迁移 LUT、视觉搜索、帧级散点、主导色调对、CineIris 高清渲染引擎 | ✅ 完成 |
+| **v7 — 区域搜索** | 区域级别特征提取与匹配、空间感知搜索 | 🔜 计划中 |
 
 ## Contributing
 

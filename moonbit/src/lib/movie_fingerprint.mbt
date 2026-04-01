@@ -163,7 +163,8 @@ fn do_stitch_fingerprint_strip(
   out
 }
 
-/// Cineiris (cine-iris) polar coordinate transform with 4x supersampling.
+/// Cineiris (cine-iris) polar coordinate transform with angular frame blending.
+/// Each output pixel blends ±4 adjacent frames via Gaussian weights for smooth color transitions.
 fn do_cineiris_transform(
   strip_pixels : FixedArray[Double],
   strip_width : Int,
@@ -187,13 +188,37 @@ fn do_cineiris_transform(
     return out
   }
 
-  // 4x SSAA sub-pixel offsets (2x2 grid centered in each pixel)
+  // Angular Gaussian kernel for frame blending (±4 frames, σ=2.0)
+  // This is the key: each pixel blends colors from nearby frames for smooth transitions
+  let ang_radius = 4
+  let ang_sigma = 2.0
+  let ang_taps = ang_radius * 2 + 1
+  let ang_weights = FixedArray::make(ang_taps, 0.0)
+  let mut ang_wsum = 0.0
+  let mut ai = 0
+  while ai < ang_taps {
+    let offset = (ai - ang_radius).to_double()
+    let w = @math.exp(-0.5 * offset * offset / (ang_sigma * ang_sigma))
+    ang_weights[ai] = w
+    ang_wsum = ang_wsum + w
+    ai = ai + 1
+  }
+  ai = 0
+  while ai < ang_taps {
+    ang_weights[ai] = ang_weights[ai] / ang_wsum
+    ai = ai + 1
+  }
+
+  // 4x SSAA sub-pixel offsets (2x2 grid)
   let ss_offsets : FixedArray[(Double, Double)] =
     FixedArray::make(4, (0.0, 0.0))
   ss_offsets[0] = (-0.25, -0.25)
   ss_offsets[1] = ( 0.25, -0.25)
   ss_offsets[2] = (-0.25,  0.25)
   ss_offsets[3] = ( 0.25,  0.25)
+
+  let sw_double = strip_width.to_double()
+  let sh_minus1 = (strip_height - 1).to_double()
 
   let mut py = 0
   while py < iris_diameter {
@@ -216,48 +241,62 @@ fn do_cineiris_transform(
 
         if dist <= radius {
           let angle = normalize_angle(my_atan2(dy, dx))
-          let time_idx = angle / two_pi * strip_width.to_double()
-          let vertical_idx = dist / radius * (strip_height - 1).to_double()
-
-          let clamped_time = if time_idx < 0.0 {
-            0.0
-          } else if time_idx >= strip_width.to_double() {
-            (strip_width - 1).to_double()
-          } else {
-            time_idx
-          }
+          let center_frame = angle / two_pi * sw_double
+          let vertical_idx = dist / radius * sh_minus1
 
           let clamped_vert = if vertical_idx < 0.0 {
             0.0
-          } else if vertical_idx >= (strip_height - 1).to_double() {
-            (strip_height - 1).to_double()
+          } else if vertical_idx >= sh_minus1 {
+            sh_minus1
           } else {
             vertical_idx
           }
 
-          let (r, g, b) = bilinear_sample(
-            strip_pixels, strip_width, strip_height,
-            clamped_time, clamped_vert
-          )
-          r_sum = r_sum + r
-          g_sum = g_sum + g
-          b_sum = b_sum + b
+          // Angular Gaussian sampling: blend nearby frames
+          let mut r_ang = 0.0
+          let mut g_ang = 0.0
+          let mut b_ang = 0.0
+          let mut tap = 0
+          while tap < ang_taps {
+            let mut frame_idx = center_frame + (tap - ang_radius).to_double()
+            // Wrap around for seamless circular mapping
+            if frame_idx < 0.0 {
+              frame_idx = frame_idx + sw_double
+            } else if frame_idx >= sw_double {
+              frame_idx = frame_idx - sw_double
+            }
+
+            let (r, g, b) = bilinear_sample(
+              strip_pixels, strip_width, strip_height,
+              frame_idx, clamped_vert
+            )
+            let w = ang_weights[tap]
+            r_ang = r_ang + r * w
+            g_ang = g_ang + g * w
+            b_ang = b_ang + b * w
+            tap = tap + 1
+          }
+
+          r_sum = r_sum + r_ang
+          g_sum = g_sum + g_ang
+          b_sum = b_sum + b_ang
           valid_count = valid_count + 1
         }
         si = si + 1
       }
 
       if valid_count > 0 {
-        out[out_idx] = r_sum / valid_count.to_double()
-        out[out_idx + 1] = g_sum / valid_count.to_double()
-        out[out_idx + 2] = b_sum / valid_count.to_double()
+        let inv = 1.0 / valid_count.to_double()
+        out[out_idx] = r_sum * inv
+        out[out_idx + 1] = g_sum * inv
+        out[out_idx + 2] = b_sum * inv
       }
       px = px + 1
     }
     py = py + 1
   }
 
-  // Apply 3x3 Gaussian blur to smooth angular artifacts
+  // Apply 3x3 Gaussian blur to smooth remaining artifacts
   gaussian_blur_circular(out, iris_diameter)
 }
 
