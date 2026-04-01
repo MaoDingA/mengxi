@@ -275,7 +275,7 @@ enum Commands {
         #[arg(long)]
         max_frames: Option<usize>,
         /// CineIris diameter in pixels
-        #[arg(long, default_value_t = 1080)]
+        #[arg(long, default_value_t = 2160)]
         diameter: usize,
         /// Output directory
         #[arg(long)]

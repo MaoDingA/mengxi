@@ -163,7 +163,7 @@ fn do_stitch_fingerprint_strip(
   out
 }
 
-/// Cineiris (cine-iris) polar coordinate transform.
+/// Cineiris (cine-iris) polar coordinate transform with 4x supersampling.
 fn do_cineiris_transform(
   strip_pixels : FixedArray[Double],
   strip_width : Int,
@@ -187,47 +187,142 @@ fn do_cineiris_transform(
     return out
   }
 
+  // 4x SSAA sub-pixel offsets (2x2 grid centered in each pixel)
+  let ss_offsets : FixedArray[(Double, Double)] =
+    FixedArray::make(4, (0.0, 0.0))
+  ss_offsets[0] = (-0.25, -0.25)
+  ss_offsets[1] = ( 0.25, -0.25)
+  ss_offsets[2] = (-0.25,  0.25)
+  ss_offsets[3] = ( 0.25,  0.25)
+
   let mut py = 0
   while py < iris_diameter {
     let mut px = 0
     while px < iris_diameter {
-      let dx = px.to_double() - cx
-      let dy = py.to_double() - cy
-      let dist = my_sqrt(dx * dx + dy * dy)
       let out_idx = (py * iris_diameter + px) * 3
 
-      if dist > radius {
-        out[out_idx] = 0.0
-        out[out_idx + 1] = 0.0
-        out[out_idx + 2] = 0.0
-      } else {
-        let angle = normalize_angle(my_atan2(dy, dx))
-        let time_idx = angle / two_pi * strip_width.to_double()
-        let vertical_idx = dist / radius * (strip_height - 1).to_double()
+      let mut r_sum = 0.0
+      let mut g_sum = 0.0
+      let mut b_sum = 0.0
+      let mut valid_count = 0
 
-        let clamped_time = if time_idx < 0.0 {
-          0.0
-        } else if time_idx >= strip_width.to_double() {
-          (strip_width - 1).to_double()
-        } else {
-          time_idx
+      // 4x supersampling
+      let mut si = 0
+      while si < 4 {
+        let (sox, soy) = ss_offsets[si]
+        let dx = (px.to_double() + sox) - cx
+        let dy = (py.to_double() + soy) - cy
+        let dist = my_sqrt(dx * dx + dy * dy)
+
+        if dist <= radius {
+          let angle = normalize_angle(my_atan2(dy, dx))
+          let time_idx = angle / two_pi * strip_width.to_double()
+          let vertical_idx = dist / radius * (strip_height - 1).to_double()
+
+          let clamped_time = if time_idx < 0.0 {
+            0.0
+          } else if time_idx >= strip_width.to_double() {
+            (strip_width - 1).to_double()
+          } else {
+            time_idx
+          }
+
+          let clamped_vert = if vertical_idx < 0.0 {
+            0.0
+          } else if vertical_idx >= (strip_height - 1).to_double() {
+            (strip_height - 1).to_double()
+          } else {
+            vertical_idx
+          }
+
+          let (r, g, b) = bilinear_sample(
+            strip_pixels, strip_width, strip_height,
+            clamped_time, clamped_vert
+          )
+          r_sum = r_sum + r
+          g_sum = g_sum + g
+          b_sum = b_sum + b
+          valid_count = valid_count + 1
         }
+        si = si + 1
+      }
 
-        let clamped_vert = if vertical_idx < 0.0 {
-          0.0
-        } else if vertical_idx >= (strip_height - 1).to_double() {
-          (strip_height - 1).to_double()
-        } else {
-          vertical_idx
+      if valid_count > 0 {
+        out[out_idx] = r_sum / valid_count.to_double()
+        out[out_idx + 1] = g_sum / valid_count.to_double()
+        out[out_idx + 2] = b_sum / valid_count.to_double()
+      }
+      px = px + 1
+    }
+    py = py + 1
+  }
+
+  // Apply 3x3 Gaussian blur to smooth angular artifacts
+  gaussian_blur_circular(out, iris_diameter)
+}
+
+/// Apply 3x3 Gaussian blur to circular image, preserving circle boundary.
+fn gaussian_blur_circular(
+  image : FixedArray[Double],
+  diameter : Int
+) -> FixedArray[Double] {
+  let out = FixedArray::make(diameter * diameter * 3, 0.0)
+  // 3x3 Gaussian kernel: [1,2,1; 2,4,2; 1,2,1] / 16
+  let kernel : FixedArray[Double] =
+    FixedArray::make(9, 0.0)
+  kernel[0] = 1.0; kernel[1] = 2.0; kernel[2] = 1.0
+  kernel[3] = 2.0; kernel[4] = 4.0; kernel[5] = 2.0
+  kernel[6] = 1.0; kernel[7] = 2.0; kernel[8] = 1.0
+
+  let mut py = 0
+  while py < diameter {
+    let mut px = 0
+    while px < diameter {
+      let center_idx = (py * diameter + px) * 3
+      // Skip black (outside circle) pixels
+      let center_r = image[center_idx]
+      let center_g = image[center_idx + 1]
+      let center_b = image[center_idx + 2]
+      if center_r <= 0.0 && center_g <= 0.0 && center_b <= 0.0 {
+        px = px + 1
+        continue
+      }
+
+      let mut r_sum = 0.0
+      let mut g_sum = 0.0
+      let mut b_sum = 0.0
+      let mut weight_sum = 0.0
+
+      let mut ky = -1
+      while ky <= 1 {
+        let mut kx = -1
+        while kx <= 1 {
+          let ny = py + ky
+          let nx = px + kx
+          if nx >= 0 && nx < diameter && ny >= 0 && ny < diameter {
+            let n_idx = (ny * diameter + nx) * 3
+            let nr = image[n_idx]
+            let ng = image[n_idx + 1]
+            let nb = image[n_idx + 2]
+            // Only include non-black neighbors (inside circle)
+            if nr > 0.0 || ng > 0.0 || nb > 0.0 {
+              let w = kernel[(ky + 1) * 3 + (kx + 1)]
+              r_sum = r_sum + nr * w
+              g_sum = g_sum + ng * w
+              b_sum = b_sum + nb * w
+              weight_sum = weight_sum + w
+            }
+          }
+          kx = kx + 1
         }
+        ky = ky + 1
+      }
 
-        let (r, g, b) = bilinear_sample(
-          strip_pixels, strip_width, strip_height,
-          clamped_time, clamped_vert
-        )
-        out[out_idx] = r
-        out[out_idx + 1] = g
-        out[out_idx + 2] = b
+      let out_idx = (py * diameter + px) * 3
+      if weight_sum > 0.0 {
+        out[out_idx] = r_sum / weight_sum
+        out[out_idx + 1] = g_sum / weight_sum
+        out[out_idx + 2] = b_sum / weight_sum
       }
       px = px + 1
     }
