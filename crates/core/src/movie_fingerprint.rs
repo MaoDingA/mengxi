@@ -624,6 +624,7 @@ pub fn generate_fingerprint(
                 width: thumb_w,
                 height: thumb_h,
                 pixels: thumb_pixels,
+                frame_index: idx,
             });
         }
 
