@@ -1356,3 +1356,124 @@ int32_t mengxi_detect_dominant_pairs(
 
   return result;
 }
+
+/* ============================================================
+ * mengxi_compute_vectorscope_density — Compute vectorscope polar density grid
+ *
+ * Input: strip data (row-major interleaved sRGB [0,1])
+ * Output: angle_bins * radius_bins f64 (density, normalized to [0,1])
+ * ============================================================ */
+
+extern int32_t _M0FP216mengxi_2dmoonbit3lib37mengxi__compute__vectorscope__density(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+
+int32_t mengxi_compute_vectorscope_density(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t angle_bins,
+  int32_t radius_bins,
+  int32_t max_chroma_permille,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0 || angle_bins <= 0 || radius_bins <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib37mengxi__compute__vectorscope__density(
+    strip_len, mb_strip, width, height,
+    angle_bins, radius_bins, max_chroma_permille,
+    out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
+
+/* ============================================================
+ * mengxi_classify_color_distribution — Classify strip pixels into 7 color categories
+ * ============================================================ */
+
+extern int32_t _M0FP216mengxi_2dmoonbit3lib37mengxi__classify__color__distribution(
+  int32_t,
+  double*,
+  int32_t,
+  int32_t,
+  int32_t,
+  int32_t,
+  double*
+);
+
+int32_t mengxi_classify_color_distribution(
+  int32_t strip_len,
+  double* strip_ptr,
+  int32_t width,
+  int32_t height,
+  int32_t min_chroma_permille,
+  int32_t out_len,
+  double* out_ptr
+) {
+  ensure_runtime_init();
+
+  if (strip_len <= 0 || width <= 0 || height <= 0) return -1;
+
+  double* mb_strip = moonbit_make_double_array(strip_len, 0.0);
+  if (!mb_strip) return -3;
+
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) {
+    moonbit_drop_object(mb_strip);
+    return -3;
+  }
+
+  memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
+
+  Moonbit_object_header(mb_strip)->rc += 6;
+  Moonbit_object_header(mb_out)->rc += 6;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib37mengxi__classify__color__distribution(
+    strip_len, mb_strip, width, height,
+    min_chroma_permille,
+    out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_strip);
+
+  return result;
+}
