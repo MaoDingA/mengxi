@@ -25,9 +25,6 @@ pub enum MovieFingerprintError {
     /// PPM file parsing error.
     #[error("MOVIE_FINGERPRINT_PPM_PARSE_ERROR -- {0}")]
     PpmParseError(String),
-    /// Vectorscope error.
-    #[error("MOVIE_FINGERPRINT_VECTORSCOPE_ERROR -- {0}")]
-    VectorscopeError(#[from] crate::vectorscope::VectorscopeError),
     /// Visualization rendering error.
     #[error("MOVIE_FINGERPRINT_VIZ_ERROR -- {0}")]
     VizError(String),
@@ -479,8 +476,6 @@ pub enum FingerprintMode {
     CineIris { diameter: usize },
     /// Both strip and CineIris outputs.
     Both { diameter: usize },
-    /// Vectorscope polar density heatmap (also generates strip as data source).
-    Vectorscope { size: usize },
     /// Color distribution network (strip + 7 category nodes with connecting lines).
     Distribution,
     /// CinePrint timeline poster (vertical strip with frame thumbnails).
@@ -492,7 +487,6 @@ impl FingerprintMode {
     pub fn diameter(&self) -> Option<usize> {
         match self {
             FingerprintMode::Strip
-            | FingerprintMode::Vectorscope { .. }
             | FingerprintMode::Distribution
             | FingerprintMode::CinePrint { .. } => None,
             FingerprintMode::CineIris { diameter } | FingerprintMode::Both { diameter } => {
@@ -509,8 +503,6 @@ pub struct FingerprintOutput {
     pub strip_path: Option<PathBuf>,
     /// Path to the CineIris PNG, if generated.
     pub cineiris_path: Option<PathBuf>,
-    /// Path to the vectorscope PNG, if generated.
-    pub vectorscope_path: Option<PathBuf>,
     /// Path to the color distribution PNG, if generated.
     pub distribution_path: Option<PathBuf>,
     /// Path to the CinePrint PNG, if generated.
@@ -607,17 +599,26 @@ pub fn generate_fingerprint(
 
         // Collect thumbnail if this is a selected frame
         if n_thumbs > 0 && thumb_interval > 0 && idx % thumb_interval == 0 && thumbnails.len() < n_thumbs {
-            let thumb_w = 160;
-            let thumb_h = (h as f64 * thumb_w as f64 / w as f64).round() as usize;
+            // Half-resolution thumbnails (960x540 for 1920x1080 source)
+            let thumb_w = w / 2;
+            let thumb_h = h / 2;
             let mut thumb_pixels = Vec::with_capacity(thumb_w * thumb_h * 3);
             for ty in 0..thumb_h {
                 for tx in 0..thumb_w {
-                    let sx = (tx as f64 * w as f64 / thumb_w as f64) as usize;
-                    let sy = (ty as f64 * h as f64 / thumb_h as f64) as usize;
-                    let src_idx = (sy * w + sx) * 3;
-                    thumb_pixels.push(pixels[src_idx]);
-                    thumb_pixels.push(pixels[src_idx + 1]);
-                    thumb_pixels.push(pixels[src_idx + 2]);
+                    // Box filter: average 2x2 block
+                    let sx = tx * 2;
+                    let sy = ty * 2;
+                    let src_idx00 = (sy * w + sx) * 3;
+                    let src_idx10 = (sy * w + sx + 1) * 3;
+                    let src_idx01 = ((sy + 1) * w + sx) * 3;
+                    let src_idx11 = ((sy + 1) * w + sx + 1) * 3;
+                    for ch in 0..3 {
+                        let v = (pixels[src_idx00 + ch]
+                               + pixels[src_idx10 + ch]
+                               + pixels[src_idx01 + ch]
+                               + pixels[src_idx11 + ch]) / 4.0;
+                        thumb_pixels.push(v);
+                    }
                 }
             }
             thumbnails.push(crate::viz::cineprint::Thumbnail {
@@ -640,7 +641,6 @@ pub fn generate_fingerprint(
     let mut output = FingerprintOutput {
         strip_path: None,
         cineiris_path: None,
-        vectorscope_path: None,
         distribution_path: None,
         cineprint_path: None,
         frame_count,
@@ -672,16 +672,8 @@ pub fn generate_fingerprint(
             save_fingerprint_png(&transformed, *diameter, *diameter, &cineiris_path)?;
             output.cineiris_path = Some(cineiris_path);
         }
-        FingerprintMode::Vectorscope { size } => {
-            let density = crate::vectorscope::compute_vectorscope_density(
-                &strip_data, strip_width, frame_height, 72, 20, 400,
-            )?;
-            let path = output_dir.join("fingerprint_vectorscope.png");
-            crate::viz::vectorscope::render_vectorscope_png(&density, *size as u32, &path)?;
-            output.vectorscope_path = Some(path);
-        }
         FingerprintMode::Distribution => {
-            let path = output_dir.join("fingerprint_distribution.png");
+            let path = output_dir.join("fingerprint_distribution.gif");
             crate::viz::color_distribution::render_color_distribution_png(
                 &strip_data, strip_width, frame_height, &path,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;

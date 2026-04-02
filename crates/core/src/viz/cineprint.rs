@@ -37,7 +37,7 @@ pub fn render_cineprint_png(
     let padding: usize = 30;
     let title_h: usize = 50;
     let footer_h: usize = 50;
-    let target_strip_visual_w: usize = 400; // wider strip for better quality
+    let target_strip_visual_w: usize = if !thumbnails.is_empty() { thumbnails[0].height } else { 400 }; // match frame height for detail
     let poster_h: usize = 3600; // tall poster for high resolution
 
     // Scale factors for strip → poster
@@ -45,8 +45,9 @@ pub fn render_cineprint_png(
     let strip_visual_h = poster_h;
     let scale_y = strip_visual_h as f64 / strip_width as f64;
 
-    // Thumbnail sizing
-    let thumb_display_w: usize = 160;
+    // Thumbnail sizing — use actual thumbnail dimensions
+    let thumb_display_w: usize = if !thumbnails.is_empty() { thumbnails[0].width } else { 160 };
+    let thumb_display_h: usize = if !thumbnails.is_empty() { thumbnails[0].height } else { 90 };
     let thumb_slot_w: usize = thumb_display_w + padding;
 
     // Total poster dimensions (portrait)
@@ -112,12 +113,7 @@ pub fn render_cineprint_png(
     // --- Draw thumbnails with connecting lines ---
     let n_thumbs = thumbnails.len();
     if n_thumbs > 0 {
-        let thumb_h = if !thumbnails.is_empty() {
-            let aspect = thumbnails[0].height as f64 / thumbnails[0].width as f64;
-            (thumb_display_w as f64 * aspect).round() as usize
-        } else {
-            90
-        };
+        let thumb_h = thumb_display_h;
 
         for (i, thumb) in thumbnails.iter().enumerate() {
             // Position: even indices → left, odd → right

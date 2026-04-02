@@ -158,7 +158,6 @@ pub fn execute(
         "strip" => mengxi_core::movie_fingerprint::FingerprintMode::Strip,
         "cineiris" => mengxi_core::movie_fingerprint::FingerprintMode::CineIris { diameter },
         "both" => mengxi_core::movie_fingerprint::FingerprintMode::Both { diameter },
-        "vectorscope" => mengxi_core::movie_fingerprint::FingerprintMode::Vectorscope { size: 1024 },
         "distribution" => mengxi_core::movie_fingerprint::FingerprintMode::Distribution,
         "cineprint" => mengxi_core::movie_fingerprint::FingerprintMode::CinePrint { thumbnails: 12 },
         _ => unreachable!("clap validates mode values"),
@@ -186,9 +185,6 @@ pub fn execute(
                 if let Some(ref cineiris_path) = result.cineiris_path {
                     json_out["cineiris_path"] = serde_json::json!(cineiris_path.to_string_lossy());
                 }
-                if let Some(ref vectorscope_path) = result.vectorscope_path {
-                    json_out["vectorscope_path"] = serde_json::json!(vectorscope_path.to_string_lossy());
-                }
                 if let Some(ref distribution_path) = result.distribution_path {
                     json_out["distribution_path"] = serde_json::json!(distribution_path.to_string_lossy());
                 }
@@ -202,9 +198,6 @@ pub fn execute(
                 }
                 if let Some(ref cineiris_path) = result.cineiris_path {
                     eprintln!("CineIris fingerprint: {}", cineiris_path.display());
-                }
-                if let Some(ref vectorscope_path) = result.vectorscope_path {
-                    eprintln!("Vectorscope fingerprint: {}", vectorscope_path.display());
                 }
                 if let Some(ref distribution_path) = result.distribution_path {
                     eprintln!("Distribution fingerprint: {}", distribution_path.display());
