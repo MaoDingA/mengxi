@@ -121,22 +121,33 @@ pub fn extract_center_column(
     Ok(output)
 }
 
-/// Pure Rust center column extraction (avoids per-frame FFI overhead).
+/// Extract a representative color column by averaging each row across the full width.
 ///
-/// For each row, copies the pixel at x = width / 2.
+/// Instead of sampling a single pixel at the center (which is noisy and jarring),
+/// this computes the **mean color of each horizontal row** across all pixels.
+/// The result captures the frame's true color distribution (sky → ground gradient)
+/// while eliminating single-pixel noise, producing a naturally smooth strip.
 fn extract_center_column_rust(pixels: &[f64], width: usize, height: usize) -> Result<Vec<f64>> {
     if width == 0 || height == 0 {
         return Err(MovieFingerprintError::InvalidInput(
             "width and height must be non-zero".to_string(),
         ));
     }
-    let center_x = width / 2;
+    let inv_w = 1.0 / width as f64;
     let mut col = Vec::with_capacity(height * 3);
     for y in 0..height {
-        let src_idx = (y * width + center_x) * 3;
-        col.push(pixels[src_idx]);
-        col.push(pixels[src_idx + 1]);
-        col.push(pixels[src_idx + 2]);
+        let mut sum_r = 0.0f64;
+        let mut sum_g = 0.0f64;
+        let mut sum_b = 0.0f64;
+        for x in 0..width {
+            let src_idx = (y * width + x) * 3;
+            sum_r += pixels[src_idx];
+            sum_g += pixels[src_idx + 1];
+            sum_b += pixels[src_idx + 2];
+        }
+        col.push(sum_r * inv_w);
+        col.push(sum_g * inv_w);
+        col.push(sum_b * inv_w);
     }
     Ok(col)
 }
@@ -575,6 +586,9 @@ pub fn generate_fingerprint(
         cineiris_path: None,
         frame_count,
     };
+
+    // Row-averaged strip data is already naturally smooth — no post-processing needed.
+    // CineIris uses the same smooth data.
 
     // Generate outputs based on mode
     match mode {

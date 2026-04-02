@@ -2,6 +2,10 @@
 
 Three-language monorepo: Rust CLI + MoonBit core algorithms + Python AI subsystem.
 
+## MoonBit Language Reference
+
+@moonbit.mbt.md
+
 ## Build
 
 ```bash

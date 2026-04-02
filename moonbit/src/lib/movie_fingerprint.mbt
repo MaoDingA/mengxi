@@ -188,10 +188,10 @@ fn do_cineiris_transform(
     return out
   }
 
-  // Angular Gaussian kernel for frame blending (±4 frames, σ=2.0)
-  // This is the key: each pixel blends colors from nearby frames for smooth transitions
-  let ang_radius = 4
-  let ang_sigma = 2.0
+  // Angular Gaussian kernel for frame blending (±2 frames, σ=1.2)
+  // Light blending for smooth transitions without losing detail
+  let ang_radius = 2
+  let ang_sigma = 1.2
   let ang_taps = ang_radius * 2 + 1
   let ang_weights = FixedArray::make(ang_taps, 0.0)
   let mut ang_wsum = 0.0
