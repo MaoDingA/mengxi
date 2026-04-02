@@ -476,10 +476,15 @@ pub enum FingerprintMode {
     CineIris { diameter: usize },
     /// Both strip and CineIris outputs.
     Both { diameter: usize },
-    /// Color distribution network (strip + 7 category nodes with connecting lines).
-    Distribution,
     /// CinePrint timeline poster (vertical strip with frame thumbnails).
     CinePrint { thumbnails: usize },
+    /// Unified movie fingerprint poster (CineIris circle + strip + metadata).
+    Poster {
+        title: String,
+        director: String,
+        colorist: String,
+        year: String,
+    },
 }
 
 impl FingerprintMode {
@@ -487,8 +492,8 @@ impl FingerprintMode {
     pub fn diameter(&self) -> Option<usize> {
         match self {
             FingerprintMode::Strip
-            | FingerprintMode::Distribution
-            | FingerprintMode::CinePrint { .. } => None,
+            | FingerprintMode::CinePrint { .. }
+            | FingerprintMode::Poster { .. } => None,
             FingerprintMode::CineIris { diameter } | FingerprintMode::Both { diameter } => {
                 Some(*diameter)
             }
@@ -503,10 +508,10 @@ pub struct FingerprintOutput {
     pub strip_path: Option<PathBuf>,
     /// Path to the CineIris PNG, if generated.
     pub cineiris_path: Option<PathBuf>,
-    /// Path to the color distribution PNG, if generated.
-    pub distribution_path: Option<PathBuf>,
     /// Path to the CinePrint PNG, if generated.
     pub cineprint_path: Option<PathBuf>,
+    /// Path to the unified poster PNG, if generated.
+    pub poster_path: Option<PathBuf>,
     /// Number of frames processed.
     pub frame_count: usize,
 }
@@ -641,8 +646,8 @@ pub fn generate_fingerprint(
     let mut output = FingerprintOutput {
         strip_path: None,
         cineiris_path: None,
-        distribution_path: None,
         cineprint_path: None,
+        poster_path: None,
         frame_count,
     };
 
@@ -672,19 +677,61 @@ pub fn generate_fingerprint(
             save_fingerprint_png(&transformed, *diameter, *diameter, &cineiris_path)?;
             output.cineiris_path = Some(cineiris_path);
         }
-        FingerprintMode::Distribution => {
-            let path = output_dir.join("fingerprint_distribution.gif");
-            crate::viz::color_distribution::render_color_distribution_png(
-                &strip_data, strip_width, frame_height, &path,
-            ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
-            output.distribution_path = Some(path);
-        }
         FingerprintMode::CinePrint { .. } => {
             let path = output_dir.join("fingerprint_cineprint.png");
             crate::viz::cineprint::render_cineprint_png(
                 &strip_data, strip_width, frame_height, &thumbnails, &path,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.cineprint_path = Some(path);
+        }
+        FingerprintMode::Poster { title, director, colorist, year } => {
+            // Collect thumbnails for the poster's mini preview area
+            let thumb_interval = (frame_paths.len() / 12usize).max(1);
+            let mut thumbs = Vec::new();
+            for (i, fp) in frame_paths.iter().enumerate() {
+                if i % thumb_interval == 0 && thumbs.len() < 12 {
+                    if let Ok((tw, th, pixels)) = read_ppm_as_rgb64(fp) {
+                        // Half-res thumbnail
+                        let nw = tw.max(1) / 2;
+                        let nh = th.max(1) / 2;
+                        let mut tpixels = vec![0.0f64; nw * nh * 3];
+                        for ty in 0..nh {
+                            for tx in 0..nw {
+                                let sx = (tx * 2).min(tw - 1);
+                                let sy = (ty * 2).min(th - 1);
+                                let si = (sy * tw + sx) * 3;
+                                let di = (ty * nw + tx) * 3;
+                                if si + 2 < pixels.len() && di + 2 < tpixels.len() {
+                                    tpixels[di] = pixels[si];
+                                    tpixels[di + 1] = pixels[si + 1];
+                                    tpixels[di + 2] = pixels[si + 2];
+                                }
+                            }
+                        }
+                        thumbs.push(crate::viz::cineprint::Thumbnail {
+                            width: nw,
+                            height: nh,
+                            pixels: tpixels,
+                            frame_index: i,
+                        });
+                    }
+                }
+            }
+
+            let path = output_dir.join("fingerprint_poster.png");
+            crate::viz::poster::render_poster_png(
+                &strip_data, strip_width, frame_height,
+                &thumbs,
+                &crate::viz::poster::PosterMetadata {
+                    title: title.clone(),
+                    director: director.clone(),
+                    colorist: colorist.clone(),
+                    year: year.clone(),
+                    duration_min: frame_count / 60, // approximate: 1 frame ≈ 1 sec
+                },
+                &path,
+            ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
+            output.poster_path = Some(path);
         }
     }
 

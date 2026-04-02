@@ -266,7 +266,7 @@ enum Commands {
         /// Video file path
         video: Option<String>,
         /// Output mode: strip, cineiris, both
-        #[arg(long, value_parser = ["strip", "cineiris", "both", "distribution", "cineprint"], default_value = "strip")]
+        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint", "poster"], default_value = "strip")]
         mode: String,
         /// Frame extraction interval in seconds
         #[arg(long, default_value_t = 1.0)]
@@ -283,6 +283,18 @@ enum Commands {
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
+        /// Movie title for poster mode
+        #[arg(long)]
+        title: Option<String>,
+        /// Director name for poster mode
+        #[arg(long)]
+        director: Option<String>,
+        /// Colorist / DP name for poster mode
+        #[arg(long)]
+        colorist: Option<String>,
+        /// Release year for poster mode
+        #[arg(long)]
+        year: Option<String>,
     },
     /// Detect scene boundaries in a fingerprint strip image
     #[command(name = "scene-detect")]
@@ -611,8 +623,8 @@ fn main() {
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
         }
-        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format }) => {
-            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format);
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year);
         }
         Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
             commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);

@@ -8,6 +8,10 @@ pub fn execute(
     diameter: usize,
     output: Option<String>,
     format: String,
+    title: Option<String>,
+    director: Option<String>,
+    colorist: Option<String>,
+    year: Option<String>,
 ) {
     let is_json = format == "json";
 
@@ -153,13 +157,44 @@ pub fn execute(
         eprintln!("Extracted {} frames", frame_paths.len());
     }
 
+    // --- Metadata resolution (CLI priority + auto-extraction fallback) ---
+    let resolved_title = title.unwrap_or_else(|| {
+        // Extract from filename stem (e.g., "EP01.mov" -> "EP01")
+        video_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_uppercase())
+            .unwrap_or_else(|| "FINGERPRINT".into())
+    });
+
+    let resolved_director = director.unwrap_or_else(|| "-".into());
+    let resolved_colorist = colorist.unwrap_or_else(|| "-".into());
+
+    let resolved_year = year.unwrap_or_else(|| {
+        // Try to extract year from filename regex, or use file modification time
+        let fname = video_path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        // Regex-like: look for 19xx or 20xx pattern
+        if let Some(cap) = regex_find_year(fname) {
+            cap
+        } else {
+            "----".into()
+        }
+    });
+
     // 4. Build fingerprint mode
     let fingerprint_mode = match mode.as_str() {
         "strip" => mengxi_core::movie_fingerprint::FingerprintMode::Strip,
         "cineiris" => mengxi_core::movie_fingerprint::FingerprintMode::CineIris { diameter },
         "both" => mengxi_core::movie_fingerprint::FingerprintMode::Both { diameter },
-        "distribution" => mengxi_core::movie_fingerprint::FingerprintMode::Distribution,
         "cineprint" => mengxi_core::movie_fingerprint::FingerprintMode::CinePrint { thumbnails: 12 },
+        "poster" => mengxi_core::movie_fingerprint::FingerprintMode::Poster {
+            title: resolved_title,
+            director: resolved_director,
+            colorist: resolved_colorist,
+            year: resolved_year,
+        },
         _ => unreachable!("clap validates mode values"),
     };
 
@@ -185,11 +220,11 @@ pub fn execute(
                 if let Some(ref cineiris_path) = result.cineiris_path {
                     json_out["cineiris_path"] = serde_json::json!(cineiris_path.to_string_lossy());
                 }
-                if let Some(ref distribution_path) = result.distribution_path {
-                    json_out["distribution_path"] = serde_json::json!(distribution_path.to_string_lossy());
-                }
                 if let Some(ref cineprint_path) = result.cineprint_path {
                     json_out["cineprint_path"] = serde_json::json!(cineprint_path.to_string_lossy());
+                }
+                if let Some(ref poster_path) = result.poster_path {
+                    json_out["poster_path"] = serde_json::json!(poster_path.to_string_lossy());
                 }
                 println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
             } else {
@@ -199,11 +234,11 @@ pub fn execute(
                 if let Some(ref cineiris_path) = result.cineiris_path {
                     eprintln!("CineIris fingerprint: {}", cineiris_path.display());
                 }
-                if let Some(ref distribution_path) = result.distribution_path {
-                    eprintln!("Distribution fingerprint: {}", distribution_path.display());
-                }
                 if let Some(ref cineprint_path) = result.cineprint_path {
                     eprintln!("CinePrint fingerprint: {}", cineprint_path.display());
+                }
+                if let Some(ref poster_path) = result.poster_path {
+                    eprintln!("Poster fingerprint: {}", poster_path.display());
                 }
                 eprintln!("Frames processed: {}", result.frame_count);
             }
@@ -226,4 +261,29 @@ pub fn execute(
     if let Err(e) = std::fs::remove_dir_all(&frame_dir) {
         eprintln!("Warning: failed to clean up temp frames: {}", e);
     }
+}
+
+/// Try to find a 4-digit year pattern in a string.
+fn regex_find_year(s: &str) -> Option<String> {
+    // Simple manual scan for 19xx or 20xx patterns (word-bounded-ish)
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len().saturating_sub(3) {
+        if (i == 0 || !bytes[i - 1].is_ascii_digit())
+            && i + 3 < bytes.len()
+            && (i + 4 >= bytes.len() || !bytes[i + 4].is_ascii_digit())
+        {
+            let c0 = bytes[i];
+            let c1 = bytes[i + 1];
+            let c2 = bytes[i + 2];
+            let c3 = bytes[i + 3];
+            if c0.is_ascii_digit() && c1.is_ascii_digit() && c2.is_ascii_digit() && c3.is_ascii_digit() {
+                let y_str = unsafe { std::str::from_utf8_unchecked(&bytes[i..=i + 3]) };
+                let y: i32 = y_str.parse().unwrap_or(0);
+                if (1900..=2100).contains(&y) {
+                    return Some(y_str.to_string());
+                }
+            }
+        }
+    }
+    None
 }

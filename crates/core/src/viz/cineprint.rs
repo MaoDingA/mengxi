@@ -181,7 +181,7 @@ pub fn render_cineprint_png(
 }
 
 /// Draw a thumbnail scaled to fit the given display dimensions.
-fn draw_thumbnail_scaled(
+pub(crate) fn draw_thumbnail_scaled(
     img: &mut [u8],
     canvas_w: usize,
     canvas_h: usize,
@@ -218,7 +218,7 @@ fn draw_thumbnail_scaled(
 }
 
 /// Draw a 1px rectangle outline.
-fn draw_rect(
+pub(crate) fn draw_rect(
     img: &mut [u8],
     canvas_w: usize,
     canvas_h: usize,
@@ -263,7 +263,7 @@ fn draw_rect(
 }
 
 /// Draw a line using Bresenham's algorithm.
-fn draw_line(
+pub(crate) fn draw_line(
     img: &mut [u8],
     canvas_w: usize,
     canvas_h: usize,
