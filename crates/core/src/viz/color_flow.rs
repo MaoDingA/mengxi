@@ -5,11 +5,15 @@
 // Inspired by 电影指纹 (Movie Fingerprint) WeChat public account style.
 
 use crate::color_distribution::{classify_color_distribution, ColorCategory, NUM_CATEGORIES};
-use super::font::{draw_text_scaled, draw_text_ttf, measure_text_width};
+use super::font::{draw_text_ttf, measure_text_width};
 use std::path::Path;
 
-/// Rasterize a quadratic Bezier curve onto an RGB8 image buffer with alpha blending.
-fn draw_bezier_arc(
+/// Rasterize a quadratic Bezier curve as a true single-pixel hairline.
+///
+/// No disc rendering — each sample sets exactly one pixel with very low alpha.
+/// The reference image uses this style: hundreds of ultra-faint strands that
+/// only become visible where they converge at the nodes.
+fn draw_bezier_hairline(
     img: &mut [u8],
     w: usize,
     h: usize,
@@ -20,75 +24,17 @@ fn draw_bezier_arc(
     g: u8,
     b: u8,
     alpha_base: f64,
-    thickness: f64,
 ) {
-    const STEPS: usize = 64;
-    let mut prev_x = p0.0;
-    let mut prev_y = p0.1;
-
-    for i in 1..=STEPS {
+    const STEPS: usize = 256; // very fine sampling for smooth curves
+    for i in 0..=STEPS {
         let t = i as f64 / STEPS as f64;
         let inv_t = 1.0 - t;
         let x = inv_t * inv_t * p0.0 + 2.0 * inv_t * t * p1.0 + t * t * p2.0;
         let y = inv_t * inv_t * p0.1 + 2.0 * inv_t * t * p1.1 + t * t * p2.1;
-
-        draw_aa_line(img, w, h, prev_x, prev_y, x, y, r, g, b, alpha_base, thickness);
-
-        prev_x = x;
-        prev_y = y;
-    }
-}
-
-/// Draw an anti-aliased line segment with variable thickness using pixel coverage.
-fn draw_aa_line(
-    img: &mut [u8],
-    w: usize,
-    h: usize,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    r: u8,
-    g: u8,
-    b: u8,
-    alpha: f64,
-    thickness: f64,
-) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let dist = (dx * dx + dy * dy).sqrt();
-    if dist < 0.001 {
-        return;
-    }
-    let steps = ((dist * 2.0).ceil() as usize).max(2);
-    let half_t = thickness / 2.0;
-
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let cx = x0 + dx * t;
-        let cy = y0 + dy * t;
-
-        let radius_px = (half_t).ceil() as isize;
-        for dy_off in -radius_px..=radius_px {
-            for dx_off in -radius_px..=radius_px {
-                let px = (cx + dx_off as f64).round() as isize;
-                let py = (cy + dy_off as f64).round() as isize;
-                if px < 0 || (px as usize) >= w || py < 0 || (py as usize) >= h {
-                    continue;
-                }
-                let dd = ((dx_off as f64).powi(2) + (dy_off as f64).powi(2)).sqrt();
-                if dd > half_t {
-                    continue;
-                }
-                let edge_alpha = if half_t > 1.0 {
-                    let falloff = (half_t - dd) / half_t;
-                    falloff * falloff
-                } else {
-                    1.0
-                };
-                let a = alpha * edge_alpha;
-                blend_pixel(img, w, px as usize, py as usize, r, g, b, a);
-            }
+        let px = x.round() as isize;
+        let py = y.round() as isize;
+        if px >= 0 && (px as usize) < w && py >= 0 && (py as usize) < h {
+            blend_pixel(img, w, px as usize, py as usize, r, g, b, alpha_base);
         }
     }
 }
@@ -96,9 +42,7 @@ fn draw_aa_line(
 /// Alpha-blend a pixel onto the buffer.
 fn blend_pixel(img: &mut [u8], w: usize, x: usize, y: usize, r: u8, g: u8, b: u8, alpha: f64) {
     let idx = (y * w + x) * 3;
-    if idx + 2 >= img.len() {
-        return;
-    }
+    if idx + 2 >= img.len() { return; }
     let inv_a = 1.0 - alpha;
     img[idx]     = (img[idx]     as f64 * inv_a + r as f64 * alpha).round() as u8;
     img[idx + 1] = (img[idx + 1] as f64 * inv_a + g as f64 * alpha).round() as u8;
@@ -122,14 +66,10 @@ fn draw_glow_circle(
     for dy in -ir_outer..=ir_outer {
         for dx in -ir_outer..=ir_outer {
             let dist = ((dx as f64).powi(2) + (dy as f64).powi(2)).sqrt();
-            if dist > outer_radius {
-                continue;
-            }
+            if dist > outer_radius { continue; }
             let px = (cx + dx as f64).round() as isize;
             let py = (cy + dy as f64).round() as isize;
-            if px < 0 || (px as usize) >= w || py < 0 || (py as usize) >= h {
-                continue;
-            }
+            if px < 0 || (px as usize) >= w || py < 0 || (py as usize) >= h { continue; }
 
             let intensity = if dist <= inner_radius {
                 1.0
@@ -157,9 +97,7 @@ fn fill_solid_circle(img: &mut [u8], w: usize, h: usize, cx: f64, cy: f64, radiu
                 if px >= 0 && (px as usize) < w && py >= 0 && (py as usize) < h {
                     let idx = (py as usize * w + px as usize) * 3;
                     if idx + 2 < img.len() {
-                        img[idx] = r;
-                        img[idx + 1] = g;
-                        img[idx + 2] = b;
+                        img[idx] = r; img[idx + 1] = g; img[idx + 2] = b;
                     }
                 }
             }
@@ -207,9 +145,9 @@ fn draw_frame_strip(
 struct FrameClassification {
     primary_category: usize,
     primary_strength: f64,
-    avg_r: f64,
-    avg_g: f64,
-    avg_b: f64,
+    #[allow(dead_code)] avg_r: f64,
+    #[allow(dead_code)] avg_g: f64,
+    #[allow(dead_code)] avg_b: f64,
 }
 
 /// Classify each frame column into its dominant color category.
@@ -234,9 +172,7 @@ fn classify_per_frame(
             let g = strip[idx + 1];
             let bv = strip[idx + 2];
 
-            sum_r += r;
-            sum_g += g;
-            sum_b += bv;
+            sum_r += r; sum_g += g; sum_b += bv;
             total += 1;
 
             let (l_val, a_val, b_val) = crate::color_distribution::srgb_to_oklab_pixel(r, g, bv);
@@ -248,10 +184,7 @@ fn classify_per_frame(
         let inv_total = if total > 0 { 1.0 / total as f64 } else { 0.0 };
         let (mut best_cat, mut best_count) = (0usize, 0usize);
         for (i, &c) in counts.iter().enumerate() {
-            if c > best_count {
-                best_count = c;
-                best_cat = i;
-            }
+            if c > best_count { best_count = c; best_cat = i; }
         }
 
         frames.push(FrameClassification {
@@ -265,6 +198,65 @@ fn classify_per_frame(
     frames
 }
 
+/// A contiguous segment of frames sharing the same dominant category.
+struct ColorSegment {
+    category: usize,
+    start_frame: usize,   // frame index in the strip
+    end_frame: usize,     // exclusive
+    center_x: f64,        // x position of segment center on the strip
+    width_x: f64,         // visual width of segment on the strip
+    strength: f64,        // average classification strength
+}
+
+/// Merge consecutive frames into color segments.
+fn build_segments(frames: &[FrameClassification], strip_display_w: f64, strip_width: usize) -> Vec<ColorSegment> {
+    let mut segments = Vec::new();
+    if frames.is_empty() { return segments; }
+
+    let mut seg_start = 0usize;
+    let mut seg_cat = frames[0].primary_category;
+    let mut seg_strength_sum = frames[0].primary_strength;
+    let mut seg_count = 1usize;
+
+    for i in 1..frames.len() {
+        if frames[i].primary_category == seg_cat {
+            seg_strength_sum += frames[i].primary_strength;
+            seg_count += 1;
+        } else {
+            // Flush current segment
+            let fx0 = seg_start as f64 / strip_width as f64 * strip_display_w;
+            let fx1 = i as f64 / strip_width as f64 * strip_display_w;
+            segments.push(ColorSegment {
+                category: seg_cat,
+                start_frame: seg_start,
+                end_frame: i,
+                center_x: (fx0 + fx1) / 2.0,
+                width_x: fx1 - fx0,
+                strength: seg_strength_sum / seg_count as f64,
+            });
+            // Start new segment
+            seg_start = i;
+            seg_cat = frames[i].primary_category;
+            seg_strength_sum = frames[i].primary_strength;
+            seg_count = 1;
+        }
+    }
+
+    // Flush last segment
+    let fx0 = seg_start as f64 / strip_width as f64 * strip_display_w;
+    let fx1 = frames.len() as f64 / strip_width as f64 * strip_display_w;
+    segments.push(ColorSegment {
+        category: seg_cat,
+        start_frame: seg_start,
+        end_frame: frames.len(),
+        center_x: (fx0 + fx1) / 2.0,
+        width_x: fx1 - fx0,
+        strength: seg_strength_sum / seg_count as f64,
+    });
+
+    segments
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -275,45 +267,47 @@ pub fn render_color_flow_png(
     strip_height: usize,
     output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // --- Canvas dimensions ---
-    let cw: usize = 1200;
-    let ch: usize = 1800;
-    let margin: usize = 40;
+    // --- Canvas dimensions — compact ---
+    let cw: usize = 1100;
+    let ch: usize = 1500;
+    let margin: usize = 35;
 
     // --- Colors ---
-    const BG_R: u8 = 10;
-    const BG_G: u8 = 10;
-    const BG_B: u8 = 10;
+    const BG_R: u8 = 6;
+    const BG_G: u8 = 6;
+    const BG_B: u8 = 6;
 
-    // --- Region heights (compressed: strip compact, arcs fill, nodes roomy) ---
-    let strip_area_h: usize = (ch as f64 * 0.07).round() as usize;   // ~126px — compact
-    let arcs_area_h: usize = (ch as f64 * 0.63).round() as usize;   // ~1134px — main visual
-    let nodes_area_h: usize = ch - margin - strip_area_h - arcs_area_h - margin; // remainder
+    // --- Region heights — compact layout matching reference ---
+    // Reference proportions: strip ~20%, arcs ~48%, nodes ~28%, margin ~4%
+    let strip_area_h: usize = (ch as f64 * 0.20).round() as usize;   // ~300px
+    let arcs_area_h: usize = (ch as f64 * 0.48).round() as usize;   // ~720px
+    let nodes_area_h: usize = ch - margin - strip_area_h - arcs_area_h - margin; // remainder ~296px
 
     let strip_top = margin;
     let strip_bottom = strip_top + strip_area_h;
-    let arcs_top = strip_bottom;           // no gap between strip and arcs
+    let arcs_top = strip_bottom;           // no gap
     let arcs_bottom = arcs_top + arcs_area_h;
-    let nodes_top = arcs_bottom;            // no gap between arcs and nodes
-    let node_y = nodes_top as f64 + nodes_area_h as f64 * 0.12;     // nodes higher up
-    let nodes_label_y = nodes_top as f64 + nodes_area_h as f64 * 0.38; // labels close under nodes
-    let watermark_y = ch - margin - 20;
+    let nodes_top = arcs_bottom;
 
-    // --- Allocate black background ---
+    // Arcs start a few pixels below the strip to avoid overlap
+    let arc_start_y = strip_bottom as f64 + 6.0;
+
+    // Node positions
+    let node_y = nodes_top as f64 + nodes_area_h as f64 * 0.16;
+    let nodes_label_y = nodes_top as f64 + nodes_area_h as f64 * 0.46;
+
+    // --- Allocate dark background ---
     let mut img = vec![BG_R; cw * ch * 3];
     for i in (0..img.len()).step_by(3) {
-        img[i] = BG_R;
-        img[i + 1] = BG_G;
-        img[i + 2] = BG_B;
+        img[i] = BG_R; img[i + 1] = BG_G; img[i + 2] = BG_B;
     }
 
     // LAYER 1: Frame color strip (top)
     let strip_display_w = cw - 2 * margin;
     draw_frame_strip(&mut img, cw, margin, strip_top, strip_display_w, strip_area_h, strip, strip_width, strip_height);
 
-    // LAYER 2: Flow arcs (middle) — dense hairline waterfall
+    // LAYER 2: Flow arcs — SEGMENT-BASED, not per-frame
     let frames = classify_per_frame(strip, strip_width, strip_height, 0.03);
-
     let categories = ColorCategory::all();
     let n_nodes = categories.len();
     let node_spacing = strip_display_w / (n_nodes - 1).max(1);
@@ -321,86 +315,85 @@ pub fn render_color_flow_png(
         .map(|i| margin + i * node_spacing)
         .collect();
 
-    let arcs_mid_y = arcs_top as f64 + arcs_area_h as f64 * 0.22;
-
-    // === Dense sampling: draw one ultra-thin hairline per sample point ===
-    // This creates the "fiber optic / light ray waterfall" effect of the reference.
-    // Target: ~400-800 lines for a typical movie (one every 3-7 frames).
-    let target_line_count = 600usize;
-    let sample_step = if frames.len() > target_line_count {
-        (frames.len() / target_line_count).max(1)
-    } else {
-        1
-    };
+    // Build segments from consecutive same-color frame groups
+    let segments = build_segments(&frames, strip_display_w as f64, strip_width);
 
     use std::hash::{Hasher, DefaultHasher};
-    for (sample_idx, frame_idx) in (0..frames.len()).step_by(sample_step).enumerate() {
-        let fc = &frames[frame_idx];
+    for (si, seg) in segments.iter().enumerate() {
+        let target_x = node_x_positions[seg.category] as f64;
+        let fx = margin as f64 + seg.center_x;
 
-        // Map this frame to X position on the strip
-        let fx = margin as f64 + (frame_idx as f64 / strip_width as f64) * strip_display_w as f64;
-        let fy = strip_bottom as f64;
-
-        let target_node_x = node_x_positions[fc.primary_category] as f64;
-
-        // Control point — variable arch height for organic variation
-        let mid_x = (fx + target_node_x) / 0.5; // wider spread for more dramatic arcs
-        let h_dist = (target_node_x - fx).abs();
-
-        // Pseudo-random seed for per-line variation
+        // Seed for variation within segment
         let mut hasher = DefaultHasher::new();
-        hasher.write_usize(sample_idx * 31 + frame_idx);
+        hasher.write_usize(si * 31 + seg.start_frame);
         let seed = hasher.finish() as f64 / u64::MAX as f64;
 
-        // Arch height varies: some lines fly high, some stay low
-        let pull_base = h_dist * (0.30 + seed * 0.55); // 0.30~0.85 range
-        let ctrl_y_actual = arcs_mid_y - pull_base - seed * arcs_area_h as f64 * 0.06;
+        let h_dist = (target_x - fx).abs();
 
-        // Line properties based on classification strength and seed
-        let strength = fc.primary_strength;
-        let alpha = 0.04 + strength * 0.12 + seed * 0.05;   // 0.04~0.21
-        let thickness = 0.15 + strength * 0.25 + seed * 0.12; // 0.15~0.52
+        // Number of lines per segment: 1-3 based on segment width
+        // Wide segments get more lines for richer detail
+        let n_lines = if seg.width_x > strip_display_w as f64 * 0.08 {
+            3
+        } else if seg.width_x > strip_display_w as f64 * 0.03 {
+            2
+        } else {
+            1
+        };
 
-        // Line color: blend between white and the frame's average color
-        // Stronger classification → more saturated color, weaker → more white/gray
-        let color_tint = (strength * 0.6 + seed * 0.25).min(0.75);
-        let base_gray = 190.0 + seed * 40.0; // 190~230 range (light gray base)
-        let lr = (base_gray * (1.0 - color_tint) + fc.avg_r * 255.0 * color_tint).round() as u8;
-        let lg = (base_gray * (1.0 - color_tint) + fc.avg_g * 255.0 * color_tint).round() as u8;
-        let lb = (base_gray * (1.0 - color_tint) + fc.avg_b * 255.0 * color_tint).round() as u8;
+        for li in 0..n_lines {
+            // Sub-seed per line
+            let mut h2 = DefaultHasher::new();
+            h2.write_usize(si * 31 + li * 7);
+            let line_seed = h2.finish() as f64 / u64::MAX as f64;
 
-        // Primary hairline
-        draw_bezier_arc(
-            &mut img, cw, ch,
-            (fx, fy),
-            (mid_x, ctrl_y_actual),
-            (target_node_x, node_y),
-            lr, lg, lb,
-            alpha,
-            thickness,
-        );
+            // Offset start X slightly for multi-line segments
+            let line_fx = fx + (li as f64 - (n_lines - 1) as f64 / 2.0) * (seg.width_x / (n_lines + 1) as f64);
 
-        // Occasional secondary faint line for depth (every 4th sample, long segments only)
-        if sample_idx % 4 == 0 && strength > 0.3 {
-            let ctrl_offset_x = (seed - 0.5) * 30.0;
-            let ctrl_y_2nd = ctrl_y_actual - seed * arcs_area_h as f64 * 0.04;
-            draw_bezier_arc(
-                &mut img, cw, ch,
-                (fx, fy),
-                (mid_x + ctrl_offset_x, ctrl_y_2nd),
-                (target_node_x, node_y),
-                175, 180, 188,       // cool faint gray-blue
-                0.02 + strength * 0.03,
-                0.10 + seed * 0.08,
-            );
+            // Control point: dramatic sweeping curve — bow outward then converge
+            // Pull is large for distant targets, creating elegant arcs
+            let pull = h_dist * (0.50 + line_seed * 0.60); // 0.50~1.10
+            let mid_x = line_fx + (target_x - line_fx) * (0.35 + line_seed * 0.30); // widely varied control X
+            let ctrl_y = arcs_top as f64 - pull - line_seed * arcs_area_h as f64 * 0.08;
+
+            // Line color: desaturated warm/cool gray based on target category
+            // Reference shows subtle tinting — like aged paper or faded silk
+            let (tint_r, tint_g, tint_b) = categories[seg.category].display_rgb();
+            let gray_base = 155.0;
+            let color_mix = 0.40; // 40% color — visible tint but muted
+            let brightness_var = line_seed * 25.0;
+            let line_r = (gray_base * (1.0 - color_mix) + tint_r as f64 * color_mix + brightness_var).round() as u8;
+            let line_g = (gray_base * (1.0 - color_mix) + tint_g as f64 * color_mix + brightness_var).round() as u8;
+            let line_b = (gray_base * (1.0 - color_mix) + tint_b as f64 * color_mix + brightness_var).round() as u8;
+
+            // Very low alpha — these are delicate strands, only visible en masse near nodes
+            let alpha = 0.025 + seg.strength * 0.025 + line_seed * 0.020; // 0.025~0.07
+
+            draw_bezier_hairline(&mut img, cw, ch,
+                (line_fx, arc_start_y),
+                (mid_x, ctrl_y),
+                (target_x, node_y),
+                line_r, line_g, line_b, alpha);
+
+            // For wide segments: add one slightly brighter companion line
+            if n_lines >= 2 && li == 0 {
+                let ctrl_y2 = ctrl_y - line_seed * arcs_area_h as f64 * 0.05;
+                let br = (gray_base * 0.6 + tint_r as f64 * 0.4 + 30.0).round() as u8;
+                let bg_ = (gray_base * 0.6 + tint_g as f64 * 0.4 + 30.0).round() as u8;
+                let bb = (gray_base * 0.6 + tint_b as f64 * 0.4 + 30.0).round() as u8;
+                draw_bezier_hairline(&mut img, cw, ch,
+                    (line_fx, arc_start_y),
+                    (mid_x + (line_seed - 0.5) * 12.0, ctrl_y2),
+                    (target_x, node_y),
+                    br, bg_, bb, 0.035 + line_seed * 0.025);
+            }
         }
     }
 
-    // LAYER 3: Glow nodes + labels (bottom) — size proportional to fraction
+    // LAYER 3: Glow nodes + labels
     let overall_dist = classify_color_distribution(strip, strip_width, strip_height, 0.03);
 
-    // Base radius for a dominant color (~50%+), scaled by sqrt(fraction)
-    let max_glow_radius = (cw as f64 * 0.065).round() as f64;  // ~78px for dominant
+    // Max glow radius for dominant color
+    let max_glow_radius = (cw as f64 * 0.095).round() as f64; // ~104px for dominant
 
     for (i, cat) in categories.iter().enumerate() {
         let nx = node_x_positions[i] as f64;
@@ -408,50 +401,42 @@ pub fn render_color_flow_png(
         let (cr, cg, cb) = cat.display_rgb();
         let fraction = overall_dist.categories[i][0];
 
-        // Size scales with sqrt(fraction): 62% → large, 0.2% → tiny dot
-        let size_scale = if fraction > 0.001 { fraction.sqrt() } else { fraction * 10.0 };
-        let glow_outer_r = (max_glow_radius * size_scale).max(6.0);
-        let glow_inner_r = glow_outer_r * 0.12;
+        // Dramatic size scaling: pow(0.5)
+        let size_scale = if fraction > 0.001 {
+            fraction.powf(0.50)
+        } else {
+            fraction * 25.0
+        };
+        let glow_outer_r = (max_glow_radius * size_scale).max(2.5);
+        let glow_inner_r = glow_outer_r * 0.05;
 
         draw_glow_circle(&mut img, cw, ch, nx, ny, glow_outer_r, glow_inner_r, cr, cg, cb);
 
-        // Solid core — always visible even for small fractions
-        let core_r = (glow_inner_r * 0.5).max(2.0);
+        // Solid core
+        let core_r = (glow_inner_r * 0.55).max(1.5);
         fill_solid_circle(&mut img, cw, ch, nx, ny, core_r, cr, cg, cb);
 
+        // Labels
         let name = cat.name();
-        let font_size = 14.0;
+        let font_size = 15.0;
         let name_w = measure_text_width(name, font_size, None);
         draw_text_ttf(&mut img, cw, ch,
             (nx - name_w as f64 / 2.0).round() as usize,
             nodes_label_y.round() as usize,
-            name, font_size, 200, 200, 200, None);
+            name, font_size, 230, 230, 230, None);
 
         let pct_str = format!("{:.1}%", fraction * 100.0);
-        let pct_size = 11.0;
+        let pct_size = 12.0;
         let pct_w = measure_text_width(&pct_str, pct_size, None);
         draw_text_ttf(&mut img, cw, ch,
             (nx - pct_w as f64 / 2.0).round() as usize,
-            (nodes_label_y + 18.0).round() as usize,
-            &pct_str, pct_size, 140, 140, 140, None);
+            (nodes_label_y + 19.0).round() as usize,
+            &pct_str, pct_size, 145, 145, 145, None);
     }
 
-    // Watermark
-    let watermark = "\u{516C}\u{4F17}\u{53F7}\u{B7}\u{7535}\u{5F71}\u{6307}\u{7EB9}";
-    let wm_size = 16.0;
-    let wm_w = measure_text_width(watermark, wm_size, None);
-    draw_text_ttf(&mut img, cw, ch,
-        (cw - wm_w) / 2,
-        watermark_y,
-        watermark, wm_size, 90, 90, 90, None);
+    // NO watermark — removed per user request
 
-    image::save_buffer(
-        output_path,
-        &img,
-        cw as u32,
-        ch as u32,
-        image::ExtendedColorType::Rgb8,
-    )?;
+    image::save_buffer(output_path, &img, cw as u32, ch as u32, image::ExtendedColorType::Rgb8)?;
 
     Ok(())
 }
@@ -541,5 +526,24 @@ mod tests {
         draw_glow_circle(&mut img, 100, 100, 50.0, 50.0, 20.0, 5.0, 255, 100, 50);
         let idx = (50 * 100 + 50) * 3;
         assert!(img[idx] > 0 || img[idx + 1] > 0 || img[idx + 2] > 0);
+    }
+
+    #[test]
+    fn test_build_segments_basic() {
+        let frames = vec![
+            FrameClassification { primary_category: 0, primary_strength: 0.8, avg_r: 0.9, avg_g: 0.1, avg_b: 0.1 },
+            FrameClassification { primary_category: 0, primary_strength: 0.7, avg_r: 0.9, avg_g: 0.1, avg_b: 0.1 },
+            FrameClassification { primary_category: 2, primary_strength: 0.9, avg_r: 0.1, avg_g: 0.9, avg_b: 0.1 },
+            FrameClassification { primary_category: 2, primary_strength: 0.85, avg_r: 0.1, avg_g: 0.9, avg_b: 0.1 },
+            FrameClassification { primary_category: 2, primary_strength: 0.88, avg_r: 0.1, avg_g: 0.9, avg_b: 0.1 },
+        ];
+        let segments = build_segments(&frames, 500.0, 5);
+        assert_eq!(segments.len(), 2); // red segment + green segment
+        assert_eq!(segments[0].category, 0);
+        assert_eq!(segments[0].start_frame, 0);
+        assert_eq!(segments[0].end_frame, 2);
+        assert_eq!(segments[1].category, 2);
+        assert_eq!(segments[1].start_frame, 2);
+        assert_eq!(segments[1].end_frame, 5);
     }
 }
