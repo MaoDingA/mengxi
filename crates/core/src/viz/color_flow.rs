@@ -311,7 +311,7 @@ pub fn render_color_flow_png(
     let strip_display_w = cw - 2 * margin;
     draw_frame_strip(&mut img, cw, margin, strip_top, strip_display_w, strip_area_h, strip, strip_width, strip_height);
 
-    // LAYER 2: Flow arcs (middle) — segment-based, hairline thin
+    // LAYER 2: Flow arcs (middle) — dense hairline waterfall
     let frames = classify_per_frame(strip, strip_width, strip_height, 0.03);
 
     let categories = ColorCategory::all();
@@ -321,95 +321,77 @@ pub fn render_color_flow_png(
         .map(|i| margin + i * node_spacing)
         .collect();
 
-    let arcs_mid_y = arcs_top as f64 + arcs_area_h as f64 * 0.25;
+    let arcs_mid_y = arcs_top as f64 + arcs_area_h as f64 * 0.22;
 
-    // Group consecutive frames by dominant category → segments
-    struct Segment { start_idx: usize, end_idx: usize, category: usize, length: usize }
-    let mut segments: Vec<Segment> = Vec::new();
-    if !frames.is_empty() {
-        let mut seg_start = 0usize;
-        let mut seg_cat = frames[0].primary_category;
-        for i in 1..frames.len() {
-            if frames[i].primary_category != seg_cat {
-                segments.push(Segment {
-                    start_idx: seg_start,
-                    end_idx: i - 1,
-                    category: seg_cat,
-                    length: i - seg_start,
-                });
-                seg_start = i;
-                seg_cat = frames[i].primary_category;
-            }
-        }
-        segments.push(Segment {
-            start_idx: seg_start,
-            end_idx: frames.len() - 1,
-            category: seg_cat,
-            length: frames.len() - seg_start,
-        });
-    }
+    // === Dense sampling: draw one ultra-thin hairline per sample point ===
+    // This creates the "fiber optic / light ray waterfall" effect of the reference.
+    // Target: ~400-800 lines for a typical movie (one every 3-7 frames).
+    let target_line_count = 600usize;
+    let sample_step = if frames.len() > target_line_count {
+        (frames.len() / target_line_count).max(1)
+    } else {
+        1
+    };
 
-    // Draw one hairline arc per segment — with design variation
     use std::hash::{Hasher, DefaultHasher};
-    for (seg_idx, seg) in segments.iter().enumerate() {
-        // Map segment center to X position on the strip
-        let seg_center_f = (seg.start_idx as f64 + seg.end_idx as f64) / 2.0;
-        let fx = margin as f64 + (seg_center_f / strip_width as f64) * strip_display_w as f64;
+    for (sample_idx, frame_idx) in (0..frames.len()).step_by(sample_step).enumerate() {
+        let fc = &frames[frame_idx];
+
+        // Map this frame to X position on the strip
+        let fx = margin as f64 + (frame_idx as f64 / strip_width as f64) * strip_display_w as f64;
         let fy = strip_bottom as f64;
 
-        let target_node_x = node_x_positions[seg.category] as f64;
+        let target_node_x = node_x_positions[fc.primary_category] as f64;
 
-        // Control point: variable height for organic feel
-        let mid_x = (fx + target_node_x) / 2.0;
+        // Control point — variable arch height for organic variation
+        let mid_x = (fx + target_node_x) / 0.5; // wider spread for more dramatic arcs
         let h_dist = (target_node_x - fx).abs();
 
-        // Use segment index as pseudo-random seed for variation
+        // Pseudo-random seed for per-line variation
         let mut hasher = DefaultHasher::new();
-        hasher.write_usize(seg_idx);
-        let seed = hasher.finish() as f64 / u64::MAX as f64; // 0..1
+        hasher.write_usize(sample_idx * 31 + frame_idx);
+        let seed = hasher.finish() as f64 / u64::MAX as f64;
 
-        // Pull varies per line: some high-arching, some flatter
-        let pull_base = h_dist * (0.35 + seed * 0.40); // 0.35~0.75 multiplier
-        let ctrl_y_actual = arcs_mid_y - pull_base - seed * arcs_area_h as f64 * 0.08;
+        // Arch height varies: some lines fly high, some stay low
+        let pull_base = h_dist * (0.30 + seed * 0.55); // 0.30~0.85 range
+        let ctrl_y_actual = arcs_mid_y - pull_base - seed * arcs_area_h as f64 * 0.06;
 
-        // Length ratio determines visual weight
-        let len_ratio = (seg.length as f64 / strip_width as f64).min(1.0);
+        // Line properties based on classification strength and seed
+        let strength = fc.primary_strength;
+        let alpha = 0.04 + strength * 0.12 + seed * 0.05;   // 0.04~0.21
+        let thickness = 0.15 + strength * 0.25 + seed * 0.12; // 0.15~0.52
 
-        // === Primary arc: thin but visible ===
-        let alpha_pri = 0.06 + len_ratio * 0.16 + seed * 0.04;   // 0.06~0.26
-        let thick_pri = 0.25 + len_ratio * 0.7 + seed * 0.15;      // 0.25~1.1
+        // Line color: blend between white and the frame's average color
+        // Stronger classification → more saturated color, weaker → more white/gray
+        let color_tint = (strength * 0.6 + seed * 0.25).min(0.75);
+        let base_gray = 190.0 + seed * 40.0; // 190~230 range (light gray base)
+        let lr = (base_gray * (1.0 - color_tint) + fc.avg_r * 255.0 * color_tint).round() as u8;
+        let lg = (base_gray * (1.0 - color_tint) + fc.avg_g * 255.0 * color_tint).round() as u8;
+        let lb = (base_gray * (1.0 - color_tint) + fc.avg_b * 255.0 * color_tint).round() as u8;
 
-        // Color: mostly white/gray, tinted slightly toward target category
-        let cat = &categories[seg.category];
-        let (cr, cg, cb) = cat.display_rgb();
-        // Blend white (200) with category color by segment length influence
-        let tint = (len_ratio * 0.5 + seed * 0.2).min(0.6);
-        let lr = (200.0 as f64 * (1.0 - tint) + cr as f64 * tint).round() as u8;
-        let lg = (200.0 as f64 * (1.0 - tint) + cg as f64 * tint).round() as u8;
-        let lb = (200.0 as f64 * (1.0 - tint) + cb as f64 * tint).round() as u8;
-
+        // Primary hairline
         draw_bezier_arc(
             &mut img, cw, ch,
             (fx, fy),
             (mid_x, ctrl_y_actual),
             (target_node_x, node_y),
             lr, lg, lb,
-            alpha_pri,
-            thick_pri,
+            alpha,
+            thickness,
         );
 
-        // === Secondary ambient arc: very faint, offset control point ===
-        // Only for longer segments (>1% of total) to add depth without clutter
-        if len_ratio > 0.01 && seg_idx % 3 == 0 {
-            let ctrl_y_amb = ctrl_y_actual - seed * arcs_area_h as f64 * 0.05;
+        // Occasional secondary faint line for depth (every 4th sample, long segments only)
+        if sample_idx % 4 == 0 && strength > 0.3 {
+            let ctrl_offset_x = (seed - 0.5) * 30.0;
+            let ctrl_y_2nd = ctrl_y_actual - seed * arcs_area_h as f64 * 0.04;
             draw_bezier_arc(
                 &mut img, cw, ch,
                 (fx, fy),
-                (mid_x + (seed - 0.5) * 20.0, ctrl_y_amb),
+                (mid_x + ctrl_offset_x, ctrl_y_2nd),
                 (target_node_x, node_y),
-                180, 185, 195,     // cool faint gray
-                0.03 + len_ratio * 0.04,
-                0.15 + seed * 0.1,
+                175, 180, 188,       // cool faint gray-blue
+                0.02 + strength * 0.03,
+                0.10 + seed * 0.08,
             );
         }
     }
