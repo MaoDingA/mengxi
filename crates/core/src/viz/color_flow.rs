@@ -310,15 +310,8 @@ pub fn render_color_flow_png(
     let strip_display_w = cw - 2 * margin;
     draw_frame_strip(&mut img, cw, margin, strip_top, strip_display_w, strip_area_h, strip, strip_width, strip_height);
 
-    // LAYER 2: Flow arcs (middle)
+    // LAYER 2: Flow arcs (middle) — segment-based, hairline thin
     let frames = classify_per_frame(strip, strip_width, strip_height, 0.03);
-
-    let max_arcs = 800usize;
-    let step = if frames.len() > max_arcs {
-        (frames.len() / max_arcs).max(1)
-    } else {
-        1
-    };
 
     let categories = ColorCategory::all();
     let n_nodes = categories.len();
@@ -327,45 +320,72 @@ pub fn render_color_flow_png(
         .map(|i| margin + i * node_spacing)
         .collect();
 
-    let ctrl_y = arcs_top as f64 + arcs_area_h as f64 * 0.35;
     let node_y = nodes_top as f64 + nodes_area_h as f64 * 0.18;
+    let arcs_mid_y = arcs_top as f64 + arcs_area_h as f64 * 0.30;
 
-    for (frame_idx, fc) in frames.iter().enumerate() {
-        if frame_idx % step != 0 {
-            continue;
+    // Group consecutive frames by dominant category → segments
+    struct Segment { start_idx: usize, end_idx: usize, category: usize, length: usize }
+    let mut segments: Vec<Segment> = Vec::new();
+    if !frames.is_empty() {
+        let mut seg_start = 0usize;
+        let mut seg_cat = frames[0].primary_category;
+        for i in 1..frames.len() {
+            if frames[i].primary_category != seg_cat {
+                segments.push(Segment {
+                    start_idx: seg_start,
+                    end_idx: i - 1,
+                    category: seg_cat,
+                    length: i - seg_start,
+                });
+                seg_start = i;
+                seg_cat = frames[i].primary_category;
+            }
         }
+        segments.push(Segment {
+            start_idx: seg_start,
+            end_idx: frames.len() - 1,
+            category: seg_cat,
+            length: frames.len() - seg_start,
+        });
+    }
 
-        let fx = margin as f64 + (frame_idx as f64 / strip_width as f64) * strip_display_w as f64;
+    // Draw one hairline arc per segment
+    let base_thickness = 0.3; // hairline thin
+    for seg in &segments {
+        // Map segment center to X position on the strip
+        let seg_center_f = (seg.start_idx as f64 + seg.end_idx as f64) / 2.0;
+        let fx = margin as f64 + (seg_center_f / strip_width as f64) * strip_display_w as f64;
         let fy = strip_bottom as f64;
 
-        let target_node_x = node_x_positions[fc.primary_category] as f64;
-        let cat = &categories[fc.primary_category];
+        let target_node_x = node_x_positions[seg.category] as f64;
 
+        // Control point: pull upward proportional to horizontal distance
         let mid_x = (fx + target_node_x) / 2.0;
-        let pull = (target_node_x - fx).abs() * 0.4;
-        let ctrl_x = mid_x;
-        let ctrl_y_actual = ctrl_y - pull;
+        let pull = (target_node_x - fx).abs() * 0.5;
+        let ctrl_y_actual = arcs_mid_y - pull;
 
-        let (cr, cg, cb) = cat.display_rgb();
-        let alpha = (fc.primary_strength * 0.6 + 0.15).min(0.75);
-        let thickness = 0.4 + fc.primary_strength * 0.8;
+        // Line color: light gray/white (like reference), not saturated category color
+        // Alpha and slight thickness variation based on segment length
+        let len_ratio = (seg.length as f64 / strip_width as f64).min(1.0);
+        let alpha = 0.08 + len_ratio * 0.12;       // 0.08 ~ 0.20
+        let thickness = base_thickness + len_ratio * 0.6; // 0.3 ~ 0.9
 
         draw_bezier_arc(
             &mut img, cw, ch,
             (fx, fy),
-            (ctrl_x, ctrl_y_actual),
+            (mid_x, ctrl_y_actual),
             (target_node_x, node_y),
-            cr, cg, cb,
+            200, 200, 200,   // light gray lines
             alpha,
             thickness,
         );
     }
 
-    // LAYER 3: Glow nodes + labels (bottom)
+    // LAYER 3: Glow nodes + labels (bottom) — size proportional to fraction
     let overall_dist = classify_color_distribution(strip, strip_width, strip_height, 0.03);
 
-    let glow_outer_r = (cw as f64 * 0.055).round() as f64;
-    let glow_inner_r = glow_outer_r * 0.15;
+    // Base radius for a dominant color (~50%+), scaled by sqrt(fraction)
+    let max_glow_radius = (cw as f64 * 0.065).round() as f64;  // ~78px for dominant
 
     for (i, cat) in categories.iter().enumerate() {
         let nx = node_x_positions[i] as f64;
@@ -373,9 +393,15 @@ pub fn render_color_flow_png(
         let (cr, cg, cb) = cat.display_rgb();
         let fraction = overall_dist.categories[i][0];
 
+        // Size scales with sqrt(fraction): 62% → large, 0.2% → tiny dot
+        let size_scale = if fraction > 0.001 { fraction.sqrt() } else { fraction * 10.0 };
+        let glow_outer_r = (max_glow_radius * size_scale).max(6.0);
+        let glow_inner_r = glow_outer_r * 0.12;
+
         draw_glow_circle(&mut img, cw, ch, nx, ny, glow_outer_r, glow_inner_r, cr, cg, cb);
 
-        let core_r = (glow_inner_r * 0.6).max(3.0);
+        // Solid core — always visible even for small fractions
+        let core_r = (glow_inner_r * 0.5).max(2.0);
         fill_solid_circle(&mut img, cw, ch, nx, ny, core_r, cr, cg, cb);
 
         let name = cat.name();
