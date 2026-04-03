@@ -266,7 +266,7 @@ enum Commands {
         /// Video file path
         video: Option<String>,
         /// Output mode: strip, cineiris, both
-        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint", "poster", "colorflow"], default_value = "strip")]
+        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint", "poster"], default_value = "strip")]
         mode: String,
         /// Frame extraction interval in seconds
         #[arg(long, default_value_t = 1.0)]

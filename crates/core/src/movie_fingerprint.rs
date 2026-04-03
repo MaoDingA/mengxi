@@ -486,8 +486,6 @@ pub enum FingerprintMode {
         year: String,
         font_path: Option<String>,
     },
-    /// Color Flow visualization (frame strip + arcs + glow nodes).
-    ColorFlow,
 }
 
 impl FingerprintMode {
@@ -497,7 +495,7 @@ impl FingerprintMode {
             FingerprintMode::Strip
             | FingerprintMode::CinePrint { .. }
             | FingerprintMode::Poster { .. }
-            | FingerprintMode::ColorFlow => None,
+            | _ => None,
             FingerprintMode::CineIris { diameter } | FingerprintMode::Both { diameter } => {
                 Some(*diameter)
             }
@@ -516,8 +514,6 @@ pub struct FingerprintOutput {
     pub cineprint_path: Option<PathBuf>,
     /// Path to the unified poster PNG, if generated.
     pub poster_path: Option<PathBuf>,
-    /// Path to the Color Flow PNG, if generated.
-    pub color_flow_path: Option<PathBuf>,
     /// Number of frames processed.
     pub frame_count: usize,
 }
@@ -542,6 +538,7 @@ pub fn generate_fingerprint(
     frame_paths: &[PathBuf],
     output_dir: &Path,
     mode: &FingerprintMode,
+    video_name: Option<&str>,
 ) -> Result<FingerprintOutput> {
     if frame_paths.is_empty() {
         return Err(MovieFingerprintError::InvalidInput(
@@ -654,38 +651,41 @@ pub fn generate_fingerprint(
         cineiris_path: None,
         cineprint_path: None,
         poster_path: None,
-        color_flow_path: None,
+        // color_flow mode removed
         frame_count,
     };
 
     // Row-averaged strip data is already naturally smooth — no post-processing needed.
     // CineIris uses the same smooth data.
 
+    // Build base filename from video name (fallback: "fingerprint")
+    let video_base = video_name.unwrap_or("fingerprint");
+
     // Generate outputs based on mode
     match mode {
         FingerprintMode::Strip => {
-            let path = output_dir.join("fingerprint_strip.png");
+            let path = output_dir.join(format!("{}_strip.png", video_base));
             save_fingerprint_png(&strip_data, strip_width, frame_height, &path)?;
             output.strip_path = Some(path);
         }
         FingerprintMode::CineIris { diameter } => {
             let transformed = cineiris_transform(&strip_data, strip_width, frame_height, *diameter)?;
-            let path = output_dir.join("fingerprint_cineiris.png");
+            let path = output_dir.join(format!("{}_cineiris.png", video_base));
             save_fingerprint_png(&transformed, *diameter, *diameter, &path)?;
             output.cineiris_path = Some(path);
         }
         FingerprintMode::Both { diameter } => {
-            let strip_path = output_dir.join("fingerprint_strip.png");
+            let strip_path = output_dir.join(format!("{}_strip.png", video_base));
             save_fingerprint_png(&strip_data, strip_width, frame_height, &strip_path)?;
             output.strip_path = Some(strip_path);
 
             let transformed = cineiris_transform(&strip_data, strip_width, frame_height, *diameter)?;
-            let cineiris_path = output_dir.join("fingerprint_cineiris.png");
+            let cineiris_path = output_dir.join(format!("{}_cineiris.png", video_base));
             save_fingerprint_png(&transformed, *diameter, *diameter, &cineiris_path)?;
             output.cineiris_path = Some(cineiris_path);
         }
         FingerprintMode::CinePrint { .. } => {
-            let path = output_dir.join("fingerprint_cineprint.png");
+            let path = output_dir.join(format!("{}_cineprint.png", video_base));
             crate::viz::cineprint::render_cineprint_png(
                 &strip_data, strip_width, frame_height, &thumbnails, &path,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
@@ -725,7 +725,7 @@ pub fn generate_fingerprint(
                 }
             }
 
-            let path = output_dir.join("fingerprint_poster.png");
+            let path = output_dir.join(format!("{}_poster.png", video_base));
             crate::viz::poster::render_poster_png(
                 &strip_data, strip_width, frame_height,
                 &thumbs,
@@ -740,14 +740,6 @@ pub fn generate_fingerprint(
                 &path,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.poster_path = Some(path);
-        }
-        FingerprintMode::ColorFlow => {
-            let path = output_dir.join("fingerprint_colorflow.png");
-            crate::viz::color_flow::render_color_flow_png(
-                &strip_data, strip_width, frame_height,
-                &path,
-            ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
-            output.color_flow_path = Some(path);
         }
     }
 
@@ -920,7 +912,7 @@ mod tests {
     #[test]
     fn test_generate_fingerprint_empty_paths() {
         let dir = TempDir::new().unwrap();
-        let result = generate_fingerprint(&[], dir.path(), &FingerprintMode::Strip);
+        let result = generate_fingerprint(&[], dir.path(), &FingerprintMode::Strip, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no frame paths"));
     }
@@ -938,6 +930,7 @@ mod tests {
             &[frame_path],
             &nested,
             &FingerprintMode::Strip,
+            Some("test_video"),
         );
         assert!(result.is_ok(), "generate_fingerprint should succeed: {:?}", result);
         let output = result.unwrap();
