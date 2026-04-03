@@ -157,8 +157,9 @@ fn draw_text(
 
 use ab_glyph::{Font, PxScale, ScaleFont};
 
-/// Render text using a system TTF font. Supports full Unicode including CJK.
+/// Render text using a TTF font. Supports full Unicode including CJK.
 ///
+/// `font_path`: custom font file path (None = use system default).
 /// `font_size_px`: desired height of capital letters in pixels.
 /// Falls back gracefully to the bitmap ASCII font if no TTF font is found.
 pub(crate) fn draw_text_ttf(
@@ -172,8 +173,9 @@ pub(crate) fn draw_text_ttf(
     r: u8,
     g: u8,
     b: u8,
+    font_path: Option<&str>,
 ) {
-    let font = load_system_font();
+    let font = load_font(font_path);
     let Some(font) = font else {
         let scale = ((font_size_px / 5.0).round() as usize).max(1);
         draw_text(img, w, h, x0, y0, text, scale, r, g, b);
@@ -197,7 +199,7 @@ pub(crate) fn draw_text_ttf(
                 if px >= 0 && (px as usize) < w && py >= 0 && (py as usize) < h {
                     let idx = ((py as usize) * w + (px as usize)) * 3;
                     if idx + 2 < img.len() {
-                        let alpha = v;
+                        let alpha = v as f64;
                         let inv_a = 1.0 - alpha;
                         img[idx]     = (img[idx]     as f64 * inv_a + r as f64 * alpha).round() as u8;
                         img[idx + 1] = (img[idx + 1] as f64 * inv_a + g as f64 * alpha).round() as u8;
@@ -211,10 +213,18 @@ pub(crate) fn draw_text_ttf(
     }
 }
 
-/// Try to load a system font that supports CJK characters.
-/// Prefers PingFang SC (macOS), then STHeiti, then any available font.
-fn load_system_font() -> Option<ab_glyph::FontArc> {
-    // Candidate font paths (platform-specific)
+/// Load a TTF/TTC font from the given path, or fall back to system fonts.
+pub(crate) fn load_font(custom_path: Option<&str>) -> Option<ab_glyph::FontArc> {
+    // Try custom path first
+    if let Some(path) = custom_path {
+        if let Ok(data) = std::fs::read(path) {
+            if let Ok(font) = ab_glyph::FontArc::try_from_vec(data) {
+                return Some(font);
+            }
+        }
+    }
+
+    // Fall back to system fonts
     #[cfg(target_os = "macos")]
     let candidates = [
         "/System/Library/Fonts/PingFang.ttc",
@@ -238,10 +248,16 @@ fn load_system_font() -> Option<ab_glyph::FontArc> {
     None
 }
 
-/// Measure the pixel width of a string rendered with the system TTF font.
+/// Try to load a system font that supports CJK characters.
+/// Prefers PingFang SC (macOS), then STHeiti, then any available font.
+fn load_system_font() -> Option<ab_glyph::FontArc> {
+    load_font(None)
+}
+
+/// Measure the pixel width of a string rendered with the given TTF font.
 /// Falls back to bitmap font width estimation if no TTF available.
-pub(crate) fn measure_text_width(text: &str, font_size_px: f32) -> usize {
-    let font = match load_system_font() {
+pub(crate) fn measure_text_width(text: &str, font_size_px: f32, font_path: Option<&str>) -> usize {
+    let font = match load_font(font_path) {
         Some(f) => f,
         None => {
             // Fallback: estimate from bitmap font (4px per char at scale 1)

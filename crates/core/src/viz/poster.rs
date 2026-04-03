@@ -16,6 +16,7 @@ pub struct PosterMetadata {
     pub director: String,
     pub year: String,
     pub duration_min: usize,
+    pub font_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -85,32 +86,36 @@ pub fn render_poster_png(
     // ================================================================
     // 1. HEADER: Title (left large) + colorist/director (right stacked)
     // ================================================================
+    let fp = metadata.font_path.as_deref();
     let title_size = 52.0; // large title in pixels
     draw_text_ttf(
         &mut img, cw, ch,
         margin, margin + 8,
         &metadata.title,
         title_size, TXT_R, TXT_G, TXT_B,
+        fp,
     );
 
     // Right side: colorist (top line) + director (bottom line)
     let right_x = cw - margin;
     let name_size = 16.0;
     // Measure and draw colorist — right-aligned
-    let colorist_w = measure_text_width(&metadata.colorist, name_size);
+    let colorist_w = measure_text_width(&metadata.colorist, name_size, fp);
     draw_text_ttf(
         &mut img, cw, ch,
         right_x.saturating_sub(colorist_w), margin + 8,
         &metadata.colorist,
         name_size, TXT_R, TXT_G, TXT_B,
+        fp,
     );
     // Director — right-aligned, below colorist
-    let dir_w = measure_text_width(&metadata.director, name_size);
+    let dir_w = measure_text_width(&metadata.director, name_size, fp);
     draw_text_ttf(
         &mut img, cw, ch,
         right_x.saturating_sub(dir_w), margin + 8 + (name_size as usize) + 6,
         &metadata.director,
         name_size, TXT_R, TXT_G, TXT_B,
+        fp,
     );
 
     // Header separator line
@@ -122,11 +127,11 @@ pub fn render_poster_png(
     // ================================================================
     let sub_y = margin + header_h + 12;
     let dur_str = format!("{}min", metadata.duration_min);
-    draw_text_ttf(&mut img, cw, ch, margin, sub_y, &dur_str, 14.0, TXT_R, TXT_G, TXT_B);
+    draw_text_ttf(&mut img, cw, ch, margin, sub_y, &dur_str, 14.0, TXT_R, TXT_G, TXT_B, fp);
 
     let year_str = metadata.year.clone();
-    let year_w = measure_text_width(&year_str, 14.0);
-    draw_text_ttf(&mut img, cw, ch, right_x.saturating_sub(year_w), sub_y, &year_str, 14.0, TXT_R, TXT_G, TXT_B);
+    let year_w = measure_text_width(&year_str, 14.0, fp);
+    draw_text_ttf(&mut img, cw, ch, right_x.saturating_sub(year_w), sub_y, &year_str, 14.0, TXT_R, TXT_G, TXT_B, fp);
 
     // ================================================================
     // 3. MAIN AREA: CineIris circle (centered)
@@ -186,7 +191,7 @@ pub fn render_poster_png(
     let ft_y = footer_top_y + 12;
 
     // Studio/creator label (left)
-    draw_text_ttf(&mut img, cw, ch, margin, ft_y, "FADEVYIN.", 14.0, TXT_R, TXT_G, TXT_B);
+    draw_text_ttf(&mut img, cw, ch, margin, ft_y, "FADEVYIN.", 14.0, TXT_R, TXT_G, TXT_B, fp);
 
     // Color palette bar (right) — based on color distribution classification
     let palette_bar_w = 120usize;

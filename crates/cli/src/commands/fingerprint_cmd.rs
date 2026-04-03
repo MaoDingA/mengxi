@@ -12,6 +12,7 @@ pub fn execute(
     director: Option<String>,
     colorist: Option<String>,
     year: Option<String>,
+    font: Option<String>,
 ) {
     let is_json = format == "json";
 
@@ -194,7 +195,9 @@ pub fn execute(
             director: resolved_director,
             colorist: resolved_colorist,
             year: resolved_year,
+            font_path: font,
         },
+        "colorflow" => mengxi_core::movie_fingerprint::FingerprintMode::ColorFlow,
         _ => unreachable!("clap validates mode values"),
     };
 
@@ -226,6 +229,9 @@ pub fn execute(
                 if let Some(ref poster_path) = result.poster_path {
                     json_out["poster_path"] = serde_json::json!(poster_path.to_string_lossy());
                 }
+                if let Some(ref color_flow_path) = result.color_flow_path {
+                    json_out["color_flow_path"] = serde_json::json!(color_flow_path.to_string_lossy());
+                }
                 println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
             } else {
                 if let Some(ref strip_path) = result.strip_path {
@@ -239,6 +245,9 @@ pub fn execute(
                 }
                 if let Some(ref poster_path) = result.poster_path {
                     eprintln!("Poster fingerprint: {}", poster_path.display());
+                }
+                if let Some(ref color_flow_path) = result.color_flow_path {
+                    eprintln!("Color Flow fingerprint: {}", color_flow_path.display());
                 }
                 eprintln!("Frames processed: {}", result.frame_count);
             }

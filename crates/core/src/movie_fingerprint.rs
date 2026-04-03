@@ -484,7 +484,10 @@ pub enum FingerprintMode {
         director: String,
         colorist: String,
         year: String,
+        font_path: Option<String>,
     },
+    /// Color Flow visualization (frame strip + arcs + glow nodes).
+    ColorFlow,
 }
 
 impl FingerprintMode {
@@ -493,7 +496,8 @@ impl FingerprintMode {
         match self {
             FingerprintMode::Strip
             | FingerprintMode::CinePrint { .. }
-            | FingerprintMode::Poster { .. } => None,
+            | FingerprintMode::Poster { .. }
+            | FingerprintMode::ColorFlow => None,
             FingerprintMode::CineIris { diameter } | FingerprintMode::Both { diameter } => {
                 Some(*diameter)
             }
@@ -512,6 +516,8 @@ pub struct FingerprintOutput {
     pub cineprint_path: Option<PathBuf>,
     /// Path to the unified poster PNG, if generated.
     pub poster_path: Option<PathBuf>,
+    /// Path to the Color Flow PNG, if generated.
+    pub color_flow_path: Option<PathBuf>,
     /// Number of frames processed.
     pub frame_count: usize,
 }
@@ -648,6 +654,7 @@ pub fn generate_fingerprint(
         cineiris_path: None,
         cineprint_path: None,
         poster_path: None,
+        color_flow_path: None,
         frame_count,
     };
 
@@ -684,7 +691,7 @@ pub fn generate_fingerprint(
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.cineprint_path = Some(path);
         }
-        FingerprintMode::Poster { title, director, colorist, year } => {
+        FingerprintMode::Poster { title, director, colorist, year, font_path } => {
             // Collect thumbnails for the poster's mini preview area
             let thumb_interval = (frame_paths.len() / 12usize).max(1);
             let mut thumbs = Vec::new();
@@ -727,11 +734,20 @@ pub fn generate_fingerprint(
                     director: director.clone(),
                     colorist: colorist.clone(),
                     year: year.clone(),
-                    duration_min: frame_count / 60, // approximate: 1 frame ≈ 1 sec
+                    duration_min: frame_count / 60,
+                    font_path: font_path.clone(),
                 },
                 &path,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.poster_path = Some(path);
+        }
+        FingerprintMode::ColorFlow => {
+            let path = output_dir.join("fingerprint_colorflow.png");
+            crate::viz::color_flow::render_color_flow_png(
+                &strip_data, strip_width, frame_height,
+                &path,
+            ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
+            output.color_flow_path = Some(path);
         }
     }
 

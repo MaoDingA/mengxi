@@ -266,7 +266,7 @@ enum Commands {
         /// Video file path
         video: Option<String>,
         /// Output mode: strip, cineiris, both
-        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint", "poster"], default_value = "strip")]
+        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint", "poster", "colorflow"], default_value = "strip")]
         mode: String,
         /// Frame extraction interval in seconds
         #[arg(long, default_value_t = 1.0)]
@@ -295,6 +295,9 @@ enum Commands {
         /// Release year for poster mode
         #[arg(long)]
         year: Option<String>,
+        /// Custom font file path for poster mode (TTF/TTC/OTF)
+        #[arg(long)]
+        font: Option<String>,
     },
     /// Detect scene boundaries in a fingerprint strip image
     #[command(name = "scene-detect")]
@@ -623,8 +626,8 @@ fn main() {
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
         }
-        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year }) => {
-            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year);
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year, font }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year, font);
         }
         Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
             commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);

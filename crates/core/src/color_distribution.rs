@@ -21,7 +21,7 @@ fn srgb_gamma_decode(c: f64) -> f64 {
 
 /// Linear sRGB → Oklab (single pixel)
 #[inline]
-fn srgb_to_oklab_pixel(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+pub(crate) fn srgb_to_oklab_pixel(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     let lr = srgb_gamma_decode(r);
     let lg = srgb_gamma_decode(g);
     let lb = srgb_gamma_decode(b);
@@ -78,7 +78,7 @@ pub struct ColorDistribution {
 // Classification
 // ---------------------------------------------------------------------------
 
-fn classify_pixel(l: f64, a: f64, b: f64, min_chroma: f64) -> Option<ColorCategory> {
+pub(crate) fn classify_pixel(l: f64, a: f64, b: f64, min_chroma: f64) -> Option<ColorCategory> {
     let chroma = (a * a + b * b).sqrt();
     if chroma < min_chroma {
         return None;
