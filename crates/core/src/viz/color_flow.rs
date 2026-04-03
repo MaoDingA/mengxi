@@ -285,17 +285,18 @@ pub fn render_color_flow_png(
     const BG_G: u8 = 10;
     const BG_B: u8 = 10;
 
-    // --- Region heights ---
-    let strip_area_h: usize = (ch as f64 * 0.12).round() as usize;
-    let arcs_area_h: usize = (ch as f64 * 0.58).round() as usize;
-    let nodes_area_h: usize = ch - margin - strip_area_h - arcs_area_h - margin;
+    // --- Region heights (compressed: strip compact, arcs fill, nodes roomy) ---
+    let strip_area_h: usize = (ch as f64 * 0.07).round() as usize;   // ~126px — compact
+    let arcs_area_h: usize = (ch as f64 * 0.63).round() as usize;   // ~1134px — main visual
+    let nodes_area_h: usize = ch - margin - strip_area_h - arcs_area_h - margin; // remainder
 
     let strip_top = margin;
     let strip_bottom = strip_top + strip_area_h;
-    let arcs_top = strip_bottom;
+    let arcs_top = strip_bottom;           // no gap between strip and arcs
     let arcs_bottom = arcs_top + arcs_area_h;
-    let nodes_top = arcs_bottom;
-    let nodes_label_y = nodes_top + (nodes_area_h * 70 / 100);
+    let nodes_top = arcs_bottom;            // no gap between arcs and nodes
+    let node_y = nodes_top as f64 + nodes_area_h as f64 * 0.12;     // nodes higher up
+    let nodes_label_y = nodes_top as f64 + nodes_area_h as f64 * 0.38; // labels close under nodes
     let watermark_y = ch - margin - 20;
 
     // --- Allocate black background ---
@@ -320,8 +321,7 @@ pub fn render_color_flow_png(
         .map(|i| margin + i * node_spacing)
         .collect();
 
-    let node_y = nodes_top as f64 + nodes_area_h as f64 * 0.18;
-    let arcs_mid_y = arcs_top as f64 + arcs_area_h as f64 * 0.30;
+    let arcs_mid_y = arcs_top as f64 + arcs_area_h as f64 * 0.25;
 
     // Group consecutive frames by dominant category → segments
     struct Segment { start_idx: usize, end_idx: usize, category: usize, length: usize }
@@ -349,9 +349,9 @@ pub fn render_color_flow_png(
         });
     }
 
-    // Draw one hairline arc per segment
-    let base_thickness = 0.3; // hairline thin
-    for seg in &segments {
+    // Draw one hairline arc per segment — with design variation
+    use std::hash::{Hasher, DefaultHasher};
+    for (seg_idx, seg) in segments.iter().enumerate() {
         // Map segment center to X position on the strip
         let seg_center_f = (seg.start_idx as f64 + seg.end_idx as f64) / 2.0;
         let fx = margin as f64 + (seg_center_f / strip_width as f64) * strip_display_w as f64;
@@ -359,26 +359,59 @@ pub fn render_color_flow_png(
 
         let target_node_x = node_x_positions[seg.category] as f64;
 
-        // Control point: pull upward proportional to horizontal distance
+        // Control point: variable height for organic feel
         let mid_x = (fx + target_node_x) / 2.0;
-        let pull = (target_node_x - fx).abs() * 0.5;
-        let ctrl_y_actual = arcs_mid_y - pull;
+        let h_dist = (target_node_x - fx).abs();
 
-        // Line color: light gray/white (like reference), not saturated category color
-        // Alpha and slight thickness variation based on segment length
+        // Use segment index as pseudo-random seed for variation
+        let mut hasher = DefaultHasher::new();
+        hasher.write_usize(seg_idx);
+        let seed = hasher.finish() as f64 / u64::MAX as f64; // 0..1
+
+        // Pull varies per line: some high-arching, some flatter
+        let pull_base = h_dist * (0.35 + seed * 0.40); // 0.35~0.75 multiplier
+        let ctrl_y_actual = arcs_mid_y - pull_base - seed * arcs_area_h as f64 * 0.08;
+
+        // Length ratio determines visual weight
         let len_ratio = (seg.length as f64 / strip_width as f64).min(1.0);
-        let alpha = 0.08 + len_ratio * 0.12;       // 0.08 ~ 0.20
-        let thickness = base_thickness + len_ratio * 0.6; // 0.3 ~ 0.9
+
+        // === Primary arc: thin but visible ===
+        let alpha_pri = 0.06 + len_ratio * 0.16 + seed * 0.04;   // 0.06~0.26
+        let thick_pri = 0.25 + len_ratio * 0.7 + seed * 0.15;      // 0.25~1.1
+
+        // Color: mostly white/gray, tinted slightly toward target category
+        let cat = &categories[seg.category];
+        let (cr, cg, cb) = cat.display_rgb();
+        // Blend white (200) with category color by segment length influence
+        let tint = (len_ratio * 0.5 + seed * 0.2).min(0.6);
+        let lr = (200.0 as f64 * (1.0 - tint) + cr as f64 * tint).round() as u8;
+        let lg = (200.0 as f64 * (1.0 - tint) + cg as f64 * tint).round() as u8;
+        let lb = (200.0 as f64 * (1.0 - tint) + cb as f64 * tint).round() as u8;
 
         draw_bezier_arc(
             &mut img, cw, ch,
             (fx, fy),
             (mid_x, ctrl_y_actual),
             (target_node_x, node_y),
-            200, 200, 200,   // light gray lines
-            alpha,
-            thickness,
+            lr, lg, lb,
+            alpha_pri,
+            thick_pri,
         );
+
+        // === Secondary ambient arc: very faint, offset control point ===
+        // Only for longer segments (>1% of total) to add depth without clutter
+        if len_ratio > 0.01 && seg_idx % 3 == 0 {
+            let ctrl_y_amb = ctrl_y_actual - seed * arcs_area_h as f64 * 0.05;
+            draw_bezier_arc(
+                &mut img, cw, ch,
+                (fx, fy),
+                (mid_x + (seed - 0.5) * 20.0, ctrl_y_amb),
+                (target_node_x, node_y),
+                180, 185, 195,     // cool faint gray
+                0.03 + len_ratio * 0.04,
+                0.15 + seed * 0.1,
+            );
+        }
     }
 
     // LAYER 3: Glow nodes + labels (bottom) — size proportional to fraction
@@ -409,7 +442,7 @@ pub fn render_color_flow_png(
         let name_w = measure_text_width(name, font_size, None);
         draw_text_ttf(&mut img, cw, ch,
             (nx - name_w as f64 / 2.0).round() as usize,
-            nodes_label_y,
+            nodes_label_y.round() as usize,
             name, font_size, 200, 200, 200, None);
 
         let pct_str = format!("{:.1}%", fraction * 100.0);
@@ -417,7 +450,7 @@ pub fn render_color_flow_png(
         let pct_w = measure_text_width(&pct_str, pct_size, None);
         draw_text_ttf(&mut img, cw, ch,
             (nx - pct_w as f64 / 2.0).round() as usize,
-            nodes_label_y + 18,
+            (nodes_label_y + 18.0).round() as usize,
             &pct_str, pct_size, 140, 140, 140, None);
     }
 
