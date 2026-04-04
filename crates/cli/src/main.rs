@@ -304,6 +304,9 @@ enum Commands {
         /// Custom font file path for poster mode (TTF/TTC/OTF)
         #[arg(long)]
         font: Option<String>,
+        /// Show watermark logo (poster mode only, default: true)
+        #[arg(long)]
+        watermark: Option<bool>,
     },
     /// Detect scene boundaries in a fingerprint strip image
     #[command(name = "scene-detect")]
@@ -632,8 +635,8 @@ fn main() {
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
         }
-        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font }) => {
-            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font);
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font, watermark }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font, watermark.unwrap_or(true));
         }
         Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
             commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);

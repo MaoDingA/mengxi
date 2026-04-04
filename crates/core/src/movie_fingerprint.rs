@@ -487,6 +487,7 @@ pub enum FingerprintMode {
         director: String,
         year: String,
         font_path: Option<String>,
+        watermark: bool,         // show embedded logo watermark
     },
 }
 
@@ -706,7 +707,8 @@ pub fn generate_fingerprint(
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.cineprint_path = Some(path);
         }
-        FingerprintMode::Poster { title, project_type, colorist, team, director, year, font_path } => {
+        FingerprintMode::Poster { title, project_type, colorist, team, director, year, font_path, watermark } => {
+            let wm = *watermark;
             // Collect thumbnails for the poster's mini preview area
             let thumb_interval = (frame_paths.len() / 12usize).max(1);
             let mut thumbs = Vec::new();
@@ -753,6 +755,7 @@ pub fn generate_fingerprint(
                     year: year.clone(),
                     duration_min: frame_count / 60,
                     font_path: font_path.clone(),
+                    watermark: wm,
                 },
                 &path,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;

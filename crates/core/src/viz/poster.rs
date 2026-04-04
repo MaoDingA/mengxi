@@ -7,6 +7,9 @@ use super::cineprint::Thumbnail;
 use super::font::{draw_text_scaled, draw_text_ttf, measure_text_width};
 use super::cineprint::{draw_rect, draw_thumbnail_scaled};
 
+/// Embedded watermark image (天工异彩 logo).
+const WATERMARK_PNG: &[u8] = include_bytes!("../../assets/watermark.png");
+
 // ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------
@@ -20,6 +23,7 @@ pub struct PosterMetadata {
     pub year: String,
     pub duration_min: usize,
     pub font_path: Option<String>,
+    pub watermark: bool,        // show embedded logo watermark
 }
 
 // ---------------------------------------------------------------------------
@@ -88,8 +92,8 @@ pub fn render_poster_png(
 
     // ================================================================
     // 1. HEADER: Two-row layout straddling separator line
-    //   Above line:  Project name (left)    Episode (right)     — same size, flush to line
-    //   Below line: Type · Date (left)        Duration (right)   — same size, flush to line
+    //   Above line: [watermark] Project name (left)   Episode (right)
+    //   Below line: Type · Date (left)                 Duration (right)
     // ================================================================
     let fp = metadata.font_path.as_deref();
 
@@ -104,12 +108,22 @@ pub fn render_poster_png(
     let header_line_y = margin + header_h / 2;
     let text_gap = 6; // pixels from text baseline to the line
 
-    // --- Row 1 above line: Project name (left) + Episode (right), same size ---
+    // --- Draw watermark logo: left of separator line, vertically centered in header ---
+    let wm_size = 70; // watermark display size (square-ish)
+    let show_watermark = metadata.watermark;
+    if show_watermark {
+        let wm_y = margin + (header_h - wm_size) / 2; // center in header area
+        draw_watermark(&mut img, cw, ch, margin, wm_y, wm_size);
+    }
+    let line_left = if show_watermark { margin + wm_size + 6 } else { margin }; // separator starts after watermark (tight gap)
+
+    // --- Row 1 above line: Project name (left of line) + Episode (right of line) ---
     let name_size = 36.0;
     let row1_baseline = header_line_y - text_gap;
+    let title_x = line_left;
     draw_text_ttf(
         &mut img, cw, ch,
-        margin, row1_baseline - (name_size as usize),  // adjust for font ascent
+        title_x, row1_baseline - (name_size as usize),
         proj_name,
         name_size, TXT_R, TXT_G, TXT_B,
         fp,
@@ -123,7 +137,8 @@ pub fn render_poster_png(
             episode, name_size, TXT_R, TXT_G, TXT_B, fp);
     }
 
-    draw_hline(&mut img, cw, ch, margin, cw - margin, header_line_y, LINE_R, LINE_G, LINE_B);
+    // Separator line: shortened on left to leave room for watermark
+    draw_hline(&mut img, cw, ch, line_left, cw - margin, header_line_y, LINE_R, LINE_G, LINE_B);
 
     // --- Row 2 below line: Type+date (left) + Duration (right), same size, flush to line ---
     let sub_size = 15.0;
@@ -135,7 +150,7 @@ pub fn render_poster_png(
     } else {
         metadata.year.clone()
     };
-    draw_text_ttf(&mut img, cw, ch, margin, row2_baseline, &type_label, sub_size, TXT_R, TXT_G, TXT_B, fp);
+    draw_text_ttf(&mut img, cw, ch, title_x, row2_baseline, &type_label, sub_size, TXT_R, TXT_G, TXT_B, fp);
 
     let dur_str = format!("{}min", metadata.duration_min);
     let dur_w = measure_text_width(&dur_str, sub_size, fp);
@@ -347,6 +362,51 @@ fn draw_hline(img: &mut [u8], w: usize, h: usize, x0: usize, x1: usize, y: usize
                 img[idx] = r;
                 img[idx + 1] = g;
                 img[idx + 2] = b;
+            }
+        }
+    }
+}
+
+/// Draw the embedded watermark (天工异彩 logo) at the given position with specified size.
+fn draw_watermark(img: &mut [u8], canvas_w: usize, canvas_h: usize, x0: usize, y0: usize, size: usize) {
+    let decoded = image::load_from_memory_with_format(WATERMARK_PNG, image::ImageFormat::Png);
+    let wm = match decoded {
+        Ok(img) => img.to_rgba8(),
+        Err(_) => return,
+    };
+    let (wm_w, wm_h) = (wm.width() as usize, wm.height() as usize);
+
+    // Scale to fit within `size` while preserving aspect ratio
+    let scale = size as f64 / wm_w.max(wm_h) as f64;
+    let dw = (wm_w as f64 * scale).round() as usize;
+    let dh = (wm_h as f64 * scale).round() as usize;
+
+    let wm_raw = wm.as_raw(); // flat RGBA bytes
+
+    for dy in 0..dh {
+        for dx in 0..dw {
+            // Map display coords → watermark coords
+            let sx = (dx as f64 * wm_w as f64 / dw as f64) as usize;
+            let sy = (dy as f64 * wm_h as f64 / dh as f64) as usize;
+            let sx = sx.min(wm_w - 1);
+            let sy = sy.min(wm_h - 1);
+
+            let px = x0 + dx;
+            let py = y0 + dy;
+            if px < canvas_w && py < canvas_h {
+                let src_idx = (sy * wm_w + sx) * 4; // RGBA
+                let alpha = wm_raw[src_idx + 3] as f64 / 255.0;
+                if alpha < 0.02 {
+                    continue; // skip fully transparent pixels
+                }
+
+                let dst = (py * canvas_w + px) * 3;
+                if dst + 2 < img.len() {
+                    let inv_a = 1.0 - alpha;
+                    img[dst]     = (img[dst]     as f64 * inv_a + wm_raw[src_idx] as f64 * alpha).round() as u8;
+                    img[dst + 1] = (img[dst + 1] as f64 * inv_a + wm_raw[src_idx + 1] as f64 * alpha).round() as u8;
+                    img[dst + 2] = (img[dst + 2] as f64 * inv_a + wm_raw[src_idx + 2] as f64 * alpha).round() as u8;
+                }
             }
         }
     }

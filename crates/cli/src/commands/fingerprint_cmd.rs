@@ -15,6 +15,7 @@ pub fn execute(
     project_type: Option<String>,
     year: Option<String>,
     font: Option<String>,
+    watermark: bool,
 ) {
     let is_json = format == "json";
 
@@ -188,7 +189,26 @@ pub fn execute(
         }
     });
 
-    // 4. Build fingerprint mode
+    // 4. Poster mode: show resolved metadata before generating
+    if mode == "poster" && !is_json {
+        let stem_name = video_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        eprintln!("┌─────────────────────────────────────────┐");
+        eprintln!("│  Poster 元信息预览                        │");
+        eprintln!("├─────────────────────────────────────────┤");
+        eprintln!("│  标题   : {}{}", resolved_title, if resolved_title == stem_name { " (来自文件名)" } else { "" });
+        eprintln!("│  类型   : {}", if resolved_project_type.is_empty() { "(未指定)" } else { &resolved_project_type });
+        eprintln!("│  年份   : {}", if resolved_year.is_empty() || resolved_year == "----" { "(未指定)" } else { &resolved_year });
+        eprintln!("│  调光指导: {}", if resolved_colorist.is_empty() || resolved_colorist == "-" { "(未指定)" } else { &resolved_colorist });
+        eprintln!("│  团队   : {}", if resolved_team.is_empty() { "(未指定)" } else { &resolved_team });
+        eprintln!("│  导演   : {}", if resolved_director.is_empty() || resolved_director == "-" { "(未指定)" } else { &resolved_director });
+        eprintln!("└─────────────────────────────────────────┘");
+        if resolved_title == stem_name {
+            eprintln!("提示: 使用 --title 可设置自定义标题（如 \"逐玉 EP01\"）");
+        }
+        eprintln!();
+    }
+
+    // 5. Build fingerprint mode
     let fingerprint_mode = match mode.as_str() {
         "strip" => mengxi_core::movie_fingerprint::FingerprintMode::Strip,
         "cineiris" => mengxi_core::movie_fingerprint::FingerprintMode::CineIris { diameter },
@@ -202,6 +222,7 @@ pub fn execute(
             director: resolved_director,
             year: resolved_year,
             font_path: font,
+            watermark,
         },
         _ => unreachable!("clap validates mode values"),
     };
