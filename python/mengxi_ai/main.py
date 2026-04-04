@@ -82,6 +82,7 @@ def handle_generate_tags(params: dict) -> dict:
         return {"code": "AI_INFERENCE_ERROR", "message": str(e)}
 
 
+
 def handle_ping(params: dict) -> dict:
     """Health check handler."""
     return {"status": "ok"}

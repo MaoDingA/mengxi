@@ -13,7 +13,7 @@ pub struct Thumbnail {
 /// Layout:
 /// ```text
 /// +---+---------------------------+---+
-/// |          "CinePrints"              |
+/// |                                   |
 /// +---+---------------------------+---+
 /// | T |                           | T |
 /// | H |    central vertical strip | H |
@@ -23,7 +23,7 @@ pub struct Thumbnail {
 /// | N |/ \                        | N |
 /// |   |                           |   |
 /// +---+---------------------------+---+
-/// |     "Movie Fingerprint"            |
+/// | [watermark] ● EPxx                |
 /// +---+---------------------------+---+
 /// ```
 pub fn render_cineprint_png(
@@ -32,6 +32,7 @@ pub fn render_cineprint_png(
     strip_height: usize, // = frame height (rows per frame)
     thumbnails: &[Thumbnail],
     output_path: &Path,
+    video_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Layout constants ---
     let padding: usize = 30;
@@ -56,14 +57,7 @@ pub fn render_cineprint_png(
 
     let mut img = vec![0u8; total_width * total_height * 3]; // black background
 
-    // --- Draw title (centered) ---
-    let title_text = "CinePrints";
-    let title_w = title_text.chars().count() * 5;
-    super::font::draw_text_simple(
-        &mut img, total_width, total_height,
-        total_width.saturating_sub(title_w) / 2, padding / 2 + 4,
-        title_text,
-    );
+    // Title area left blank (no text)
 
     // --- Draw rotated strip in center (vertical, top to bottom) ---
     // Strip rotation: original strip is [width x height] (horizontal).
@@ -158,14 +152,48 @@ pub fn render_cineprint_png(
         }
     }
 
-    // --- Draw footer (centered) ---
-    let footer_text = "Movie Fingerprint";
-    let footer_w = footer_text.chars().count() * 5;
-    super::font::draw_text_simple(
+    // --- Draw footer: watermark (left) + dot + EP label ---
+    let footer_y_base = title_h + strip_visual_h + padding + 8;
+
+    // Watermark image (逐玉 logo)
+    const WATERMARK_PNG: &[u8] = include_bytes!("assets/watermark_cineprint.png");
+    let wm_size: usize = 240; // watermark display size
+    let wm_x = padding;
+    let wm_y = footer_y_base;
+    draw_watermark(&mut img, total_width, total_height, wm_x, wm_y, wm_size, WATERMARK_PNG);
+
+    // Circle dot after watermark
+    let dot_cx = wm_x + wm_size + 10;
+    let dot_cy = footer_y_base + wm_size / 2;
+    let dot_r: usize = 16;
+    let dot_ri = dot_r as i32;
+    for dy in -dot_ri..=dot_ri {
+        for dx in -dot_ri..=dot_ri {
+            if (dx * dx + dy * dy) <= (dot_r * dot_r) as i32 {
+                let px = (dot_cx as i32 + dx) as usize;
+                let py = (dot_cy as i32 + dy) as usize;
+                if px < total_width && py < total_height {
+                    let idx = (py * total_width + px) * 3;
+                    if idx + 2 < img.len() {
+                        img[idx] = 180; img[idx + 1] = 140; img[idx + 2] = 100;
+                    }
+                }
+            }
+        }
+    }
+
+    // EP label (e.g. "EP01") using TTF font
+    let ep_label = match video_name {
+        Some(name) => format!("EP{}", name),
+        None => "EP--".to_string(),
+    };
+    let ep_x = dot_cx + dot_r + 22;
+    let ep_y = footer_y_base + wm_size / 2 - 40; // vertically center with watermark
+    super::font::draw_text_ttf(
         &mut img, total_width, total_height,
-        total_width.saturating_sub(footer_w) / 2,
-        title_h + strip_visual_h + padding + 4,
-        footer_text,
+        ep_x, ep_y,
+        &ep_label, 78.0, 180, 140, 100,
+        None, // use default font fallback
     );
 
     // Save PNG
@@ -306,6 +334,50 @@ pub(crate) fn draw_line(
         if e2 <= dx {
             err += dx;
             y += sy;
+        }
+    }
+}
+
+/// Draw a watermark image (RGBA PNG bytes) at the given position with specified size.
+fn draw_watermark(img: &mut [u8], canvas_w: usize, canvas_h: usize, x0: usize, y0: usize, size: usize, png_data: &[u8]) {
+    let decoded = image::load_from_memory_with_format(png_data, image::ImageFormat::Png);
+    let wm = match decoded {
+        Ok(i) => i.to_rgba8(),
+        Err(_) => return,
+    };
+    let (wm_w, wm_h) = (wm.width() as usize, wm.height() as usize);
+
+    // Scale to fit within `size` while preserving aspect ratio
+    let scale = size as f64 / wm_w.max(wm_h) as f64;
+    let dw = (wm_w as f64 * scale).round() as usize;
+    let dh = (wm_h as f64 * scale).round() as usize;
+
+    let wm_raw = wm.as_raw(); // flat RGBA bytes
+
+    for dy in 0..dh {
+        for dx in 0..dw {
+            let sx = (dx as f64 * wm_w as f64 / dw as f64) as usize;
+            let sy = (dy as f64 * wm_h as f64 / dh as f64) as usize;
+            let sx = sx.min(wm_w - 1);
+            let sy = sy.min(wm_h - 1);
+
+            let px = x0 + dx;
+            let py = y0 + dy;
+            if px < canvas_w && py < canvas_h {
+                let src_idx = (sy * wm_w + sx) * 4; // RGBA
+                let alpha = wm_raw[src_idx + 3] as f64 / 255.0;
+                if alpha < 0.02 {
+                    continue; // skip fully transparent pixels
+                }
+
+                let dst = (py * canvas_w + px) * 3;
+                if dst + 2 < img.len() {
+                    let inv_a = 1.0 - alpha;
+                    img[dst]     = (img[dst]     as f64 * inv_a + wm_raw[src_idx] as f64 * alpha).round() as u8;
+                    img[dst + 1] = (img[dst + 1] as f64 * inv_a + wm_raw[src_idx + 1] as f64 * alpha).round() as u8;
+                    img[dst + 2] = (img[dst + 2] as f64 * inv_a + wm_raw[src_idx + 2] as f64 * alpha).round() as u8;
+                }
+            }
         }
     }
 }

@@ -426,6 +426,56 @@ impl PythonBridge {
         Ok(strings)
     }
 
+    /// Enhance a poster PNG with fluorescent color spheres around CineIris circle.
+    pub fn enhance_poster(
+        &mut self,
+        image_path: &str,
+        output_path: &str,
+        fractions: &[f64],
+        canvas_w: u32,
+        canvas_h: u32,
+        iris_cx: i32,
+        iris_cy: i32,
+        iris_r: i32,
+        sphere_base_r: i32,
+        sphere_max_r: i32,
+    ) -> Result<String, AiError> {
+        let request = serde_json::json!({
+            "request_id": uuid_simple(),
+            "method": "enhance_poster",
+            "params": {
+                "image_path": image_path,
+                "output_path": output_path,
+                "fractions": fractions,
+                "canvas_w": canvas_w,
+                "canvas_h": canvas_h,
+                "iris_cx": iris_cx,
+                "iris_cy": iris_cy,
+                "iris_r": iris_r,
+                "sphere_base_r": sphere_base_r,
+                "sphere_max_r": sphere_max_r,
+            }
+        });
+
+        let response = self.send_request(&request)?;
+
+        if response["status"] == "error" {
+            let code = response["error"]["code"].as_str().unwrap_or("UNKNOWN");
+            let message = response["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown error");
+            return Err(map_python_error(code, message));
+        }
+
+        let out_path = response["result"]["output_path"]
+            .as_str()
+            .ok_or_else(|| {
+                AiError::ProtocolError("Response missing 'result.output_path'".into())
+            })?;
+
+        Ok(out_path.to_string())
+    }
+
     /// Ping the subprocess to check liveness.
     pub fn ping(&mut self) -> Result<bool, AiError> {
         let request = serde_json::json!({

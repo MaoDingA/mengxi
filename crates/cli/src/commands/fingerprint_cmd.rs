@@ -1,5 +1,7 @@
 use std::process;
 
+use mengxi_core::python_bridge::PythonBridge;
+
 pub fn execute(
     video: Option<String>,
     mode: String,
@@ -279,6 +281,29 @@ pub fn execute(
                 }
                 if let Some(ref poster_path) = result.poster_path {
                     eprintln!("Poster fingerprint: {}", poster_path.display());
+
+                    // Enhance poster with fluorescent color spheres via Python
+                    if let Some(ref fractions) = result.color_fractions {
+                        const CANVAS_W: u32 = 1200;
+                        const CANVAS_H: u32 = 1800;
+                        let iris_diameter = ((CANVAS_W as f64 * 0.78).min((CANVAS_H as f64 - 435.0) * 0.88)) as i32 / 2 * 2;
+                        let iris_r = iris_diameter / 2;
+                        let iris_cx = (CANVAS_W / 2) as i32;
+                        let iris_cy = (160 + (CANVAS_H as i32 - 160 - 275) / 2) as i32;
+
+                        let mut bridge = PythonBridge::new(300, 30, String::new());
+                        match bridge.enhance_poster(
+                            poster_path.to_str().unwrap_or(""),
+                            poster_path.to_str().unwrap_or(""),
+                            fractions,
+                            CANVAS_W, CANVAS_H,
+                            iris_cx, iris_cy, iris_r,
+                            35, 80,
+                        ) {
+                            Ok(_) => eprintln!("Poster enhanced with color spheres"),
+                            Err(e) => eprintln!("Warning: poster enhancement skipped ({})", e),
+                        }
+                    }
                 }
                 eprintln!("Frames processed: {}", result.frame_count);
             }
