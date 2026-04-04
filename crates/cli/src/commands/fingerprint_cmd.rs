@@ -11,6 +11,8 @@ pub fn execute(
     title: Option<String>,
     director: Option<String>,
     colorist: Option<String>,
+    team: Option<String>,
+    project_type: Option<String>,
     year: Option<String>,
     font: Option<String>,
 ) {
@@ -170,6 +172,8 @@ pub fn execute(
 
     let resolved_director = director.unwrap_or_else(|| "-".into());
     let resolved_colorist = colorist.unwrap_or_else(|| "-".into());
+    let resolved_team = team.unwrap_or_else(|| String::new());
+    let resolved_project_type = project_type.unwrap_or_else(|| String::new());
 
     let resolved_year = year.unwrap_or_else(|| {
         // Try to extract year from filename regex, or use file modification time
@@ -192,8 +196,10 @@ pub fn execute(
         "cineprint" => mengxi_core::movie_fingerprint::FingerprintMode::CinePrint { thumbnails: 12 },
         "poster" => mengxi_core::movie_fingerprint::FingerprintMode::Poster {
             title: resolved_title,
-            director: resolved_director,
+            project_type: resolved_project_type,
             colorist: resolved_colorist,
+            team: resolved_team,
+            director: resolved_director,
             year: resolved_year,
             font_path: font,
         },
@@ -207,12 +213,20 @@ pub fn execute(
     // 5. Generate fingerprint
     let video_stem = video_path.file_stem()
         .and_then(|s| s.to_str());
-    match mengxi_core::movie_fingerprint::generate_fingerprint(
+    let gen_result = mengxi_core::movie_fingerprint::generate_fingerprint(
         &frame_paths,
         &output_dir,
         &fingerprint_mode,
         video_stem,
-    ) {
+    );
+
+    // 6. Clean up temp frame directory (always runs, even after error)
+    if let Err(e) = std::fs::remove_dir_all(&frame_dir) {
+        eprintln!("Warning: failed to clean up temp frames: {}", e);
+    }
+
+    // Handle result after cleanup
+    match gen_result {
         Ok(result) => {
             if is_json {
                 let mut json_out = serde_json::json!({
@@ -260,11 +274,6 @@ pub fn execute(
             }
             process::exit(1);
         }
-    }
-
-    // 6. Clean up temp frame directory
-    if let Err(e) = std::fs::remove_dir_all(&frame_dir) {
-        eprintln!("Warning: failed to clean up temp frames: {}", e);
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::color_distribution::{classify_color_distribution, ColorCategory, NUM_CATEGORIES};
+use crate::color_scatter::extract_frame_scatter;
 use crate::movie_fingerprint::cineiris_transform;
 use std::path::Path;
 
@@ -12,7 +13,9 @@ use super::cineprint::{draw_rect, draw_thumbnail_scaled};
 
 pub struct PosterMetadata {
     pub title: String,
+    pub project_type: String,   // e.g., "电影", "电视剧", "纪录片"
     pub colorist: String,
+    pub team: String,           // comma-separated team member names
     pub director: String,
     pub year: String,
     pub duration_min: usize,
@@ -37,7 +40,7 @@ pub struct PosterMetadata {
 /// │                                          │
 /// │  STUDIO.                        ■■■■■■   │  ← footer top
 /// │  ──────────────────────────────────────  │
-/// │  [thumb][thumb]         ══════════════    │  ← footer bottom
+/// │  [ dot cloud ]          ══════════════    │  ← footer bottom
 /// └──────────────────────────────────────────┘
 /// ```
 pub fn render_poster_png(
@@ -65,8 +68,8 @@ pub fn render_poster_png(
     const LINE_B: u8 = 30;
 
     // --- Region heights ---
-    let header_h: usize = 100;
-    let subheader_h: usize = 45;
+    let header_h: usize = 120;
+    let subheader_h: usize = 40;
     let footer_top_h: usize = 55;
     let footer_bottom_h: usize = 220;
     let main_top = margin + header_h + subheader_h;
@@ -84,54 +87,59 @@ pub fn render_poster_png(
     }
 
     // ================================================================
-    // 1. HEADER: Title (left large) + colorist/director (right stacked)
+    // 1. HEADER: Two-row layout straddling separator line
+    //   Above line:  Project name (left)    Episode (right)     — same size, flush to line
+    //   Below line: Type · Date (left)        Duration (right)   — same size, flush to line
     // ================================================================
     let fp = metadata.font_path.as_deref();
-    let title_size = 52.0; // large title in pixels
+
+    // --- Split title into name + episode (last word = episode) ---
+    let (proj_name, episode) = if let Some(last_space) = metadata.title.rfind(' ') {
+        (&metadata.title[..last_space], &metadata.title[last_space + 1..])
+    } else {
+        (metadata.title.as_str(), "")
+    };
+
+    // Separator line at vertical center of header area
+    let header_line_y = margin + header_h / 2;
+    let text_gap = 6; // pixels from text baseline to the line
+
+    // --- Row 1 above line: Project name (left) + Episode (right), same size ---
+    let name_size = 36.0;
+    let row1_baseline = header_line_y - text_gap;
     draw_text_ttf(
         &mut img, cw, ch,
-        margin, margin + 8,
-        &metadata.title,
-        title_size, TXT_R, TXT_G, TXT_B,
+        margin, row1_baseline - (name_size as usize),  // adjust for font ascent
+        proj_name,
+        name_size, TXT_R, TXT_G, TXT_B,
         fp,
     );
 
-    // Right side: colorist (top line) + director (bottom line)
     let right_x = cw - margin;
-    let name_size = 16.0;
-    // Measure and draw colorist — right-aligned
-    let colorist_w = measure_text_width(&metadata.colorist, name_size, fp);
-    draw_text_ttf(
-        &mut img, cw, ch,
-        right_x.saturating_sub(colorist_w), margin + 8,
-        &metadata.colorist,
-        name_size, TXT_R, TXT_G, TXT_B,
-        fp,
-    );
-    // Director — right-aligned, below colorist
-    let dir_w = measure_text_width(&metadata.director, name_size, fp);
-    draw_text_ttf(
-        &mut img, cw, ch,
-        right_x.saturating_sub(dir_w), margin + 8 + (name_size as usize) + 6,
-        &metadata.director,
-        name_size, TXT_R, TXT_G, TXT_B,
-        fp,
-    );
+    if !episode.is_empty() {
+        let ep_w = measure_text_width(episode, name_size, fp);
+        draw_text_ttf(&mut img, cw, ch,
+            right_x.saturating_sub(ep_w), row1_baseline - (name_size as usize),
+            episode, name_size, TXT_R, TXT_G, TXT_B, fp);
+    }
 
-    // Header separator line
-    let header_line_y = margin + header_h - 3;
     draw_hline(&mut img, cw, ch, margin, cw - margin, header_line_y, LINE_R, LINE_G, LINE_B);
 
-    // ================================================================
-    // 2. SUB-HEADER: duration (left) + year (right)
-    // ================================================================
-    let sub_y = margin + header_h + 12;
-    let dur_str = format!("{}min", metadata.duration_min);
-    draw_text_ttf(&mut img, cw, ch, margin, sub_y, &dur_str, 14.0, TXT_R, TXT_G, TXT_B, fp);
+    // --- Row 2 below line: Type+date (left) + Duration (right), same size, flush to line ---
+    let sub_size = 15.0;
+    let row2_baseline = header_line_y + text_gap; // baseline just below the line
+    let type_label = if !metadata.project_type.is_empty() && !metadata.year.is_empty() {
+        format!("{} · {}", metadata.project_type, metadata.year)
+    } else if !metadata.project_type.is_empty() {
+        metadata.project_type.clone()
+    } else {
+        metadata.year.clone()
+    };
+    draw_text_ttf(&mut img, cw, ch, margin, row2_baseline, &type_label, sub_size, TXT_R, TXT_G, TXT_B, fp);
 
-    let year_str = metadata.year.clone();
-    let year_w = measure_text_width(&year_str, 14.0, fp);
-    draw_text_ttf(&mut img, cw, ch, right_x.saturating_sub(year_w), sub_y, &year_str, 14.0, TXT_R, TXT_G, TXT_B, fp);
+    let dur_str = format!("{}min", metadata.duration_min);
+    let dur_w = measure_text_width(&dur_str, sub_size, fp);
+    draw_text_ttf(&mut img, cw, ch, right_x.saturating_sub(dur_w), row2_baseline, &dur_str, sub_size, TXT_R, TXT_G, TXT_B, fp);
 
     // ================================================================
     // 3. MAIN AREA: CineIris circle (centered)
@@ -180,9 +188,17 @@ pub fn render_poster_png(
             }
         }
 
-        // White center hole (radius = 12% of iris radius)
+        // Center hole: fill with polar dot cloud instead of solid white
         let hole_r = (iris_diameter as f64 * 0.12).round() as usize;
-        fill_circle(&mut img, cw, ch, iris_cx as f64, iris_cy as f64, hole_r as f64, 232, 230, 225);
+        // Dark background for contrast inside the hole
+        fill_circle(&mut img, cw, ch, iris_cx as f64, iris_cy as f64, hole_r as f64, 42, 42, 42);
+        // Draw dot cloud inside the hole
+        draw_dot_cloud_in_circle(
+            &mut img, cw, ch,
+            iris_cx, iris_cy,
+            hole_r,
+            strip, strip_width, strip_height,
+        );
     }
 
     // ================================================================
@@ -190,78 +206,36 @@ pub fn render_poster_png(
     // ================================================================
     let ft_y = footer_top_y + 12;
 
-    // Studio/creator label (left)
-    draw_text_ttf(&mut img, cw, ch, margin, ft_y, "FADEVYIN.", 14.0, TXT_R, TXT_G, TXT_B, fp);
-
-    // Color palette bar (right) — based on color distribution classification
-    let palette_bar_w = 120usize;
-    let palette_bar_h = 14usize;
-    let palette_x = cw - margin - palette_bar_w;
-    draw_color_palette_bar(
-        &mut img, cw, ch,
-        palette_x, ft_y,
-        palette_bar_w, palette_bar_h,
-        strip, strip_width, strip_height,
-    );
-
     // Footer top separator line
     let ft_line_y = footer_top_y + footer_top_h - 4;
     draw_hline(&mut img, cw, ch, margin, cw - margin, ft_line_y, LINE_R, LINE_G, LINE_B);
 
     // ================================================================
-    // 5. FOOTER BOTTOM: 2 mini thumbnails (left) + full strip (right)
+    // 5. FOOTER BOTTOM: full-width strip (top) + team name (left) + dot cloud (right)
     // ================================================================
-    let fb_y = footer_bottom_y + 15;
-    let fb_h = footer_bottom_h - 25; // available height for content
+    let fb_top_y = footer_bottom_y + 12;
+    let fb_h_strip = footer_bottom_h - 75;   // upper area for full-width strip
+    let fb_lower_y = fb_top_y + fb_h_strip + 8;
+    let fb_h_lower = footer_bottom_h - fb_h_strip - 25;  // lower area for team + dot cloud
 
-    // Left side: two mini squares
-    let thumb_size = fb_h.min(90); // max 90px per thumbnail
-    let thumb_gap = 12;
-
-    // Mini strip thumbnail (leftmost)
-    draw_mini_strip(&mut img, cw, ch, margin, fb_y, thumb_size, thumb_size, strip, strip_width, strip_height);
-    draw_rect(&mut img, cw, ch, margin, fb_y, thumb_size, thumb_size, 40, 40, 40);
-
-    // Mini CineIris thumbnail (next to it)
-    let thumb2_x = margin + thumb_size + thumb_gap;
-    let mini_iris_d = thumb_size;
-    let mini_iris = match cineiris_transform(strip, strip_width, strip_height, mini_iris_d) {
-        Ok(data) => data,
-        Err(_) => Vec::new(),
-    };
-    if !mini_iris.is_empty() {
-        for py in 0..mini_iris_d {
-            for px in 0..mini_iris_d {
-                let dx = px as isize - mini_iris_d as isize / 2;
-                let dy = py as isize - mini_iris_d as isize / 2;
-                let dist_sq = dx * dx + dy * dy;
-                let r_sq = (mini_iris_d as isize / 2) * (mini_iris_d as isize / 2);
-                if dist_sq > r_sq { continue; }
-                let si = (py * mini_iris_d + px) * 3;
-                let cpx = thumb2_x + px;
-                let cpy = fb_y + py;
-                if cpx < cw && cpy < ch && si + 2 < mini_iris.len() {
-                    let di = (cpy * cw + cpx) * 3;
-                    if di + 2 < img.len() {
-                        img[di] = (mini_iris[si].clamp(0.0, 1.0) * 255.0).round() as u8;
-                        img[di + 1] = (mini_iris[si + 1].clamp(0.0, 1.0) * 255.0).round() as u8;
-                        img[di + 2] = (mini_iris[si + 2].clamp(0.0, 1.0) * 255.0).round() as u8;
-                    }
-                }
-            }
-        }
-        // White hole in mini iris too
-        let mini_hole = (mini_iris_d as f64 * 0.12).round() as usize;
-        fill_circle(&mut img, cw, ch, (thumb2_x + mini_iris_d / 2) as f64, (fb_y + mini_iris_d / 2) as f64, mini_hole as f64, 232, 230, 225);
-    }
-    draw_rect(&mut img, cw, ch, thumb2_x, fb_y, thumb_size, thumb_size, 40, 40, 40);
-
-    // Right side: full horizontal strip (scaled to fit remaining width)
-    let strip_area_x = thumb2_x + thumb_size + thumb_gap + 20;
-    let strip_area_w = cw - margin - strip_area_x;
+    // Row 1: Full-width color strip
+    let strip_area_w = cw - margin * 2;
     if strip_area_w > 10 {
-        draw_mini_strip(&mut img, cw, ch, strip_area_x, fb_y, strip_area_w, fb_h, strip, strip_width, strip_height);
-        draw_rect(&mut img, cw, ch, strip_area_x, fb_y, strip_area_w, fb_h, 40, 40, 40);
+        draw_mini_strip(&mut img, cw, ch, margin, fb_top_y, strip_area_w, fb_h_strip, strip, strip_width, strip_height);
+        draw_rect(&mut img, cw, ch, margin, fb_top_y, strip_area_w, fb_h_strip, 40, 40, 40);
+    }
+
+    // Row 2 left: Colorist (left-aligned)
+    if !metadata.colorist.is_empty() {
+        draw_text_ttf(&mut img, cw, ch, margin, fb_lower_y + 4,
+            &format!("调光指导：{}", metadata.colorist), 14.0, TXT_R, TXT_G, TXT_B, fp);
+    }
+
+    // Row 2 right: Assistant team (right-aligned)
+    if !metadata.team.is_empty() {
+        let asst_w = measure_text_width(&metadata.team, 13.0, fp);
+        draw_text_ttf(&mut img, cw, ch, cw - margin - asst_w, fb_lower_y + 4,
+            &metadata.team, 13.0, TXT_R, TXT_G, TXT_B, fp);
     }
 
     // Save PNG
@@ -274,6 +248,90 @@ pub fn render_poster_png(
     )?;
 
     Ok(())
+}
+
+/// Draw a polar dot cloud inside a circular boundary (used for CineIris center hole).
+fn draw_dot_cloud_in_circle(
+    img: &mut [u8],
+    canvas_w: usize,
+    canvas_h: usize,
+    cx: usize,       // center x of the circle
+    cy: usize,       // center y of the circle
+    radius: usize,   // radius of the circle (dot cloud is clipped to this)
+    strip: &[f64],
+    strip_width: usize,
+    strip_height: usize,
+) {
+    let scatter = match extract_frame_scatter(strip, strip_width, strip_height) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let points = &scatter.points;
+    if points.is_empty() {
+        return;
+    }
+
+    let outer_r = radius as f64;
+    let sample_y = strip_height / 2;
+    let n = points.len().min(strip_width);
+
+    // Compute polar coords + sRGB colors
+    let mut max_chroma = 0.0_f64;
+    let mut thetas = Vec::with_capacity(n);
+    let mut chromas = Vec::with_capacity(n);
+    let mut colors_r = Vec::with_capacity(n);
+    let mut colors_g = Vec::with_capacity(n);
+    let mut colors_b = Vec::with_capacity(n);
+
+    for col in 0..n {
+        let pt = &points[col];
+        let c = (pt.a * pt.a + pt.b * pt.b).sqrt();
+        if c > max_chroma { max_chroma = c; }
+        thetas.push(pt.b.atan2(pt.a));
+        chromas.push(c);
+        let src_idx = (sample_y * strip_width + col) * 3;
+        if src_idx + 2 < strip.len() {
+            colors_r.push((strip[src_idx].clamp(0.0, 1.0) * 255.0).round() as u8);
+            colors_g.push((strip[src_idx + 1].clamp(0.0, 1.0) * 255.0).round() as u8);
+            colors_b.push((strip[src_idx + 2].clamp(0.0, 1.0) * 255.0).round() as u8);
+        } else {
+            colors_r.push(128); colors_g.push(128); colors_b.push(128);
+        }
+    }
+
+    const MAX_DOTS: usize = 120;  // fewer dots for small center area
+    let stride = if n <= MAX_DOTS { 1 } else { n / MAX_DOTS };
+    let effective_max = max_chroma.max(0.005);
+    let chroma_scale = outer_r * 0.85 / effective_max;
+
+    for i in (0..n).step_by(stride.max(1)) {
+        let r = chromas[i] * chroma_scale;
+        let effective_r = if max_chroma < 0.01 {
+            (points[i].l * 0.3 + 0.1) * outer_r * 0.6
+        } else { r };
+
+        let dx = effective_r * thetas[i].cos();
+        let dy = effective_r * thetas[i].sin();
+
+        let jx = (((i as i32).wrapping_mul(13297) & 0xFFFF) as f64 / 65535.0) * 2.5 - 1.25;
+        let jy = (((i as i32).wrapping_mul(38429) & 0xFFFF) as f64 / 65535.0) * 2.5 - 1.25;
+
+        let px = (cx as f64 + dx + jx).round() as i32;
+        let py = (cy as f64 + dy + jy).round() as i32;
+
+        // Only draw if within the circle boundary
+        let dist_sq = ((px - cx as i32) as f64).powi(2) + ((py - cy as i32) as f64).powi(2);
+        if dist_sq > (outer_r - 1.0).powi(2) { continue; }
+
+        if px >= 0 && (px as usize) < canvas_w && py >= 0 && (py as usize) < canvas_h {
+            let idx = (py as usize * canvas_w + px as usize) * 3;
+            if idx + 2 < img.len() {
+                img[idx] = colors_r[i];
+                img[idx + 1] = colors_g[i];
+                img[idx + 2] = colors_b[i];
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -392,5 +450,114 @@ fn draw_color_palette_bar(
             }
         }
         x_off += seg_w;
+    }
+}
+
+/// Draw a polar/radial dot cloud visualization of frame colors.
+///
+/// Each frame becomes one colored dot arranged in polar coordinates:
+///   - Angle (theta) = hue from Oklab atan2(b, a)
+///   - Radius (r)    = chroma sqrt(a^2 + b^2)
+///   - Dot color     = original sRGB color of that frame (center-row sample)
+///   - Background    = dark filled circle for contrast
+fn draw_polar_dot_cloud(
+    img: &mut [u8],
+    canvas_w: usize,
+    canvas_h: usize,
+    x0: usize,
+    y0: usize,
+    size: usize,
+    strip: &[f64],
+    strip_width: usize,
+    strip_height: usize,
+) {
+    // --- Extract per-frame Oklab scatter via FFI ---
+    let scatter = match extract_frame_scatter(strip, strip_width, strip_height) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let points = &scatter.points;
+    if points.is_empty() {
+        return;
+    }
+
+    let cx = x0 + size / 2;
+    let cy = y0 + size / 2;
+    let outer_r = (size / 2) as f64;
+
+    // --- Sample original sRGB colors from strip center row (matches extract_frame_scatter) ---
+    let sample_y = strip_height / 2;
+    let n = points.len().min(strip_width);
+
+    // --- Compute polar coordinates and find max chroma ---
+    let mut max_chroma = 0.0_f64;
+    let mut thetas = Vec::with_capacity(n);
+    let mut chromas = Vec::with_capacity(n);
+    let mut colors_r = Vec::with_capacity(n);
+    let mut colors_g = Vec::with_capacity(n);
+    let mut colors_b = Vec::with_capacity(n);
+
+    for col in 0..n {
+        let pt = &points[col];
+        let c = (pt.a * pt.a + pt.b * pt.b).sqrt();
+        if c > max_chroma {
+            max_chroma = c;
+        }
+        thetas.push(pt.b.atan2(pt.a));
+        chromas.push(c);
+
+        let src_idx = (sample_y * strip_width + col) * 3;
+        if src_idx + 2 < strip.len() {
+            colors_r.push((strip[src_idx].clamp(0.0, 1.0) * 255.0).round() as u8);
+            colors_g.push((strip[src_idx + 1].clamp(0.0, 1.0) * 255.0).round() as u8);
+            colors_b.push((strip[src_idx + 2].clamp(0.0, 1.0) * 255.0).round() as u8);
+        } else {
+            colors_r.push(128);
+            colors_g.push(128);
+            colors_b.push(128);
+        }
+    }
+
+    // --- Draw dark background circle for contrast against off-white poster bg ---
+    fill_circle(img, canvas_w, canvas_h, cx as f64, cy as f64, outer_r, 42, 42, 42);
+
+    // --- Determine scale and stride ---
+    const MAX_DOTS: usize = 300;
+    let stride = if n <= MAX_DOTS { 1 } else { n / MAX_DOTS };
+
+    // Chroma-to-radius mapping: max chroma -> 85% of circle radius
+    let effective_max = max_chroma.max(0.005);
+    let chroma_scale = outer_r * 0.85 / effective_max;
+
+    // --- Draw dots ---
+    for i in (0..n).step_by(stride.max(1)) {
+        let r = chromas[i] * chroma_scale;
+
+        // For monochrome movies, use lightness-based radial scattering
+        let effective_r = if max_chroma < 0.01 {
+            let l_val = points[i].l;
+            (l_val * 0.3 + 0.1) * outer_r * 0.6
+        } else {
+            r
+        };
+
+        let dx = effective_r * thetas[i].cos();
+        let dy = effective_r * thetas[i].sin();
+
+        // Deterministic jitter based on frame index (avoids mechanical ring patterns)
+        let jx = (((i as i32).wrapping_mul(13297) & 0xFFFF) as f64 / 65535.0) * 3.0 - 1.5;
+        let jy = (((i as i32).wrapping_mul(38429) & 0xFFFF) as f64 / 65535.0) * 3.0 - 1.5;
+
+        let px = (cx as f64 + dx + jx).round() as i32;
+        let py = (cy as f64 + dy + jy).round() as i32;
+
+        if px >= 0 && (px as usize) < canvas_w && py >= 0 && (py as usize) < canvas_h {
+            let idx = (py as usize * canvas_w + px as usize) * 3;
+            if idx + 2 < img.len() {
+                img[idx] = colors_r[i];
+                img[idx + 1] = colors_g[i];
+                img[idx + 2] = colors_b[i];
+            }
+        }
     }
 }

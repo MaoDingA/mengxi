@@ -292,6 +292,12 @@ enum Commands {
         /// Colorist / DP name for poster mode
         #[arg(long)]
         colorist: Option<String>,
+        /// Team members (comma-separated) for poster mode
+        #[arg(long)]
+        team: Option<String>,
+        /// Project type for poster mode (e.g., 电影, 电视剧)
+        #[arg(long = "type")]
+        project_type: Option<String>,
         /// Release year for poster mode
         #[arg(long)]
         year: Option<String>,
@@ -626,8 +632,8 @@ fn main() {
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
         }
-        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year, font }) => {
-            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, year, font);
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font);
         }
         Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
             commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);

@@ -481,8 +481,10 @@ pub enum FingerprintMode {
     /// Unified movie fingerprint poster (CineIris circle + strip + metadata).
     Poster {
         title: String,
-        director: String,
+        project_type: String,   // e.g., "电影", "电视剧"
         colorist: String,
+        team: String,           // comma-separated team members
+        director: String,
         year: String,
         font_path: Option<String>,
     },
@@ -582,8 +584,21 @@ pub fn generate_fingerprint(
     };
     let mut thumbnails: Vec<crate::viz::cineprint::Thumbnail> = Vec::new();
 
+    let mut skipped = 0usize;
     for (idx, frame_path) in frame_paths.iter().enumerate() {
-        let (w, h, pixels) = read_ppm_as_rgb64(frame_path)?;
+        let (w, h, pixels) = match read_ppm_as_rgb64(frame_path) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "Warning: skipping corrupt frame {} ({:?}): {}",
+                    idx + 1,
+                    frame_path.file_name(),
+                    e
+                );
+                skipped += 1;
+                continue;
+            }
+        };
         // Pure Rust center column extraction — avoids per-frame FFI overhead
         let col = extract_center_column_rust(&pixels, w, h)?;
 
@@ -691,7 +706,7 @@ pub fn generate_fingerprint(
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.cineprint_path = Some(path);
         }
-        FingerprintMode::Poster { title, director, colorist, year, font_path } => {
+        FingerprintMode::Poster { title, project_type, colorist, team, director, year, font_path } => {
             // Collect thumbnails for the poster's mini preview area
             let thumb_interval = (frame_paths.len() / 12usize).max(1);
             let mut thumbs = Vec::new();
@@ -731,8 +746,10 @@ pub fn generate_fingerprint(
                 &thumbs,
                 &crate::viz::poster::PosterMetadata {
                     title: title.clone(),
-                    director: director.clone(),
+                    project_type: project_type.clone(),
                     colorist: colorist.clone(),
+                    team: team.clone(),
+                    director: director.clone(),
                     year: year.clone(),
                     duration_min: frame_count / 60,
                     font_path: font_path.clone(),
