@@ -266,7 +266,7 @@ enum Commands {
         /// Video file path
         video: Option<String>,
         /// Output mode: strip, cineiris, both
-        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint", "poster"], default_value = "strip")]
+        #[arg(long, value_parser = ["strip", "cineiris", "both", "cineprint"], default_value = "strip")]
         mode: String,
         /// Frame extraction interval in seconds
         #[arg(long, default_value_t = 1.0)]
@@ -283,30 +283,6 @@ enum Commands {
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
-        /// Movie title for poster mode
-        #[arg(long)]
-        title: Option<String>,
-        /// Director name for poster mode
-        #[arg(long)]
-        director: Option<String>,
-        /// Colorist / DP name for poster mode
-        #[arg(long)]
-        colorist: Option<String>,
-        /// Team members (comma-separated) for poster mode
-        #[arg(long)]
-        team: Option<String>,
-        /// Project type for poster mode (e.g., 电影, 电视剧)
-        #[arg(long = "type")]
-        project_type: Option<String>,
-        /// Release year for poster mode
-        #[arg(long)]
-        year: Option<String>,
-        /// Custom font file path for poster mode (TTF/TTC/OTF)
-        #[arg(long)]
-        font: Option<String>,
-        /// Show watermark logo (poster mode only, default: true)
-        #[arg(long)]
-        watermark: Option<bool>,
     },
     /// Detect scene boundaries in a fingerprint strip image
     #[command(name = "scene-detect")]
@@ -635,8 +611,8 @@ fn main() {
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
         }
-        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font, watermark }) => {
-            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, title, director, colorist, team, project_type, year, font, watermark.unwrap_or(true));
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, .. }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format);
         }
         Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
             commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);

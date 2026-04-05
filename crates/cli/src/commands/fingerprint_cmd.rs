@@ -1,7 +1,5 @@
 use std::process;
 
-use mengxi_core::python_bridge::PythonBridge;
-
 pub fn execute(
     video: Option<String>,
     mode: String,
@@ -10,14 +8,6 @@ pub fn execute(
     diameter: usize,
     output: Option<String>,
     format: String,
-    title: Option<String>,
-    director: Option<String>,
-    colorist: Option<String>,
-    team: Option<String>,
-    project_type: Option<String>,
-    year: Option<String>,
-    font: Option<String>,
-    watermark: bool,
 ) {
     let is_json = format == "json";
 
@@ -163,69 +153,12 @@ pub fn execute(
         eprintln!("Extracted {} frames", frame_paths.len());
     }
 
-    // --- Metadata resolution (CLI priority + auto-extraction fallback) ---
-    let resolved_title = title.unwrap_or_else(|| {
-        // Extract from filename stem (e.g., "EP01.mov" -> "EP01")
-        video_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_ascii_uppercase())
-            .unwrap_or_else(|| "FINGERPRINT".into())
-    });
-
-    let resolved_director = director.unwrap_or_else(|| "-".into());
-    let resolved_colorist = colorist.unwrap_or_else(|| "-".into());
-    let resolved_team = team.unwrap_or_else(|| String::new());
-    let resolved_project_type = project_type.unwrap_or_else(|| String::new());
-
-    let resolved_year = year.unwrap_or_else(|| {
-        // Try to extract year from filename regex, or use file modification time
-        let fname = video_path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        // Regex-like: look for 19xx or 20xx pattern
-        if let Some(cap) = regex_find_year(fname) {
-            cap
-        } else {
-            "----".into()
-        }
-    });
-
-    // 4. Poster mode: show resolved metadata before generating
-    if mode == "poster" && !is_json {
-        let stem_name = video_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        eprintln!("┌─────────────────────────────────────────┐");
-        eprintln!("│  Poster 元信息预览                        │");
-        eprintln!("├─────────────────────────────────────────┤");
-        eprintln!("│  标题   : {}{}", resolved_title, if resolved_title == stem_name { " (来自文件名)" } else { "" });
-        eprintln!("│  类型   : {}", if resolved_project_type.is_empty() { "(未指定)" } else { &resolved_project_type });
-        eprintln!("│  年份   : {}", if resolved_year.is_empty() || resolved_year == "----" { "(未指定)" } else { &resolved_year });
-        eprintln!("│  调光指导: {}", if resolved_colorist.is_empty() || resolved_colorist == "-" { "(未指定)" } else { &resolved_colorist });
-        eprintln!("│  团队   : {}", if resolved_team.is_empty() { "(未指定)" } else { &resolved_team });
-        eprintln!("│  导演   : {}", if resolved_director.is_empty() || resolved_director == "-" { "(未指定)" } else { &resolved_director });
-        eprintln!("└─────────────────────────────────────────┘");
-        if resolved_title == stem_name {
-            eprintln!("提示: 使用 --title 可设置自定义标题（如 \"逐玉 EP01\"）");
-        }
-        eprintln!();
-    }
-
     // 5. Build fingerprint mode
     let fingerprint_mode = match mode.as_str() {
         "strip" => mengxi_core::movie_fingerprint::FingerprintMode::Strip,
         "cineiris" => mengxi_core::movie_fingerprint::FingerprintMode::CineIris { diameter },
         "both" => mengxi_core::movie_fingerprint::FingerprintMode::Both { diameter },
         "cineprint" => mengxi_core::movie_fingerprint::FingerprintMode::CinePrint { thumbnails: 12 },
-        "poster" => mengxi_core::movie_fingerprint::FingerprintMode::Poster {
-            title: resolved_title,
-            project_type: resolved_project_type,
-            colorist: resolved_colorist,
-            team: resolved_team,
-            director: resolved_director,
-            year: resolved_year,
-            font_path: font,
-            watermark,
-        },
         _ => unreachable!("clap validates mode values"),
     };
 
@@ -265,9 +198,6 @@ pub fn execute(
                 if let Some(ref cineprint_path) = result.cineprint_path {
                     json_out["cineprint_path"] = serde_json::json!(cineprint_path.to_string_lossy());
                 }
-                if let Some(ref poster_path) = result.poster_path {
-                    json_out["poster_path"] = serde_json::json!(poster_path.to_string_lossy());
-                }
                 println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
             } else {
                 if let Some(ref strip_path) = result.strip_path {
@@ -278,32 +208,6 @@ pub fn execute(
                 }
                 if let Some(ref cineprint_path) = result.cineprint_path {
                     eprintln!("CinePrint fingerprint: {}", cineprint_path.display());
-                }
-                if let Some(ref poster_path) = result.poster_path {
-                    eprintln!("Poster fingerprint: {}", poster_path.display());
-
-                    // Enhance poster with fluorescent color spheres via Python
-                    if let Some(ref fractions) = result.color_fractions {
-                        const CANVAS_W: u32 = 1200;
-                        const CANVAS_H: u32 = 1800;
-                        let iris_diameter = ((CANVAS_W as f64 * 0.78).min((CANVAS_H as f64 - 435.0) * 0.88)) as i32 / 2 * 2;
-                        let iris_r = iris_diameter / 2;
-                        let iris_cx = (CANVAS_W / 2) as i32;
-                        let iris_cy = (160 + (CANVAS_H as i32 - 160 - 275) / 2) as i32;
-
-                        let mut bridge = PythonBridge::new(300, 30, String::new());
-                        match bridge.enhance_poster(
-                            poster_path.to_str().unwrap_or(""),
-                            poster_path.to_str().unwrap_or(""),
-                            fractions,
-                            CANVAS_W, CANVAS_H,
-                            iris_cx, iris_cy, iris_r,
-                            35, 80,
-                        ) {
-                            Ok(_) => eprintln!("Poster enhanced with color spheres"),
-                            Err(e) => eprintln!("Warning: poster enhancement skipped ({})", e),
-                        }
-                    }
                 }
                 eprintln!("Frames processed: {}", result.frame_count);
             }
@@ -321,29 +225,4 @@ pub fn execute(
             process::exit(1);
         }
     }
-}
-
-/// Try to find a 4-digit year pattern in a string.
-fn regex_find_year(s: &str) -> Option<String> {
-    // Simple manual scan for 19xx or 20xx patterns (word-bounded-ish)
-    let bytes = s.as_bytes();
-    for i in 0..bytes.len().saturating_sub(3) {
-        if (i == 0 || !bytes[i - 1].is_ascii_digit())
-            && i + 3 < bytes.len()
-            && (i + 4 >= bytes.len() || !bytes[i + 4].is_ascii_digit())
-        {
-            let c0 = bytes[i];
-            let c1 = bytes[i + 1];
-            let c2 = bytes[i + 2];
-            let c3 = bytes[i + 3];
-            if c0.is_ascii_digit() && c1.is_ascii_digit() && c2.is_ascii_digit() && c3.is_ascii_digit() {
-                let y_str = unsafe { std::str::from_utf8_unchecked(&bytes[i..=i + 3]) };
-                let y: i32 = y_str.parse().unwrap_or(0);
-                if (1900..=2100).contains(&y) {
-                    return Some(y_str.to_string());
-                }
-            }
-        }
-    }
-    None
 }
