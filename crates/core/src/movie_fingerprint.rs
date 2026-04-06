@@ -477,7 +477,15 @@ pub enum FingerprintMode {
     /// Both strip and CineIris outputs.
     Both { diameter: usize },
     /// CinePrint timeline poster (vertical strip with frame thumbnails).
-    CinePrint { thumbnails: usize },
+    CinePrint {
+        thumbnails: usize,
+        /// Watermark image path (None = no watermark)
+        watermark_path: Option<String>,
+        /// Watermark position: "left", "center", or "right"
+        watermark_position: String,
+        /// Whether to show EP episode label
+        show_ep_label: bool,
+    },
 }
 
 impl FingerprintMode {
@@ -559,9 +567,9 @@ pub fn generate_fingerprint(
     let mut frame_height: usize = 0;
     let mut frame_count: usize = 0;
 
-    // For CinePrint mode: collect thumbnails from selected frames
+    // For CinePrint mode: collect thumbnails and optional settings
     let n_thumbs = match mode {
-        FingerprintMode::CinePrint { thumbnails } => *thumbnails,
+        FingerprintMode::CinePrint { thumbnails, .. } => *thumbnails,
         _ => 0,
     };
     let thumb_interval = if n_thumbs > 0 {
@@ -684,11 +692,15 @@ pub fn generate_fingerprint(
             save_fingerprint_png(&transformed, *diameter, *diameter, &cineiris_path)?;
             output.cineiris_path = Some(cineiris_path);
         }
-        FingerprintMode::CinePrint { .. } => {
+        FingerprintMode::CinePrint { thumbnails: _, watermark_path, watermark_position, show_ep_label } => {
             let path = output_dir.join(format!("{}_cineprint.png", video_base));
+            let wm_path_ref: Option<&Path> = watermark_path.as_ref().map(|s| s.as_ref());
             crate::viz::cineprint::render_cineprint_png(
                 &strip_data, strip_width, frame_height, &thumbnails, &path,
                 video_name,
+                wm_path_ref,
+                &watermark_position,
+                *show_ep_label,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.cineprint_path = Some(path);
         }

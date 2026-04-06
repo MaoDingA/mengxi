@@ -107,7 +107,8 @@ pub fn extract_frames_ppm(
     let output_pattern = output_dir.join("frame_%06d.ppm");
 
     let mut cmd = std::process::Command::new("ffmpeg");
-    cmd.arg("-i")
+    cmd.arg("-hwaccel").arg("videotoolbox")  // Apple Silicon GPU decode
+        .arg("-i")
         .arg(video_path)
         .arg("-vf")
         .arg(&fps_filter)

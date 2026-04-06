@@ -33,11 +33,12 @@ pub fn render_cineprint_png(
     thumbnails: &[Thumbnail],
     output_path: &Path,
     video_name: Option<&str>,
+    watermark_path: Option<&Path>,       // None = skip watermark
+    watermark_position: &str,            // "left" | "center" | "right"
+    show_ep_label: bool,                 // false = skip EP label
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Layout constants ---
     let padding: usize = 30;
-    let title_h: usize = 50;
-    let footer_h: usize = 50;
     let target_strip_visual_w: usize = if !thumbnails.is_empty() { thumbnails[0].height } else { 400 }; // match frame height for detail
     let poster_h: usize = 3600; // tall poster for high resolution
 
@@ -51,9 +52,21 @@ pub fn render_cineprint_png(
     let thumb_display_h: usize = if !thumbnails.is_empty() { thumbnails[0].height } else { 90 };
     let thumb_slot_w: usize = thumb_display_w + padding;
 
+    // Top margin: must fit half of first/last thumbnail above/below strip edge
+    let title_h: usize = thumb_display_h / 2 + padding;
+
+    // Bottom margin: must fit watermark (280px) + EP label, or minimal gap
+    let wm_size: usize = 360;
+    let has_footer_content = watermark_path.is_some() || show_ep_label;
+    let footer_h: usize = if has_footer_content {
+        wm_size + padding
+    } else {
+        padding
+    };
+
     // Total poster dimensions (portrait)
     let total_width = thumb_slot_w + padding + target_strip_visual_w + padding + thumb_slot_w + padding * 2;
-    let total_height = title_h + strip_visual_h + footer_h + padding * 2;
+    let total_height = title_h + strip_visual_h + footer_h + padding;
 
     let mut img = vec![0u8; total_width * total_height * 3]; // black background
 
@@ -152,49 +165,85 @@ pub fn render_cineprint_png(
         }
     }
 
-    // --- Draw footer: watermark (left) + dot + EP label ---
-    let footer_y_base = title_h + strip_visual_h + padding + 8;
+    // --- Draw footer: optional watermark + dot + EP label ---
+    let footer_y_base = title_h + strip_visual_h + padding;
+    let wm_y = footer_y_base + (footer_h.saturating_sub(wm_size)) / 2; // vertically center in footer area
 
-    // Watermark image (逐玉 logo)
-    const WATERMARK_PNG: &[u8] = include_bytes!("assets/watermark_cineprint.png");
-    let wm_size: usize = 240; // watermark display size
-    let wm_x = padding;
-    let wm_y = footer_y_base;
-    draw_watermark(&mut img, total_width, total_height, wm_x, wm_y, wm_size, WATERMARK_PNG);
+    // Calculate watermark X position based on user preference (more margin from edge)
+    let wm_x: usize = if watermark_position.contains("center") {
+        total_width / 2usize.saturating_sub(wm_size / 2)
+    } else if watermark_position.contains("right") {
+        total_width.saturating_sub(wm_size + padding)
+    } else {
+        padding + 20 // left with extra margin from edge
+    };
 
-    // Circle dot after watermark
-    let dot_cx = wm_x + wm_size + 10;
-    let dot_cy = footer_y_base + wm_size / 2;
-    let dot_r: usize = 16;
-    let dot_ri = dot_r as i32;
-    for dy in -dot_ri..=dot_ri {
-        for dx in -dot_ri..=dot_ri {
-            if (dx * dx + dy * dy) <= (dot_r * dot_r) as i32 {
-                let px = (dot_cx as i32 + dx) as usize;
-                let py = (dot_cy as i32 + dy) as usize;
-                if px < total_width && py < total_height {
-                    let idx = (py * total_width + px) * 3;
-                    if idx + 2 < img.len() {
-                        img[idx] = 180; img[idx + 1] = 140; img[idx + 2] = 100;
+    // Draw watermark only if path provided
+    if let Some(wm_file) = watermark_path {
+        let wm_data = std::fs::read(wm_file).unwrap_or_default();
+        if !wm_data.is_empty() {
+            draw_watermark(&mut img, total_width, total_height, wm_x, wm_y, wm_size, &wm_data);
+        }
+    }
+
+    // Circle dot and EP label — only draw if we have a watermark or show_ep is true
+    let has_wm = watermark_path.is_some();
+    if has_wm || show_ep_label {
+        let dot_cx = if has_wm { wm_x + wm_size + 24 } else { wm_x };
+        let dot_cy = wm_y + wm_size / 2;
+        let dot_r: usize = 8; // small decorative dot
+        let dot_ri = dot_r as i32;
+
+        // Draw dot (always when watermark present)
+        if has_wm {
+            for dy in -dot_ri..=dot_ri {
+                for dx in -dot_ri..=dot_ri {
+                    if (dx * dx + dy * dy) <= (dot_r * dot_r) as i32 {
+                        let px = (dot_cx as i32 + dx) as usize;
+                        let py = (dot_cy as i32 + dy) as usize;
+                        if px < total_width && py < total_height {
+                            let idx = (py * total_width + px) * 3;
+                            if idx + 2 < img.len() {
+                                img[idx] = 180; img[idx + 1] = 140; img[idx + 2] = 100;
+                            }
+                        }
                     }
                 }
             }
         }
-    }
 
-    // EP label (e.g. "EP01") using TTF font
-    let ep_label = match video_name {
-        Some(name) => format!("EP{}", name),
-        None => "EP--".to_string(),
-    };
-    let ep_x = dot_cx + dot_r + 22;
-    let ep_y = footer_y_base + wm_size / 2 - 40; // vertically center with watermark
-    super::font::draw_text_ttf(
-        &mut img, total_width, total_height,
-        ep_x, ep_y,
-        &ep_label, 78.0, 180, 140, 100,
-        None, // use default font fallback
-    );
+        // Draw EP label only if requested
+        if show_ep_label {
+            // Extract episode number: video name like "EP01_20251120" → "EP01"
+            let ep_label = match video_name {
+                Some(name) => {
+                    // If name starts with "EP", use it directly; otherwise prepend "EP"
+                    if name.starts_with("EP") || name.starts_with("ep") {
+                        // Take up to the first non-digit after "EP/ep"
+                        let mut ep_str = String::new();
+                        let mut found_digit = false;
+                        for c in name.chars() {
+                            if c.is_ascii_digit() { ep_str.push(c); found_digit = true; }
+                            else if found_digit { break; }
+                        }
+                        if ep_str.is_empty() { format!("EP{}", &name[..3.min(name.len())]) }
+                        else { format!("EP{}", ep_str) }
+                    } else {
+                        format!("EP{}", name)
+                    }
+                }
+                None => "EP--".to_string(),
+            };
+            let ep_x = dot_cx + (if has_wm { dot_r + 24 } else { 0 });
+            let ep_y = dot_cy - 50;
+            super::font::draw_text_ttf(
+                &mut img, total_width, total_height,
+                ep_x, ep_y,
+                &ep_label, 110.0, 180, 140, 100,
+                None,
+            );
+        }
+    }
 
     // Save PNG
     image::save_buffer(

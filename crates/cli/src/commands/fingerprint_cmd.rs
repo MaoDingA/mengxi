@@ -8,6 +8,9 @@ pub fn execute(
     diameter: usize,
     output: Option<String>,
     format: String,
+    watermark: Option<String>,
+    wm_position: String,
+    show_ep: bool,
 ) {
     let is_json = format == "json";
 
@@ -158,7 +161,12 @@ pub fn execute(
         "strip" => mengxi_core::movie_fingerprint::FingerprintMode::Strip,
         "cineiris" => mengxi_core::movie_fingerprint::FingerprintMode::CineIris { diameter },
         "both" => mengxi_core::movie_fingerprint::FingerprintMode::Both { diameter },
-        "cineprint" => mengxi_core::movie_fingerprint::FingerprintMode::CinePrint { thumbnails: 12 },
+        "cineprint" => mengxi_core::movie_fingerprint::FingerprintMode::CinePrint {
+            thumbnails: 11,
+            watermark_path: watermark,
+            watermark_position: wm_position.clone(),
+            show_ep_label: show_ep,
+        },
         _ => unreachable!("clap validates mode values"),
     };
 

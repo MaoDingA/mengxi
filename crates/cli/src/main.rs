@@ -283,6 +283,15 @@ enum Commands {
         /// Output format (text, json)
         #[arg(long, value_parser = ["text", "json"], default_value = "text")]
         format: String,
+        /// Watermark image path for CinePrint mode
+        #[arg(long)]
+        watermark: Option<String>,
+        /// Watermark position for CinePrint mode (left, center, right)
+        #[arg(long, value_parser = ["left", "center", "right"], default_value = "right")]
+        wm_position: String,
+        /// Show EP episode label in CinePrint mode
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        show_ep: bool,
     },
     /// Detect scene boundaries in a fingerprint strip image
     #[command(name = "scene-detect")]
@@ -611,8 +620,8 @@ fn main() {
         Some(Commands::Db { command }) => {
             commands::db_cmd::execute(command);
         }
-        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, .. }) => {
-            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format);
+        Some(Commands::FingerprintGen { video, mode, interval, max_frames, diameter, output, format, watermark, wm_position, show_ep, .. }) => {
+            commands::fingerprint_cmd::execute(video, mode, interval, max_frames, diameter, output, format, watermark, wm_position, show_ep);
         }
         Some(Commands::SceneDetect { strip_image, threshold, min_scene_length, max_boundaries, format }) => {
             commands::scene_detect_cmd::execute(strip_image, threshold, min_scene_length, max_boundaries, format);
