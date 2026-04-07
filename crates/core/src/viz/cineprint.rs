@@ -239,7 +239,7 @@ pub fn render_cineprint_png(
             super::font::draw_text_ttf(
                 &mut img, total_width, total_height,
                 ep_x, ep_y,
-                &ep_label, 110.0, 180, 140, 100,
+                &ep_label, 110.0, 135, 206, 250,
                 None,
             );
         }

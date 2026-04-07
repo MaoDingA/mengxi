@@ -669,31 +669,35 @@ pub fn generate_fingerprint(
     // Build base filename from video name (fallback: "fingerprint")
     let video_base = video_name.unwrap_or("fingerprint");
 
+    // Clean filename: strip date suffix "EP01_20241011" → "EP01"
+    let clean_base = video_base
+        .split('_').next().unwrap_or(video_base);
+
     // Generate outputs based on mode
     match mode {
         FingerprintMode::Strip => {
-            let path = output_dir.join(format!("{}_strip.png", video_base));
+            let path = output_dir.join(format!("{}_strip.png", clean_base));
             save_fingerprint_png(&strip_data, strip_width, frame_height, &path)?;
             output.strip_path = Some(path);
         }
         FingerprintMode::CineIris { diameter } => {
             let transformed = cineiris_transform(&strip_data, strip_width, frame_height, *diameter)?;
-            let path = output_dir.join(format!("{}_cineiris.png", video_base));
+            let path = output_dir.join(format!("{}_cineiris.png", clean_base));
             save_fingerprint_png(&transformed, *diameter, *diameter, &path)?;
             output.cineiris_path = Some(path);
         }
         FingerprintMode::Both { diameter } => {
-            let strip_path = output_dir.join(format!("{}_strip.png", video_base));
+            let strip_path = output_dir.join(format!("{}_strip.png", clean_base));
             save_fingerprint_png(&strip_data, strip_width, frame_height, &strip_path)?;
             output.strip_path = Some(strip_path);
 
             let transformed = cineiris_transform(&strip_data, strip_width, frame_height, *diameter)?;
-            let cineiris_path = output_dir.join(format!("{}_cineiris.png", video_base));
+            let cineiris_path = output_dir.join(format!("{}_cineiris.png", clean_base));
             save_fingerprint_png(&transformed, *diameter, *diameter, &cineiris_path)?;
             output.cineiris_path = Some(cineiris_path);
         }
         FingerprintMode::CinePrint { thumbnails: _, watermark_path, watermark_position, show_ep_label } => {
-            let path = output_dir.join(format!("{}_cineprint.png", video_base));
+            let path = output_dir.join(format!("{}_cineprint.png", clean_base));
             let wm_path_ref: Option<&Path> = watermark_path.as_ref().map(|s| s.as_ref());
             crate::viz::cineprint::render_cineprint_png(
                 &strip_data, strip_width, frame_height, &thumbnails, &path,
