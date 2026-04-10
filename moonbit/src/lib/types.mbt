@@ -20,6 +20,13 @@ pub fn cs_acescg() -> Int { 11 }
 pub fn cs_acescct() -> Int { 12 }
 pub fn cs_rec709() -> Int { 20 }
 
+// Display P3 color space (D65 white point, SMPTE RP 431-2 primaries)
+pub fn cs_display_p3() -> Int { 30 }
+
+// Tag 31 RESERVED for future DCI-P3 implementation.
+// DCI-P3 requires Bradford D65->DCI white point adaptation (~15-20 lines)
+// which is out of scope for this plan. Do NOT use tag 31 for other purposes.
+
 // ---------- Helpers ----------
 
 /// Check if a color space tag represents a log-encoded space.
@@ -37,6 +44,7 @@ fn init {
   let _ = cs_acescg()
   let _ = cs_acescct()
   let _ = cs_rec709()
+  let _ = cs_display_p3()
   let _ = is_log_space(0)
 }
 
@@ -53,6 +61,7 @@ test {
   assert_eq(cs_acescg(), 11)
   assert_eq(cs_acescct(), 12)
   assert_eq(cs_rec709(), 20)
+  assert_eq(cs_display_p3(), 30)
 }
 
 test {

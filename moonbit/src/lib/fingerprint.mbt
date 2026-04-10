@@ -10,12 +10,6 @@ fn output_size() -> Int { 64 * 3 + 2 }
 
 // ---------- Internal helpers ----------
 
-fn clamp01(v : Double) -> Double {
-  if v < 0.0 { 0.0 }
-  else if v > 1.0 { 1.0 }
-  else { v }
-}
-
 fn bin_index(v : Double, num_bins : Int) -> Int {
   let clamped = clamp01(v)
   let float_idx = @math.floor(clamped * (num_bins.to_double()))
@@ -53,18 +47,6 @@ fn compute_channel_histogram(
 
 fn luminance(r : Double, g : Double, b : Double) -> Double {
   0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-fn my_sqrt(x : Double) -> Double {
-  if x <= 0.0 { return 0.0 }
-  if x == 1.0 { return 1.0 }
-  let mut z = x
-  let mut i = 0
-  while i < 20 {
-    z = (z + x / z) / 2.0
-    i = i + 1
-  }
-  z
 }
 
 fn compute_mean_stddev(values : FixedArray[Double], len : Int) -> (Double, Double) {

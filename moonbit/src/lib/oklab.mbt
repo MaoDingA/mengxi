@@ -7,6 +7,9 @@
 // ============================================================
 // IEC 61966-2-1 sRGB Transfer Functions
 // CRITICAL: These use the correct piecewise function, NOT simplified gamma 2.2
+// These implement IEC 61966-2-1 exactly (piecewise, power 2.4).
+// Do NOT confuse with color_science.mbt::simple_gamma which uses
+// power 2.2 as an ACES ODT approximation.
 // ============================================================
 
 /// sRGB gamma-encoded value to linear light (inverse EOTF / decoding).
@@ -54,6 +57,14 @@ fn log2(x : Double) -> Double {
     i = i + 1
   }
   y
+}
+
+/// Signed cube root: preserves sign of negative inputs.
+/// Required for HDR-correct Oklab where LMS values can be negative.
+/// cbrt(-x) = -cbrt(x) for real numbers.
+fn signed_cbrt(x : Double) -> Double {
+  if x >= 0.0 { @math.pow(x, 1.0 / 3.0) }
+  else { -@math.pow(-x, 1.0 / 3.0) }
 }
 
 // ============================================================
@@ -122,14 +133,11 @@ fn linear_rgb_to_oklab(r : Double, g : Double, b : Double) -> (Double, Double, D
   let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
   let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
 
-  // Step 2: cube root non-linearity (exact exponent 1/3)
-  // Clamp to 0 before cbrt to prevent NaN from negative LMS values
-  let l_c = if l < 0.0 { 0.0 } else { l }
-  let m_c = if m < 0.0 { 0.0 } else { m }
-  let s_c = if s < 0.0 { 0.0 } else { s }
-  let l_cbrt = @math.pow(l_c, 1.0 / 3.0)
-  let m_cbrt = @math.pow(m_c, 1.0 / 3.0)
-  let s_cbrt = @math.pow(s_c, 1.0 / 3.0)
+  // Step 2: signed cube root non-linearity (HDR-safe)
+  // Uses signed_cbrt which preserves sign: cbrt(-x) = -cbrt(x)
+  let l_cbrt = signed_cbrt(l)
+  let m_cbrt = signed_cbrt(m)
+  let s_cbrt = signed_cbrt(s)
 
   // Step 3: LMS' to Oklab (M2 matrix)
   let ok_l =  0.2104542553 * l_cbrt + 0.7936177850 * m_cbrt - 0.0040720468 * s_cbrt
@@ -146,7 +154,8 @@ fn oklab_to_linear_rgb(ok_l : Double, ok_a : Double, ok_b : Double) -> (Double, 
   let m_prime = ok_l - 0.1055613458 * ok_a - 0.0638541728 * ok_b
   let s_prime = ok_l - 0.0894841775 * ok_a - 1.2914855480 * ok_b
 
-  // Step 2: cube (inverse of cube root)
+  // Step 2: cube (inverse of signed cube root)
+  // Cubing naturally preserves sign, matching signed_cbrt forward.
   let l = l_prime * l_prime * l_prime
   let m = m_prime * m_prime * m_prime
   let s = s_prime * s_prime * s_prime
@@ -374,6 +383,8 @@ fn init {
   let _ = mengxi_oklab_to_acescct(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
   let _ = mengxi_linear_to_oklab(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
   let _ = mengxi_oklab_to_linear(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
+  let _ = mengxi_display_p3_to_oklab(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
+  let _ = mengxi_oklab_to_display_p3(0, FixedArray::make(0, 0.0), 0, FixedArray::make(0, 0.0))
 }
 
 // ============================================================
@@ -931,4 +942,183 @@ test {
   assert_eq(approx_eq(back[0], 2.0), true)
   assert_eq(approx_eq(back[1], 2.0), true)
   assert_eq(approx_eq(back[2], 2.0), true)
+}
+
+// ============================================================
+// HDR Round-Trip Tests (AC1: signed_cbrt fix verification)
+// ============================================================
+
+test {
+  // HDR round-trip: linear_rgb(2.0, 0.5, 0.3) -> oklab -> linear_rgb
+  // Error should be < 1e-6 (signed cbrt preserves sign info)
+  let (l, a, b) = linear_rgb_to_oklab(2.0, 0.5, 0.3)
+  assert_eq(l == l, true)  // NaN check
+  assert_eq(a == a, true)
+  assert_eq(b == b, true)
+  let (r2, g2, b2) = oklab_to_linear_rgb(l, a, b)
+  assert_eq(approx_eq(r2, 2.0), true)
+  assert_eq(approx_eq(g2, 0.5), true)
+  assert_eq(approx_eq(b2, 0.3), true)
+}
+
+test {
+  // HDR round-trip: negative linear RGB (out-of-gamut, valid in scene-referred)
+  let (l, a, b) = linear_rgb_to_oklab(-0.2, 0.8, 1.5)
+  assert_eq(l == l, true)  // NaN check
+  let (r2, g2, b2) = oklab_to_linear_rgb(l, a, b)
+  assert_eq(approx_eq(r2, -0.2), true)
+  assert_eq(approx_eq(g2, 0.8), true)
+  assert_eq(approx_eq(b2, 1.5), true)
+}
+
+test {
+  // Regression: sRGB [0,1] range unchanged by HDR fix
+  let (l, a, b) = srgb_to_oklab(0.5, 0.5, 0.5)
+  let (r2, g2, b2) = oklab_to_srgb(l, a, b)
+  assert_eq(approx_eq(r2, 0.5), true)
+  assert_eq(approx_eq(g2, 0.5), true)
+  assert_eq(approx_eq(b2, 0.5), true)
+}
+
+// ============================================================
+// Compound Display P3 <-> Oklab Functions
+// ============================================================
+
+/// Display P3 (gamma-encoded, IEC 61966-2-1) -> Oklab.
+/// Uses sRGB transfer function (Display P3 shares the same EOTF curve as sRGB).
+/// Two-step conversion: P3 linear -> XYZ(D65) -> sRGB linear -> Oklab.
+fn display_p3_to_oklab(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  // Step 1: Decode gamma (same IEC 61966-2-1 EOTF as sRGB)
+  let lr = srgb_to_linear(r)
+  let lg = srgb_to_linear(g)
+  let lb = srgb_to_linear(b)
+  // Step 2: Display P3 linear -> XYZ (D65)
+  let (x, y, z) = display_p3_to_xyz(lr, lg, lb)
+  // Step 3: XYZ (D65) -> linear sRGB (using shared matrix)
+  let (sr, sg, sb) = xyz_to_srgb(x, y, z)
+  // Step 4: Linear sRGB -> Oklab (using existing M1 + M2 chain)
+  linear_rgb_to_oklab(sr, sg, sb)
+}
+
+/// Oklab -> Display P3 (gamma-encoded).
+fn oklab_to_display_p3(ok_l : Double, ok_a : Double, ok_b : Double) -> (Double, Double, Double) {
+  // Step 1: Oklab -> linear sRGB
+  let (sr, sg, sb) = oklab_to_linear_rgb(ok_l, ok_a, ok_b)
+  // Step 2: Linear sRGB -> XYZ (D65) using shared matrix from color_science.mbt
+  let (x, y, z) = srgb_to_xyz(sr, sg, sb)
+  // Step 3: XYZ (D65) -> Display P3 linear
+  let (pr, pg, pb) = xyz_to_display_p3(x, y, z)
+  // Step 4: Apply sRGB EOTF (same as sRGB for Display P3)
+  (linear_to_srgb(pr), linear_to_srgb(pg), linear_to_srgb(pb))
+}
+
+// ============================================================
+// FFI Exported Functions: Display P3 <-> Oklab
+// ============================================================
+
+/// Display P3 -> Oklab conversion via FFI.
+pub fn mengxi_display_p3_to_oklab(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
+  let mut i = 0
+  while i < num_pixels {
+    let r = data_ptr[i * 3]
+    let g = data_ptr[i * 3 + 1]
+    let b = data_ptr[i * 3 + 2]
+    let (l, a, bv) = display_p3_to_oklab(r, g, b)
+    out_ptr[i * 3] = l
+    out_ptr[i * 3 + 1] = a
+    out_ptr[i * 3 + 2] = bv
+    i = i + 1
+  }
+  data_len
+}
+
+/// Oklab -> Display P3 conversion via FFI.
+pub fn mengxi_oklab_to_display_p3(
+  data_len : Int,
+  data_ptr : FixedArray[Double],
+  out_len : Int,
+  out_ptr : FixedArray[Double]
+) -> Int {
+  if data_len < 3 { return -1 }
+  if out_len < data_len { return -2 }
+  let num_pixels = data_len / 3
+  let mut i = 0
+  while i < num_pixels {
+    let l = data_ptr[i * 3]
+    let a = data_ptr[i * 3 + 1]
+    let bv = data_ptr[i * 3 + 2]
+    let (r, g, b) = oklab_to_display_p3(l, a, bv)
+    out_ptr[i * 3] = r
+    out_ptr[i * 3 + 1] = g
+    out_ptr[i * 3 + 2] = b
+    i = i + 1
+  }
+  data_len
+}
+
+// ============================================================
+// Display P3 Round-Trip Tests
+// ============================================================
+
+test {
+  // Display P3 round-trip: mid-gray
+  let (l, a, b) = display_p3_to_oklab(0.5, 0.5, 0.5)
+  let (r2, g2, b2) = oklab_to_display_p3(l, a, b)
+  assert_eq(approx_eq(r2, 0.5), true)
+  assert_eq(approx_eq(g2, 0.5), true)
+  assert_eq(approx_eq(b2, 0.5), true)
+}
+
+test {
+  // Display P3 round-trip: saturated red (P3 red is more vivid than sRGB)
+  let (l, a, b) = display_p3_to_oklab(1.0, 0.0, 0.0)
+  let (r2, g2, b2) = oklab_to_display_p3(l, a, b)
+  assert_eq(approx_eq(r2, 1.0), true)
+  assert_eq(approx_eq(g2, 0.0), true)
+  assert_eq(approx_eq(b2, 0.0), true)
+}
+
+test {
+  // Display P3: D65 white -> Oklab ~(1, 0, 0)
+  let (l, a, b) = display_p3_to_oklab(1.0, 1.0, 1.0)
+  assert_eq(approx_eq(l, 1.0), true)
+  assert_eq(approx_eq(a, 0.0), true)
+  assert_eq(approx_eq(b, 0.0), true)
+}
+
+test {
+  // FFI: display_p3_to_oklab basic test
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 1.0; data[1] = 0.0; data[2] = 0.0
+  data[3] = 0.5; data[4] = 0.5; data[5] = 0.5
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_display_p3_to_oklab(6, data, 6, out)
+  assert_eq(result, 6)
+  assert_eq(approx_eq(out[3], 1.0), true)
+  assert_eq(approx_eq(out[4], 0.0), true)
+  assert_eq(approx_eq(out[5], 0.0), true)
+}
+
+test {
+  // FFI: oklab_to_display_p3 round-trip
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 0.7; data[1] = 0.2; data[2] = -0.1
+  data[3] = 0.4; data[4] = 0.0; data[5] = 0.05
+  let mid = FixedArray::make(6, 0.0)
+  let r1 = mengxi_display_p3_to_oklab(6, data, 6, mid)
+  assert_eq(r1, 6)
+  let back = FixedArray::make(6, 0.0)
+  let r2 = mengxi_oklab_to_display_p3(6, mid, 6, back)
+  assert_eq(r2, 6)
+  assert_eq(approx_eq(back[0], 0.7), true)
+  assert_eq(approx_eq(back[1], 0.2), true)
+  assert_eq(approx_eq(back[2], -0.1), true)
 }

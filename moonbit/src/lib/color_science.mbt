@@ -83,29 +83,106 @@ fn apply_rrt(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
 
 // ---------- ACES ODT (Output Device Transform) for Rec.709 ----------
 
-/// sRGB gamma (linear to display): x^(1/2.2)
-fn srgb_gamma(x : Double) -> Double {
+/// Simple gamma (power 2.2 approximation) for ACES ODT output.
+/// NOTE: This is NOT IEC 61966-2-1 sRGB. It is a simplified transfer function
+/// used in the ACES Reference Rendering Transform output stage. For correct
+/// sRGB OETF/EOTF, see oklab.mbt::srgb_to_linear / linear_to_srgb.
+fn simple_gamma(x : Double) -> Double {
   if x <= 0.0 { return 0.0 }
   @math.pow(x, 1.0 / 2.2)
 }
 
-/// Inverse sRGB gamma (display to linear): x^2.2
-fn srgb_gamma_inverse(x : Double) -> Double {
+/// Inverse simple gamma (display to linear): x^2.2
+/// NOTE: This is NOT IEC 61966-2-1 sRGB. It is a simplified transfer function
+/// used in the ACES Reference Rendering Transform output stage. For correct
+/// sRGB OETF/EOTF, see oklab.mbt::srgb_to_linear / linear_to_srgb.
+fn simple_gamma_inverse(x : Double) -> Double {
   if x <= 0.0 { return 0.0 }
   @math.pow(x, 2.2)
 }
 
-/// Clamp value to [0.0, 1.0].
-fn clamp_zero_one(x : Double) -> Double {
-  if x < 0.0 { 0.0 }
-  else if x > 1.0 { 1.0 }
-  else { x }
+// ---------- Shared sRGB <-> XYZ (D65) matrices (IEC 61966-2-1) ----------
+// These are used by both Oklab core transforms AND Display P3 compound conversions.
+// Extracted to single source of truth per Principle 4.
+
+fn srgb_to_xyz_m00() -> Double { 0.4124564 }
+fn srgb_to_xyz_m01() -> Double { 0.3575761 }
+fn srgb_to_xyz_m02() -> Double { 0.1804375 }
+fn srgb_to_xyz_m10() -> Double { 0.2126729 }
+fn srgb_to_xyz_m11() -> Double { 0.7151522 }
+fn srgb_to_xyz_m12() -> Double { 0.0721750 }
+fn srgb_to_xyz_m20() -> Double { 0.0193339 }
+fn srgb_to_xyz_m21() -> Double { 0.1191920 }
+fn srgb_to_xyz_m22() -> Double { 0.9503041 }
+
+fn xyz_to_srgb_m00() -> Double {  3.2404542 }
+fn xyz_to_srgb_m01() -> Double { -1.5371385 }
+fn xyz_to_srgb_m02() -> Double { -0.4985314 }
+fn xyz_to_srgb_m10() -> Double { -0.9692660 }
+fn xyz_to_srgb_m11() -> Double {  1.8760108 }
+fn xyz_to_srgb_m12() -> Double {  0.0415560 }
+fn xyz_to_srgb_m20() -> Double {  0.0556434 }
+fn xyz_to_srgb_m21() -> Double { -0.2040259 }
+fn xyz_to_srgb_m22() -> Double {  1.0572252 }
+
+/// Convert linear sRGB to XYZ (D65) using shared matrix constants.
+pub fn srgb_to_xyz(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  let x = srgb_to_xyz_m00() * r + srgb_to_xyz_m01() * g + srgb_to_xyz_m02() * b
+  let y = srgb_to_xyz_m10() * r + srgb_to_xyz_m11() * g + srgb_to_xyz_m12() * b
+  let z = srgb_to_xyz_m20() * r + srgb_to_xyz_m21() * g + srgb_to_xyz_m22() * b
+  (x, y, z)
+}
+
+/// Convert XYZ (D65) to linear sRGB using shared matrix constants.
+pub fn xyz_to_srgb(x : Double, y : Double, z : Double) -> (Double, Double, Double) {
+  let r = xyz_to_srgb_m00() * x + xyz_to_srgb_m01() * y + xyz_to_srgb_m02() * z
+  let g = xyz_to_srgb_m10() * x + xyz_to_srgb_m11() * y + xyz_to_srgb_m12() * z
+  let b = xyz_to_srgb_m20() * x + xyz_to_srgb_m21() * y + xyz_to_srgb_m22() * z
+  (r, g, b)
+}
+
+// ---------- Display P3 <-> XYZ (D65) matrices (SMPTE RP 431-2) ----------
+
+fn display_p3_to_xyz_m00() -> Double { 0.4865709486 }
+fn display_p3_to_xyz_m01() -> Double { 0.2656676930 }
+fn display_p3_to_xyz_m02() -> Double { 0.1982174952 }
+fn display_p3_to_xyz_m10() -> Double { 0.2289745680 }
+fn display_p3_to_xyz_m11() -> Double { 0.6913675516 }
+fn display_p3_to_xyz_m12() -> Double { 0.0798577308 }
+fn display_p3_to_xyz_m20() -> Double { 0.0000000000 }
+fn display_p3_to_xyz_m21() -> Double { 0.0451133837 }
+fn display_p3_to_xyz_m22() -> Double { 1.0419372025 }
+
+fn xyz_to_display_p3_m00() -> Double {  2.4935489629 }
+fn xyz_to_display_p3_m01() -> Double { -0.9692655616 }
+fn xyz_to_display_p3_m02() -> Double { -0.5547881192 }
+fn xyz_to_display_p3_m10() -> Double { -0.8074181753 }
+fn xyz_to_display_p3_m11() -> Double {  1.5351469331 }
+fn xyz_to_display_p3_m12() -> Double {  0.2722712049 }
+fn xyz_to_display_p3_m20() -> Double {  0.0393129714 }
+fn xyz_to_display_p3_m21() -> Double { -0.1115672990 }
+fn xyz_to_display_p3_m22() -> Double {  0.9597769819 }
+
+/// Convert linear Display P3 to XYZ (D65).
+pub fn display_p3_to_xyz(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
+  let x = display_p3_to_xyz_m00() * r + display_p3_to_xyz_m01() * g + display_p3_to_xyz_m02() * b
+  let y = display_p3_to_xyz_m10() * r + display_p3_to_xyz_m11() * g + display_p3_to_xyz_m12() * b
+  let z = display_p3_to_xyz_m20() * r + display_p3_to_xyz_m21() * g + display_p3_to_xyz_m22() * b
+  (x, y, z)
+}
+
+/// Convert XYZ (D65) to linear Display P3.
+pub fn xyz_to_display_p3(x : Double, y : Double, z : Double) -> (Double, Double, Double) {
+  let r = xyz_to_display_p3_m00() * x + xyz_to_display_p3_m01() * y + xyz_to_display_p3_m02() * z
+  let g = xyz_to_display_p3_m10() * x + xyz_to_display_p3_m11() * y + xyz_to_display_p3_m12() * z
+  let b = xyz_to_display_p3_m20() * x + xyz_to_display_p3_m21() * y + xyz_to_display_p3_m22() * z
+  (r, g, b)
 }
 
 /// Apply ACES ODT for Rec.709 output to a single pixel in AP0 space.
 fn apply_odt_rec709(r_ap0 : Double, g_ap0 : Double, b_ap0 : Double) -> (Double, Double, Double) {
-  // Clamp to [0, 1] and apply sRGB gamma
-  (srgb_gamma(clamp_zero_one(r_ap0)), srgb_gamma(clamp_zero_one(g_ap0)), srgb_gamma(clamp_zero_one(b_ap0)))
+  // Clamp to [0, 1] and apply simple gamma
+  (simple_gamma(clamp01(r_ap0)), simple_gamma(clamp01(g_ap0)), simple_gamma(clamp01(b_ap0)))
 }
 
 // ---------- Full ACEScg → Rec.709 ----------
@@ -181,9 +258,9 @@ fn inverse_rrt_curve(y : Double) -> Double {
 /// (AP0 values > 1.0) cannot be recovered — round-trip is lossy for those.
 pub fn rec709_to_acescg(r : Double, g : Double, b : Double) -> (Double, Double, Double) {
   // Step 1: Inverse gamma
-  let lin_r = srgb_gamma_inverse(r)
-  let lin_g = srgb_gamma_inverse(g)
-  let lin_b = srgb_gamma_inverse(b)
+  let lin_r = simple_gamma_inverse(r)
+  let lin_g = simple_gamma_inverse(g)
+  let lin_b = simple_gamma_inverse(b)
 
   // Step 2: Convert AP0 to AP1
   let (ap1_r, ap1_g, ap1_b) = aces2065_to_acescg(lin_r, lin_g, lin_b)
@@ -294,13 +371,6 @@ fn apply_transform(r : Double, g : Double, b : Double, src : Int, dst : Int) -> 
 
 // ---------- Unit tests ----------
 
-/// Approximate equality for Double values (within 1e-4 tolerance).
-fn approx_eq(actual : Double, expected : Double) -> Bool {
-  let diff = actual - expected
-  let abs_diff = if diff < 0.0 { 0.0 - diff } else { diff }
-  abs_diff < 0.0001
-}
-
 test {
   // Identity: AP0 → AP1 → AP0 round-trip
   let r = 0.5
@@ -402,22 +472,22 @@ test {
 }
 
 test {
-  // sRGB gamma: gamma(0) = 0, gamma(1) = 1
-  inspect(srgb_gamma(0.0), content="0")
-  inspect(srgb_gamma(1.0), content="1")
+  // Simple gamma: gamma(0) = 0, gamma(1) = 1
+  inspect(simple_gamma(0.0), content="0")
+  inspect(simple_gamma(1.0), content="1")
 }
 
 test {
-  // sRGB gamma inverse: inv_gamma(0) = 0, inv_gamma(1) = 1
-  inspect(srgb_gamma_inverse(0.0), content="0")
-  inspect(srgb_gamma_inverse(1.0), content="1")
+  // Simple gamma inverse: inv_gamma(0) = 0, inv_gamma(1) = 1
+  inspect(simple_gamma_inverse(0.0), content="0")
+  inspect(simple_gamma_inverse(1.0), content="1")
 }
 
 test {
-  // sRGB gamma round-trip
+  // Simple gamma round-trip
   let original = 0.5
-  let encoded = srgb_gamma(original)
-  let decoded = srgb_gamma_inverse(encoded)
+  let encoded = simple_gamma(original)
+  let decoded = simple_gamma_inverse(encoded)
   assert_eq(approx_eq(decoded, 0.5), true)
 }
 

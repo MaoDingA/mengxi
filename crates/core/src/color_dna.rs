@@ -28,9 +28,6 @@ extern "C" {
         strip_ptr: *const f64,
         width: i32,
         height: i32,
-        dna_a_ptr: *const f64,
-        dna_b_ptr: *const f64,
-        dna_len: i32,
         out_len: i32,
         out_ptr: *mut f64,
     ) -> i32;

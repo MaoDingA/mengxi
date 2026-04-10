@@ -9,6 +9,8 @@ pub enum ACESColorSpace {
     ACEScg,
     ACEScct,
     Rec709,
+    /// Display P3 (D65 white point, SMPTE RP 431-2).
+    DisplayP3,
 }
 
 impl ACESColorSpace {
@@ -18,6 +20,7 @@ impl ACESColorSpace {
             "acescg" | "ap1" => ACESColorSpace::ACEScg,
             "acescct" => ACESColorSpace::ACEScct,
             "rec709" | "srgb" | "bt709" => ACESColorSpace::Rec709,
+            "displayp3" | "p3" | "display-p3" => ACESColorSpace::DisplayP3,
             _ => ACESColorSpace::ACEScg,
         }
     }
@@ -30,6 +33,7 @@ impl ACESColorSpace {
             Some("acescg") | Some("ap1") => ACESColorSpace::ACEScg,
             Some("acescct") => ACESColorSpace::ACEScct,
             Some("rec709") | Some("srgb") | Some("bt709") => ACESColorSpace::Rec709,
+            Some("displayp3") | Some("p3") | Some("display-p3") => ACESColorSpace::DisplayP3,
             None | Some(_) => ACESColorSpace::ACEScg, // Explicit NULL = use default
         }
     }
@@ -42,6 +46,7 @@ impl ACESColorSpace {
             "linear" => ACESColorSpace::ACEScg,
             "log" => ACESColorSpace::ACEScct,
             "video" | "srgb" => ACESColorSpace::Rec709,
+            "p3" | "displayp3" | "display-p3" => ACESColorSpace::DisplayP3,
             _ => ACESColorSpace::ACEScg,
         }
     }
@@ -52,6 +57,7 @@ impl ACESColorSpace {
             ACESColorSpace::ACEScg => 11,
             ACESColorSpace::ACEScct => 12,
             ACESColorSpace::Rec709 => 20,
+            ACESColorSpace::DisplayP3 => 30,
         }
     }
 
@@ -135,6 +141,20 @@ extern "C" {
     ) -> i32;
 
     fn mengxi_oklab_to_linear(
+        data_len: i32,
+        data_ptr: *const f64,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
+
+    fn mengxi_display_p3_to_oklab(
+        data_len: i32,
+        data_ptr: *const f64,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
+
+    fn mengxi_oklab_to_display_p3(
         data_len: i32,
         data_ptr: *const f64,
         out_len: i32,
@@ -631,6 +651,100 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
     Ok(output)
 }
 
+/// Convert Display P3 pixel data to Oklab color space via FFI.
+#[cfg(moonbit_ffi)]
+pub fn display_p3_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    if pixel_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "display_p3_to_oklab requires at least 3 values (1 pixel RGB)".to_string(),
+        ));
+    }
+    if pixel_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "pixel data too large for FFI ({} elements, max {})",
+                pixel_data.len(),
+                i32::MAX
+            ),
+        ));
+    }
+    if pixel_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "display_p3_to_oklab: data length must be divisible by 3".to_string(),
+        ));
+    }
+    let data_len = pixel_data.len() as i32;
+    let out_len = data_len;
+    let mut output = vec![0.0f64; out_len as usize];
+
+    unsafe {
+        let result = mengxi_display_p3_to_oklab(
+            data_len,
+            pixel_data.as_ptr(),
+            out_len,
+            output.as_mut_ptr(),
+        );
+        if result < 0 {
+            return Err(ColorScienceError::FfiError(
+                result,
+                "mengxi_display_p3_to_oklab".to_string(),
+            ));
+        }
+    }
+
+    Ok(output)
+}
+
+/// Convert Oklab pixel data to Display P3 color space via FFI.
+#[cfg(moonbit_ffi)]
+pub fn oklab_to_display_p3(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    if oklab_data.len() < 3 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab_to_display_p3 requires at least 3 values (1 pixel Lab)".to_string(),
+        ));
+    }
+    if oklab_data.len() > i32::MAX as usize {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            format!(
+                "oklab data too large for FFI ({} elements, max {})",
+                oklab_data.len(),
+                i32::MAX
+            ),
+        ));
+    }
+    if oklab_data.len() % 3 != 0 {
+        return Err(ColorScienceError::FfiError(
+            -1,
+            "oklab_to_display_p3: data length must be divisible by 3".to_string(),
+        ));
+    }
+    let data_len = oklab_data.len() as i32;
+    let out_len = data_len;
+    let mut output = vec![0.0f64; out_len as usize];
+
+    unsafe {
+        let result = mengxi_oklab_to_display_p3(
+            data_len,
+            oklab_data.as_ptr(),
+            out_len,
+            output.as_mut_ptr(),
+        );
+        if result < 0 {
+            return Err(ColorScienceError::FfiError(
+                result,
+                "mengxi_oklab_to_display_p3".to_string(),
+            ));
+        }
+    }
+
+    Ok(output)
+}
+
 /// Extract grading features (histograms + color moments) from Oklab pixel data via FFI.
 ///
 /// # Arguments
@@ -911,6 +1025,16 @@ pub fn linear_to_oklab(_pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceErro
 
 #[cfg(not(moonbit_ffi))]
 pub fn oklab_to_linear(_oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn display_p3_to_oklab(_pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn oklab_to_display_p3(_oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     Err(ColorScienceError::FfiUnavailable)
 }
 

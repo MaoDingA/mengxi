@@ -12,6 +12,45 @@
 #define ACES_ACESCCT   12  /* ACEScct */
 #define ACES_REC709    20  /* Rec709 / sRGB */
 
+/*
+ * FFI Return Value Semantics:
+ *
+ *   Function                        Success    Failure Codes
+ *   ----------------------------    --------  ------------------
+ *   mengxi_compute_fingerprint        > 0       -1,-2,-3
+ *   mengxi_generate_lut              > 0       -1,-2,-3
+ *   mengxi_aces_transform            > 0       -1,-2,-3,-4
+ *   mengxi_srgb_to_oklab             > 0       -1,-2
+ *   mengxi_oklab_to_srgb             > 0       -1,-2
+ *   mengxi_acescct_to_oklab          > 0       -1,-2
+ *   mengxi_oklab_to_acescct          > 0       -1,-2
+ *   mengxi_linear_to_oklab           > 0       -1,-2
+ *   mengxi_oklab_to_linear           > 0       -1,-2
+ *   mengxi_extract_grading_features  >= 0      -1,-3
+ *   mengxi_bhattacharyya_distance    >= 0      -1,-3
+ *   mengxi_extract_center_column     > 0       -1,-3
+ *   mengxi_stitch_fingerprint_strip   > 0       -1,-3
+ *   mengxi_cineiris_transform         > 0       -1,-3
+ *   mengxi_extract_color_dna          > 0       -1,-3
+ *   mengxi_compare_color_dna          > 0       -1,-3
+ *   mengxi_detect_scene_boundaries    > 0       -1,-3
+ *   mengxi_compute_mood_timeline      > 0       -1,-3
+ *   mengxi_generate_color_transfer_lut > 0      -1,-3
+ *   mengxi_extract_temporal_features   > 0      -1,-3
+ *   mengxi_extract_frame_scatter      > 0      -1,-3
+ *   mengxi_compute_scatter_density     > 0      -1,-3
+ *   mengxi_detect_dominant_pairs      > 0      -1,-3
+ *   mengxi_compute_vectorscope_density > 0      -1,-3
+ *   mengxi_classify_color_distribution  > 0     -1,-3
+ *   mengxi_display_p3_to_oklab         > 0     -1,-2
+ *   mengxi_oklab_to_display_p3         > 0     -1,-2
+ *
+ * Note: extract_grading_features returns 0 on success (not pixel count)
+ * because it writes to multiple output arrays. bhattacharyya_distance
+ * returns 0 on success (score written to output array). Both use >= 0
+ * to distinguish success (0 = valid result) from failure (< 0).
+ */
+
 /* MoonBit Ref-Counting Adjustments
  * MoonBit's FFI automatically calls incref/decref on FixedArray parameters.
  * We bump ref counts to survive these automatic decref calls, preventing
@@ -21,6 +60,24 @@
  * - RC_BUMP_SINGLE: Single array with simple control flow
  * - RC_BUMP_DOUBLE: Two arrays with multiple exit paths
  * - RC_BUMP_MULTI:  Many arrays (6+), generous safety margin
+ */
+
+/*
+ * RC_BUMP Derivation Notes (empirical, verified via stress testing):
+ *
+ * MoonBit native backend generates incref/decref calls for FixedArray params:
+ *   - 1 incref per FixedArray parameter on function entry
+ *   - 1 decref per FixedArray parameter on each exit path (early return + normal)
+ *   - Additional decref may occur in loops over FixedArray data
+ *
+ * Values were determined by:
+ *   1. Inspecting _build/native/debug/build/lib/lib.c generated code
+ *   2. Stress testing with large arrays (10000+ elements) x 1000 calls
+ *   3. Running under AddressSanitizer (ASan) to detect use-after-free
+ *
+ * If MoonBit compiler changes its FFI codegen pattern, these values MUST be re-verified.
+ * Symptoms of incorrect RC_BUMP: intermittent crashes, ASan errors, or
+ *   heap corruption under high call frequency.
  */
 #define RC_BUMP_SINGLE  2   /* Single array, 1-2 exit paths */
 #define RC_BUMP_DOUBLE  6   /* Two arrays, 3-4 exit paths */
@@ -671,8 +728,7 @@ int32_t mengxi_extract_grading_features(
     mb_moments, mb_hist_len, mb_moments_len
   );
 
-  /* Copy output data back to Rust buffers before freeing.
-   * mengxi_extract_grading_features returns 0 on success (not pixel count). */
+  /* Returns 0 on success (not pixel count); use >= 0 for success check */
   if (result >= 0) {
     memcpy(hist_l_ptr, mb_hist_l, bins * sizeof(double));
     memcpy(hist_a_ptr, mb_hist_a, bins * sizeof(double));
@@ -745,7 +801,7 @@ int32_t mengxi_bhattacharyya_distance(
     mb_query, mb_candidate, hist_len, channels, mb_out
   );
 
-  /* Copy output back to Rust buffer */
+  /* Returns 0 on success (score in out_score array); use >= 0 for success check */
   if (result >= 0) {
     memcpy(out_score, mb_out, 1 * sizeof(double));
   }
@@ -1461,6 +1517,14 @@ extern int32_t _M0FP216mengxi_2dmoonbit3lib37mengxi__classify__color__distributi
   double*
 );
 
+/* Discovered mangled names from build/lib/lib.c */
+extern int32_t _M0FP216mengxi_2dmoonbit3lib30mengxi__display__p3__to__oklab(
+  int32_t, double*, int32_t, double*
+);
+extern int32_t _M0FP216mengxi_2dmoonbit3lib30mengxi__oklab__to__display__p3(
+  int32_t, double*, int32_t, double*
+);
+
 int32_t mengxi_classify_color_distribution(
   int32_t strip_len,
   double* strip_ptr,
@@ -1501,5 +1565,69 @@ int32_t mengxi_classify_color_distribution(
   moonbit_drop_object(mb_out);
   moonbit_drop_object(mb_strip);
 
+  return result;
+}
+
+/* ============================================================
+ * mengxi_display_p3_to_oklab — Display P3 to Oklab conversion
+ * Mangled name: lib30 (discovered after build via nm)
+ * ============================================================ */
+int32_t mengxi_display_p3_to_oklab(
+  int32_t data_len, double* data_ptr,
+  int32_t out_len, double* out_ptr
+) {
+  ensure_runtime_init();
+  if (data_len <= 0) return -1;
+
+  double* mb_data = moonbit_make_double_array(data_len, 0.0);
+  if (!mb_data) return -3;
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) { moonbit_drop_object(mb_data); return -3; }
+
+  memcpy(mb_data, data_ptr, data_len * sizeof(double));
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib30mengxi__display__p3__to__oklab(
+    data_len, mb_data, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_data);
+  return result;
+}
+
+/* ============================================================
+ * mengxi_oklab_to_display_p3 — Oklab to Display P3 conversion
+ * Mangled name: lib30 (discovered after build via nm)
+ * ============================================================ */
+int32_t mengxi_oklab_to_display_p3(
+  int32_t data_len, double* data_ptr,
+  int32_t out_len, double* out_ptr
+) {
+  ensure_runtime_init();
+  if (data_len <= 0) return -1;
+
+  double* mb_data = moonbit_make_double_array(data_len, 0.0);
+  if (!mb_data) return -3;
+  double* mb_out = moonbit_make_double_array(out_len, 0.0);
+  if (!mb_out) { moonbit_drop_object(mb_data); return -3; }
+
+  memcpy(mb_data, data_ptr, data_len * sizeof(double));
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
+
+  int32_t result = _M0FP216mengxi_2dmoonbit3lib30mengxi__oklab__to__display__p3(
+    data_len, mb_data, out_len, mb_out
+  );
+
+  if (result > 0) {
+    memcpy(out_ptr, mb_out, out_len * sizeof(double));
+  }
+  moonbit_drop_object(mb_out);
+  moonbit_drop_object(mb_data);
   return result;
 }
