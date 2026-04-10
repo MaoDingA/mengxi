@@ -4,6 +4,7 @@
 // and session management for the mengxi AI agent.
 
 pub mod llm;
+pub mod project_ops;
 pub mod tool;
 pub mod agent;
 pub mod session;

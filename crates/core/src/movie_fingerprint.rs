@@ -524,12 +524,10 @@ impl FingerprintMode {
     /// Return the CineIris diameter if applicable.
     pub fn diameter(&self) -> Option<usize> {
         match self {
-            FingerprintMode::Strip
-            | FingerprintMode::CinePrint { .. }
-            | _ => None,
             FingerprintMode::CineIris { diameter } | FingerprintMode::Both { diameter } => {
                 Some(*diameter)
             }
+            _ => None,
         }
     }
 }
@@ -611,7 +609,6 @@ pub fn generate_fingerprint(
     };
     let mut thumbnails: Vec<crate::viz::cineprint::Thumbnail> = Vec::new();
 
-    let mut skipped = 0usize;
     for (idx, frame_path) in frame_paths.iter().enumerate() {
         let (w, h, pixels) = match read_ppm_as_rgb64(frame_path) {
             Ok(v) => v,
@@ -622,7 +619,6 @@ pub fn generate_fingerprint(
                     frame_path.file_name(),
                     e
                 );
-                skipped += 1;
                 continue;
             }
         };
@@ -735,7 +731,7 @@ pub fn generate_fingerprint(
                 &strip_data, strip_width, frame_height, &thumbnails, &path,
                 video_name,
                 wm_path_ref,
-                &watermark_position,
+                watermark_position,
                 *show_ep_label,
             ).map_err(|e| MovieFingerprintError::VizError(e.to_string()))?;
             output.cineprint_path = Some(path);

@@ -1,13 +1,10 @@
 // lut_generation.rs — Core LUT export orchestration
-// Bridges DB ↔ FFI ↔ Format layers
+// Bridges DB ↔ FFI ↔ LutIo trait (Format layer abstracted away)
 
 use crate::color_science::{generate_lut, ACESColorSpace, ColorScienceError};
+use crate::format_traits::{LutData, LutFormat, LutIo, LutIoError};
 use rusqlite::Connection;
 use std::path::PathBuf;
-
-use mengxi_format::lut::{
-    self, LutData, LutFormat, LutError,
-};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -64,9 +61,9 @@ pub enum LutGenerationError {
     /// FFI error from color science engine.
     #[error("EXPORT_FFI_ERROR -- {0}")]
     FfiError(#[from] ColorScienceError),
-    /// LUT format error (validation, serialization).
+    /// LUT I/O error (validation, serialization, parsing).
     #[error("EXPORT_FORMAT_ERROR -- {0}")]
-    FormatError(#[from] LutError),
+    FormatError(#[from] LutIoError),
     /// File write error.
     #[error("EXPORT_WRITE_ERROR -- {0}")]
     WriteError(String),
@@ -85,9 +82,10 @@ pub enum LutGenerationError {
 /// Export a LUT for a project's fingerprint.
 ///
 /// Steps: validate config → check overwrite → query fingerprint → generate LUT
-/// → validate → serialize → write file → record in DB.
+/// → validate → serialize via LutIo → write file → record in DB.
 pub fn export_lut(
     conn: &Connection,
+    lut_io: &dyn LutIo,
     config: &ExportLutConfig,
 ) -> Result<LutExportResult, LutGenerationError> {
     // Check file existence
@@ -105,22 +103,24 @@ pub fn export_lut(
     let (src_cs, title) = resolve_color_space(conn, config)?;
 
     // Validate format
-    let lut_fmt = LutFormat::from_extension(&config.format)
-        .map_err(LutGenerationError::FormatError)?;
+    let lut_fmt = LutFormat::from_extension(&config.format)?;
 
     // Reject CDL format (parametric, not a 3D LUT)
-    if matches!(lut_fmt, LutFormat::AscCdl) {
-        return Err(LutError::UnsupportedFormat(
+    if matches!(lut_fmt, LutFormat::Cdl) {
+        return Err(LutIoError::Format(
             "ASC-CDL is parametric and cannot be exported as a 3D LUT".to_string(),
-        ).into());
+        )
+        .into());
     }
 
     // Validate path extension matches format
     if let Some(ext) = config.output_path.extension().and_then(|e| e.to_str()) {
         if ext.to_lowercase() != config.format.to_lowercase() {
-            return Err(LutError::UnsupportedFormat(
-                format!("output path extension '.{}' does not match specified format '{}'", ext, config.format)
-            ).into());
+            return Err(LutIoError::Format(format!(
+                "output path extension '.{}' does not match specified format '{}'",
+                ext, config.format
+            ))
+            .into());
         }
     }
 
@@ -137,18 +137,17 @@ pub fn export_lut(
         values,
     };
 
-    // FR41: Pre-write validation
+    // Pre-write validation
     lut_data.validate()?;
 
-    // Serialize and write
+    // Serialize and write via LutIo trait
     // Ensure parent directory exists
     if let Some(parent) = config.output_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| LutGenerationError::WriteError(e.to_string()))?;
     }
 
-    lut::serialize_lut(&lut_data, &config.output_path)
-        .map_err(LutGenerationError::FormatError)?;
+    lut_io.serialize_lut(&lut_data, &config.output_path)?;
 
     // Record in DB
     record_export(conn, config, title.as_deref())?;
@@ -163,10 +162,11 @@ pub fn export_lut(
 /// Force-overwrite export (used after user confirms in interactive mode).
 pub fn export_lut_force(
     conn: &Connection,
+    lut_io: &dyn LutIo,
     mut config: ExportLutConfig,
 ) -> Result<LutExportResult, LutGenerationError> {
     config.force = true;
-    export_lut(conn, &config)
+    export_lut(conn, lut_io, &config)
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ fn resolve_color_space(
     });
 
     match result {
-        Ok((aces_opt, encoding_tag)) => {
+        Ok((aces_opt, _encoding_tag)) => {
             // Use explicit aces_color_space if available
             let src_cs = ACESColorSpace::from_aces_column(aces_opt.as_deref());
             if src_cs.is_log() {
@@ -249,19 +249,96 @@ fn record_export(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::io::Write;
+    use std::path::Path;
+
+    /// Mock LutIo that writes/reads .cube files directly (no Format crate dependency).
+    struct MockCubeLutIo;
+
+    impl LutIo for MockCubeLutIo {
+        fn parse_lut(&self, path: &Path) -> Result<LutData, LutIoError> {
+            let data = std::fs::read_to_string(path)?;
+            parse_cube_from_str(&data)
+        }
+
+        fn serialize_lut(&self, data: &LutData, path: &Path) -> Result<(), LutIoError> {
+            let content = serialize_cube_to_str(data)?;
+            std::fs::write(path, content)?;
+            Ok(())
+        }
+    }
+
+    /// Minimal .cube parser for test mock (only supports identity-like data).
+    fn parse_cube_from_str(content: &str) -> Result<LutData, LutIoError> {
+        let mut grid_size: Option<u32> = None;
+        let mut values: Vec<f64> = Vec::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("TITLE") {
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("LUT_3D_SIZE") {
+                grid_size = Some(rest.trim().parse().map_err(|_| {
+                    LutIoError::Parse(format!("invalid LUT_3D_SIZE: {}", rest.trim()))
+                })?);
+                continue;
+            }
+            if trimmed.starts_with("DOMAIN_MIN") || trimmed.starts_with("DOMAIN_MAX") {
+                continue;
+            }
+            // Data lines
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let parsed: Result<Vec<f64>, _> = parts.iter().map(|s| s.parse::<f64>()).collect();
+                if let Ok(floats) = parsed {
+                    values.extend_from_slice(&floats[..3]);
+                }
+            }
+        }
+
+        let grid_size = grid_size.ok_or_else(|| {
+            LutIoError::Parse("LUT_3D_SIZE not found".to_string())
+        })?;
+        let expected = grid_size as usize * grid_size as usize * grid_size as usize * 3;
+        if values.len() != expected {
+            return Err(LutIoError::Format(format!(
+                "expected {} values, got {}",
+                expected,
+                values.len()
+            )));
+        }
+
+        Ok(LutData {
+            title: None,
+            grid_size,
+            domain_min: [0.0, 0.0, 0.0],
+            domain_max: [1.0, 1.0, 1.0],
+            values,
+        })
+    }
+
+    /// Minimal .cube serializer for test mock.
+    fn serialize_cube_to_str(data: &LutData) -> Result<String, LutIoError> {
+        data.validate()?;
+        let mut out = String::new();
+        out.push_str(&format!(
+            "DOMAIN_MIN {:.6} {:.6} {:.6}\n",
+            data.domain_min[0], data.domain_min[1], data.domain_min[2]
+        ));
+        out.push_str(&format!(
+            "DOMAIN_MAX {:.6} {:.6} {:.6}\n",
+            data.domain_max[0], data.domain_max[1], data.domain_max[2]
+        ));
+        out.push_str(&format!("LUT_3D_SIZE {}\n", data.grid_size));
+        for chunk in data.values.chunks(3) {
+            out.push_str(&format!("{:.6} {:.6} {:.6}\n", chunk[0], chunk[1], chunk[2]));
+        }
+        Ok(out)
+    }
 
     fn setup_test_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        // Create required tables
-        conn.execute_batch(
-            "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE luts (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, fingerprint_id INTEGER REFERENCES fingerprints(id), title TEXT, format TEXT NOT NULL CHECK(format IN ('cube', '3dl', 'look', 'csp', 'cdl')), grid_size INTEGER NOT NULL, output_path TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));",
-        )
-        .unwrap();
-        conn
+        crate::test_db::setup_test_db()
     }
 
     #[cfg(moonbit_ffi)]
@@ -279,15 +356,15 @@ mod tests {
         let output = dir.path().join("test.cube");
         let config = ExportLutConfig::new(1, output, "cube".to_string());
 
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         // Should succeed even without fingerprint (defaults to ACEScg)
         assert!(result.is_ok());
         let export = result.unwrap();
         assert_eq!(export.grid_size, 33);
         assert!(export.path.exists());
 
-        // Verify file is parseable
-        let lut = lut::parse_lut(&export.path).unwrap();
+        // Verify file is parseable by our mock
+        let lut = MockCubeLutIo.parse_lut(&export.path).unwrap();
         assert_eq!(lut.grid_size, 33);
     }
 
@@ -315,7 +392,7 @@ mod tests {
         let output = dir.path().join("test.cube");
         let config = ExportLutConfig::new(1, output, "cube".to_string());
 
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_ok());
     }
 
@@ -334,11 +411,11 @@ mod tests {
 
         // First export
         let config = ExportLutConfig::new(1, output.clone(), "cube".to_string());
-        assert!(export_lut(&conn, &config).is_ok());
+        assert!(export_lut(&conn, &MockCubeLutIo, &config).is_ok());
 
         // Second export without force — should fail
         assert!(output.exists());
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_err());
         match result.unwrap_err() {
             LutGenerationError::OverwriteDenied(p) => {
@@ -363,11 +440,11 @@ mod tests {
 
         // First export
         let mut config = ExportLutConfig::new(1, output.clone(), "cube".to_string());
-        assert!(export_lut(&conn, &config).is_ok());
+        assert!(export_lut(&conn, &MockCubeLutIo, &config).is_ok());
 
         // Second export with force
         config.force = true;
-        assert!(export_lut(&conn, &config).is_ok());
+        assert!(export_lut_force(&conn, &MockCubeLutIo, config).is_ok());
     }
 
     #[cfg(moonbit_ffi)]
@@ -385,11 +462,11 @@ mod tests {
 
         // First export
         let mut config = ExportLutConfig::new(1, output.clone(), "cube".to_string());
-        assert!(export_lut(&conn, &config).is_ok());
+        assert!(export_lut(&conn, &MockCubeLutIo, &config).is_ok());
 
         // Interactive mode with existing file
         config.interactive = true;
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_err());
         match result.unwrap_err() {
             LutGenerationError::FileExists(p) => {
@@ -413,7 +490,7 @@ mod tests {
         let output = dir.path().join("subdir1").join("subdir2").join("test.cube");
         let config = ExportLutConfig::new(1, output.clone(), "cube".to_string());
 
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_ok());
         assert!(output.exists());
     }
@@ -432,7 +509,7 @@ mod tests {
         let output = dir.path().join("test.cube");
         let config = ExportLutConfig::new(1, output.clone(), "cube".to_string());
 
-        export_lut(&conn, &config).unwrap();
+        export_lut(&conn, &MockCubeLutIo, &config).unwrap();
 
         // Verify DB record
         let count: i64 = conn
@@ -465,7 +542,7 @@ mod tests {
         for ext in &["cube", "3dl", "look", "csp"] {
             let output = dir.path().join(format!("test.{}", ext));
             let config = ExportLutConfig::new(1, output.clone(), ext.to_string());
-            let result = export_lut(&conn, &config);
+            let result = export_lut(&conn, &MockCubeLutIo, &config);
             assert!(result.is_ok(), "format {} failed: {:?}", ext, result.err());
             assert!(output.exists());
         }
@@ -500,7 +577,7 @@ mod tests {
         let output = dir.path().join("test.cdl");
         let config = ExportLutConfig::new(1, output, "cdl".to_string());
 
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_err());
         match result.unwrap_err() {
             LutGenerationError::FormatError(_) => {}
@@ -523,7 +600,7 @@ mod tests {
         let mut config = ExportLutConfig::new(1, output, "cube".to_string());
         config.fingerprint_id = Some(999);
 
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_err());
         match result.unwrap_err() {
             LutGenerationError::FingerprintNotFound => {}
@@ -545,7 +622,7 @@ mod tests {
         let output = dir.path().join("test.dat");
         let config = ExportLutConfig::new(1, output, "cube".to_string());
 
-        let result = export_lut(&conn, &config);
+        let result = export_lut(&conn, &MockCubeLutIo, &config);
         assert!(result.is_err());
         match result.unwrap_err() {
             LutGenerationError::FormatError(_) => {}
@@ -577,7 +654,7 @@ mod tests {
         let output = dir.path().join("test.cube");
         let config = ExportLutConfig::new(1, output, "cube".to_string());
 
-        export_lut(&conn, &config).unwrap();
+        export_lut(&conn, &MockCubeLutIo, &config).unwrap();
 
         // Verify title is stored in DB
         let title: Option<String> = conn

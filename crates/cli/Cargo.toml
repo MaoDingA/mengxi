@@ -17,6 +17,7 @@ tui-textarea = "0.7"
 mengxi-core = { path = "../core" }
 mengxi-format = { path = "../format" }
 mengxi-agent = { path = "../agent" }
+thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]

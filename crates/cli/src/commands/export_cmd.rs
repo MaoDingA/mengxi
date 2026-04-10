@@ -1,6 +1,7 @@
 use std::process;
 
 use mengxi_core::db;
+use crate::project_ops::MengxiFormatLutBridge;
 
 pub fn execute(result: Option<u32>, format: Option<String>, output: Option<String>, grid_size: u32, force: bool, output_format: String) {
     let is_json = output_format == "json";
@@ -87,7 +88,7 @@ pub fn execute(result: Option<u32>, format: Option<String>, output: Option<Strin
     // Open DB and export
     match db::open_db() {
         Ok(conn) => {
-            match mengxi_core::lut_generation::export_lut(&conn, &export_config) {
+            match mengxi_core::lut_generation::export_lut(&conn, &MengxiFormatLutBridge, &export_config) {
                 Ok(result) => {
                     if is_json {
                         let output = serde_json::json!({
@@ -120,8 +121,7 @@ pub fn execute(result: Option<u32>, format: Option<String>, output: Option<Strin
                             .read_line(&mut response)
                             .unwrap_or_default();
                         if response.trim().to_lowercase() == "y" {
-                            match mengxi_core::lut_generation::export_lut_force(
-                                &conn,
+                            match mengxi_core::lut_generation::export_lut_force(&conn, &MengxiFormatLutBridge,
                                 export_config,
                             ) {
                                 Ok(result) => {

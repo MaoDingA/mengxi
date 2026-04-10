@@ -1,5 +1,6 @@
 use std::process;
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
     video: Option<String>,
     mode: String,

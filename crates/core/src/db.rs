@@ -612,61 +612,9 @@ mod tests {
         assert!(migrations[7].1.contains("luts"));
     }
 
-    /// Helper: create a temp DB with minimal schema for browsing query tests.
+    /// Helper: create a temp DB with full migration schema for browsing query tests.
     fn setup_test_db() -> Connection {
-        let dir = tempfile::tempdir().unwrap();
-        let db_file = dir.path().join("test.db");
-        let conn = Connection::open(&db_file).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                path TEXT NOT NULL,
-                dpx_count INTEGER NOT NULL DEFAULT 0,
-                exr_count INTEGER NOT NULL DEFAULT 0,
-                mov_count INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE TABLE files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                filename TEXT NOT NULL,
-                format TEXT NOT NULL CHECK(format IN ('dpx', 'exr', 'mov')),
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE TABLE fingerprints (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                histogram_r TEXT NOT NULL,
-                histogram_g TEXT NOT NULL,
-                histogram_b TEXT NOT NULL,
-                luminance_mean REAL NOT NULL,
-                luminance_stddev REAL NOT NULL,
-                color_space_tag TEXT NOT NULL,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE TABLE luts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                fingerprint_id INTEGER REFERENCES fingerprints(id),
-                title TEXT,
-                format TEXT NOT NULL CHECK(format IN ('cube', '3dl', 'look', 'csp', 'cdl')),
-                grid_size INTEGER NOT NULL,
-                output_path TEXT NOT NULL,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE TABLE tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fingerprint_id INTEGER NOT NULL REFERENCES fingerprints(id) ON DELETE CASCADE,
-                tag TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'ai',
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);"
-        ).unwrap();
-        conn
+        crate::test_db::setup_test_db()
     }
 
     #[test]
@@ -790,8 +738,9 @@ mod tests {
 
     // -- Migration 018: feature_status column tests --
 
-    /// Helper: create a temp DB with schema up to migration 017 and insert test data.
+    /// Helper: create a temp DB with schema at migration 017 and insert test data.
     /// Returns (temp_dir, conn) so the DB persists for the test.
+    /// NOTE: Uses inline DDL because these tests verify migration behavior at specific versions.
     fn setup_test_db_with_grading_features(
         with_grading_features: bool,
     ) -> (tempfile::TempDir, Connection) {
@@ -843,14 +792,12 @@ mod tests {
             .unwrap();
 
         if with_grading_features {
-            // Insert fingerprint WITH grading_features BLOB
-            let blob_data: Vec<u8> = vec![0u8; 64]; // dummy BLOB
+            let blob_data: Vec<u8> = vec![0u8; 64];
             conn.execute(
                 "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag, grading_features) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video', ?1)",
                 [blob_data],
             ).unwrap();
         } else {
-            // Insert fingerprint WITHOUT grading_features (NULL)
             conn.execute(
                 "INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.1, 'video')",
                 [],
@@ -1048,6 +995,7 @@ mod tests {
 
     /// Create a test DB at schema version 18 (with grading_features + feature_status columns).
     /// If `with_grading_features` is true, inserts a real 1584-byte BLOB; otherwise NULL.
+    /// NOTE: Uses inline DDL because these tests verify migration behavior at specific versions.
     fn setup_test_db_at_version_18(with_grading_features: bool) -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let db_file = dir.path().join("test.db");
@@ -1096,21 +1044,16 @@ mod tests {
             .unwrap();
 
         if with_grading_features {
-            // Create a real 1584-byte BLOB with known pattern (version 18 format: 3 * 64 * 8 + 6 * 8)
             let mut blob = Vec::with_capacity(1584);
-            // hist_l: 64 f64 values (0.0, 1.0, 2.0, ...)
             for i in 0..64u32 {
                 blob.extend_from_slice(&(i as f64).to_le_bytes());
             }
-            // hist_a: 64 f64 values (64.0, 65.0, ...)
             for i in 0..64u32 {
                 blob.extend_from_slice(&((64 + i) as f64).to_le_bytes());
             }
-            // hist_b: 64 f64 values (128.0, 129.0, ...)
             for i in 0..64u32 {
                 blob.extend_from_slice(&((128 + i) as f64).to_le_bytes());
             }
-            // moments: 6 f64 values (200.0, 201.0, ...)
             for i in 0..6u32 {
                 blob.extend_from_slice(&((200 + i) as f64).to_le_bytes());
             }
@@ -1260,6 +1203,8 @@ mod tests {
     // --- Fingerprint tile tests (Story 1.2) ---
 
     /// Helper to create a minimal DB with a fingerprint row for tile tests.
+    /// NOTE: Uses run_migrations + seed data; kept as a local helper because it inserts
+    /// domain-specific test fixtures, not just schema.
     fn setup_test_db_with_fingerprint() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
@@ -1267,7 +1212,7 @@ mod tests {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
         run_migrations(&conn).unwrap();
 
-        // Insert minimal project → file → fingerprint chain
+        // Insert minimal project -> file -> fingerprint chain
         conn.execute("INSERT INTO projects (name, path) VALUES ('test_project', '/tmp/test')", []).unwrap();
         conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'test.dpx', 'dpx')", []).unwrap();
         conn.execute(

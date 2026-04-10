@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod project_ops;
 mod tui;
 mod validate;
 mod validate_dataset;

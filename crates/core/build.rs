@@ -7,6 +7,7 @@ fn main() {
 
     // Signal to source code that FFI is available
     println!("cargo:rustc-cfg=moonbit_ffi");
+    println!("cargo:rustc-check-cfg=cfg(moonbit_ffi)");
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_root = std::path::Path::new(&manifest_dir)

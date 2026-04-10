@@ -2,6 +2,7 @@
 ///
 /// Draws text as light-gray pixels (200, 200, 200) into an RGB8 image buffer.
 /// Each character is 3 pixels wide with 1 pixel spacing (4px stride).
+#[allow(dead_code)]
 pub(crate) fn draw_text_simple(
     img: &mut [u8],
     w: usize,
@@ -17,6 +18,8 @@ pub(crate) fn draw_text_simple(
 ///
 /// Each pixel of the 3x5 font is rendered as a `scale`×`scale` block.
 /// Character stride becomes `3 * scale + scale` (4*scale total per char).
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_text_scaled(
     img: &mut [u8],
     w: usize,
@@ -34,6 +37,7 @@ pub(crate) fn draw_text_scaled(
 
 // ---- Internal: shared font rendering with optional scaling ----
 
+#[allow(clippy::too_many_arguments)]
 fn draw_text(
     img: &mut [u8],
     w: usize,
@@ -162,6 +166,7 @@ use ab_glyph::{Font, PxScale, ScaleFont};
 /// `font_path`: custom font file path (None = use system default).
 /// `font_size_px`: desired height of capital letters in pixels.
 /// Falls back gracefully to the bitmap ASCII font if no TTF font is found.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_text_ttf(
     img: &mut [u8],
     w: usize,
@@ -250,12 +255,14 @@ pub(crate) fn load_font(custom_path: Option<&str>) -> Option<ab_glyph::FontArc> 
 
 /// Try to load a system font that supports CJK characters.
 /// Prefers PingFang SC (macOS), then STHeiti, then any available font.
+#[allow(dead_code)]
 fn load_system_font() -> Option<ab_glyph::FontArc> {
     load_font(None)
 }
 
 /// Measure the pixel width of a string rendered with the given TTF font.
 /// Falls back to bitmap font width estimation if no TTF available.
+#[allow(dead_code)]
 pub(crate) fn measure_text_width(text: &str, font_size_px: f32, font_path: Option<&str>) -> usize {
     let font = match load_font(font_path) {
         Some(f) => f,

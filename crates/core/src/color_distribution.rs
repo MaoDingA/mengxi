@@ -88,14 +88,12 @@ pub(crate) fn classify_pixel(l: f64, a: f64, b: f64, min_chroma: f64) -> Option<
     let deg = if deg < 0.0 { deg + 360.0 } else { deg };
 
     // SKIN: warm hue + moderate chroma + adequate lightness
-    if deg >= 15.0 && deg < 45.0 && chroma < 0.15 && l > 0.3 {
+    if (15.0..45.0).contains(&deg) && chroma < 0.15 && l > 0.3 {
         return Some(ColorCategory::Skin);
     }
 
-    if deg >= 345.0 || deg < 15.0 {
+    if (345.0..=360.0).contains(&deg) || (0.0..45.0).contains(&deg) {
         Some(ColorCategory::Red)
-    } else if deg < 45.0 {
-        Some(ColorCategory::Red) // warm orange-red
     } else if deg < 70.0 {
         Some(ColorCategory::Yellow)
     } else if deg < 165.0 {

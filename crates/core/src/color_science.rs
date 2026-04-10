@@ -670,7 +670,7 @@ pub fn display_p3_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceE
             ),
         ));
     }
-    if pixel_data.len() % 3 != 0 {
+    if !pixel_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "display_p3_to_oklab: data length must be divisible by 3".to_string(),
@@ -717,7 +717,7 @@ pub fn oklab_to_display_p3(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceE
             ),
         ));
     }
-    if oklab_data.len() % 3 != 0 {
+    if !oklab_data.len().is_multiple_of(3) {
         return Err(ColorScienceError::FfiError(
             -1,
             "oklab_to_display_p3: data length must be divisible by 3".to_string(),

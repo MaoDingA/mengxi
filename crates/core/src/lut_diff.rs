@@ -1,10 +1,9 @@
 // lut_diff.rs — LUT diff comparison and dependency tracking
-// Bridges CLI ↔ Format (diff) and CLI ↔ DB (dependencies)
+// Bridges CLI ↔ LutIo trait (diff) and CLI ↔ DB (dependencies)
 
+use crate::format_traits::{LutDiffResult as CoreLutDiffResult, LutIo, LutIoError};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-
-use mengxi_format::lut::{self, LutError};
 
 // ---------------------------------------------------------------------------
 // Diff orchestration
@@ -18,7 +17,7 @@ pub enum LutDiffError {
     FileNotFound(PathBuf),
     /// Failed to parse a LUT file.
     #[error("LUTDIFF_PARSE_ERROR -- {0}")]
-    ParseError(#[from] LutError),
+    ParseError(#[from] LutIoError),
     /// Grid sizes differ between the two LUTs.
     #[error("LUTDIFF_GRID_MISMATCH -- grid sizes differ: {a} vs {b}")]
     GridSizeMismatch { a: u32, b: u32 },
@@ -28,7 +27,11 @@ pub enum LutDiffError {
 ///
 /// Both files are parsed to `LutData` before comparison, so any supported format
 /// can be compared against any other supported format.
-pub fn compare_luts(path_a: &Path, path_b: &Path) -> Result<lut::LutDiffResult, LutDiffError> {
+pub fn compare_luts(
+    lut_io: &dyn LutIo,
+    path_a: &Path,
+    path_b: &Path,
+) -> Result<CoreLutDiffResult, LutDiffError> {
     if !path_a.exists() {
         return Err(LutDiffError::FileNotFound(path_a.to_path_buf()));
     }
@@ -36,11 +39,25 @@ pub fn compare_luts(path_a: &Path, path_b: &Path) -> Result<lut::LutDiffResult, 
         return Err(LutDiffError::FileNotFound(path_b.to_path_buf()));
     }
 
-    let a = lut::parse_lut(path_a).map_err(LutDiffError::ParseError)?;
-    let b = lut::parse_lut(path_b).map_err(LutDiffError::ParseError)?;
+    let a = lut_io.parse_lut(path_a)?;
+    let b = lut_io.parse_lut(path_b)?;
 
     a.diff(&b).map_err(|e| match e {
-        LutError::GridSizeMismatch { a, b } => LutDiffError::GridSizeMismatch { a, b },
+        LutIoError::Format(ref msg) if msg.contains("grid sizes differ") => {
+            // Extract grid sizes from error message for backward-compatible error type
+            let parts: Vec<u32> = msg
+                .split(" vs ")
+                .filter_map(|s| s.split_whitespace().last()?.parse().ok())
+                .collect();
+            if parts.len() == 2 {
+                LutDiffError::GridSizeMismatch {
+                    a: parts[0],
+                    b: parts[1],
+                }
+            } else {
+                LutDiffError::ParseError(e)
+            }
+        }
         other => LutDiffError::ParseError(other),
     })
 }
@@ -114,29 +131,97 @@ pub fn query_lut_dependency(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format_traits::LutData;
     use rusqlite::Connection;
-    use mengxi_format::lut::LutData;
+
+    /// Mock LutIo that writes/reads .cube files directly (no Format crate dependency).
+    struct MockCubeLutIo;
+
+    impl LutIo for MockCubeLutIo {
+        fn parse_lut(&self, path: &Path) -> Result<LutData, LutIoError> {
+            let data = std::fs::read_to_string(path)?;
+            parse_cube_from_str(&data)
+        }
+
+        fn serialize_lut(&self, data: &LutData, path: &Path) -> Result<(), LutIoError> {
+            let content = serialize_cube_to_str(data)?;
+            std::fs::write(path, content)?;
+            Ok(())
+        }
+    }
+
+    fn parse_cube_from_str(content: &str) -> Result<LutData, LutIoError> {
+        let mut grid_size: Option<u32> = None;
+        let mut values: Vec<f64> = Vec::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("TITLE")
+                || trimmed.starts_with("DOMAIN_MIN")
+                || trimmed.starts_with("DOMAIN_MAX")
+            {
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("LUT_3D_SIZE") {
+                grid_size = Some(rest.trim().parse().map_err(|_| {
+                    LutIoError::Parse(format!("invalid LUT_3D_SIZE: {}", rest.trim()))
+                })?);
+                continue;
+            }
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let parsed: Result<Vec<f64>, _> =
+                    parts.iter().map(|s| s.parse::<f64>()).collect();
+                if let Ok(floats) = parsed {
+                    values.extend_from_slice(&floats[..3]);
+                }
+            }
+        }
+
+        let grid_size = grid_size.ok_or_else(|| LutIoError::Parse("LUT_3D_SIZE not found".to_string()))?;
+        let expected = grid_size as usize * grid_size as usize * grid_size as usize * 3;
+        if values.len() != expected {
+            return Err(LutIoError::Format(format!(
+                "expected {} values, got {}",
+                expected,
+                values.len()
+            )));
+        }
+
+        Ok(LutData {
+            title: None,
+            grid_size,
+            domain_min: [0.0, 0.0, 0.0],
+            domain_max: [1.0, 1.0, 1.0],
+            values,
+        })
+    }
+
+    fn serialize_cube_to_str(data: &LutData) -> Result<String, LutIoError> {
+        data.validate()?;
+        let mut out = String::new();
+        out.push_str(&format!("LUT_3D_SIZE {}\n", data.grid_size));
+        for chunk in data.values.chunks(3) {
+            out.push_str(&format!("{:.6} {:.6} {:.6}\n", chunk[0], chunk[1], chunk[2]));
+        }
+        Ok(out)
+    }
 
     fn setup_test_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE luts (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, fingerprint_id INTEGER REFERENCES fingerprints(id), title TEXT, format TEXT NOT NULL CHECK(format IN ('cube', '3dl', 'look', 'csp', 'cdl')), grid_size INTEGER NOT NULL, output_path TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));",
-        )
-        .unwrap();
-        conn
+        crate::test_db::setup_test_db()
     }
 
     #[test]
     fn test_compare_luts_identical() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.cube");
-        lut::serialize_lut(&LutData::identity(5), &path).unwrap();
+        MockCubeLutIo
+            .serialize_lut(&LutData::identity(5), &path)
+            .unwrap();
 
-        let result = compare_luts(&path, &path).unwrap();
+        let result = compare_luts(&MockCubeLutIo, &path, &path).unwrap();
         assert_eq!(result.total_points, 125);
         for ch in 0..3 {
             assert!(result.channels[ch].mean_delta < 1e-15);
@@ -147,6 +232,7 @@ mod tests {
     #[test]
     fn test_compare_luts_file_not_found() {
         let result = compare_luts(
+            &MockCubeLutIo,
             Path::new("/nonexistent/a.cube"),
             Path::new("/nonexistent/b.cube"),
         );

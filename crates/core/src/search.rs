@@ -1201,32 +1201,10 @@ fn hybrid_search_impl(
         })
         .collect();
 
-    // Batch recompute stale features (single transaction instead of N queries)
-    const MAX_RECOMPUTATIONS_PER_SEARCH: usize = 10;
-    let mut recomputed_count = 0;
-    if !stale_fp_ids.is_empty() {
-        let batch_count = stale_fp_ids.len().min(MAX_RECOMPUTATIONS_PER_SEARCH);
-        if batch_count > 0 {
-            let batch = &stale_fp_ids[..batch_count];
-            match crate::fingerprint::batch_reextract_grading_features(
-                conn,
-                batch,
-                0, // tile_grid_size
-                |current, total, _path| {
-                    eprintln!("info: batch re-extracting stale features ({}/{})", current, total);
-                },
-            ) {
-                Ok(result) => {
-                    recomputed_count = result.reextracted;
-                    eprintln!("info: batch recomputed {} stale features ({} skipped, {} failed)",
-                        recomputed_count, result.skipped, result.failed);
-                }
-                Err(e) => {
-                    eprintln!("warning: batch stale recomputation failed: {}", e);
-                }
-            }
-        }
-    }
+    // Batch recompute stale features — moved to CLI layer (project_ops.rs) in Phase 2a
+    // to eliminate Core's dependency on Format crate for pixel I/O.
+    // CLI should call project_ops::batch_reextract_grading_features() before search if needed.
+    let recomputed_count = 0usize;
 
     // Second pass: reload updated BLOBs and score candidates
     let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
@@ -1445,17 +1423,7 @@ mod tests {
     }
 
     fn setup_test_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL, dpx_count INTEGER NOT NULL DEFAULT 0, exr_count INTEGER NOT NULL DEFAULT 0, mov_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, format TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, histogram_r TEXT NOT NULL, histogram_g TEXT NOT NULL, histogram_b TEXT NOT NULL, luminance_mean REAL NOT NULL, luminance_stddev REAL NOT NULL, color_space_tag TEXT NOT NULL, embedding BLOB, embedding_model TEXT, oklab_hist_l BLOB, oklab_hist_a BLOB, oklab_hist_b BLOB, color_moments BLOB, hist_bins INTEGER NOT NULL DEFAULT 64, feature_status TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_id INTEGER NOT NULL REFERENCES fingerprints(id) ON DELETE CASCADE, tag TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
-             CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);",
-        )
-        .unwrap();
-        conn
+        crate::test_db::setup_test_db()
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::process;
 
 use mengxi_core::lut_diff;
+use crate::project_ops::MengxiFormatLutBridge;
 
 pub fn execute(lut_a: Option<String>, lut_b: Option<String>, format: Option<String>) {
     let is_json = format.as_deref() == Some("json");
@@ -77,7 +78,7 @@ pub fn execute(lut_a: Option<String>, lut_b: Option<String>, format: Option<Stri
         }
     };
 
-    match lut_diff::compare_luts(&path_a, &path_b) {
+    match lut_diff::compare_luts(&MengxiFormatLutBridge, &path_a, &path_b) {
         Ok(result) => {
             if is_json {
                 let channels = serde_json::json!([

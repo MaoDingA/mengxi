@@ -26,6 +26,7 @@ pub struct Thumbnail {
 /// | [watermark] ● EPxx                |
 /// +---+---------------------------+---+
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub fn render_cineprint_png(
     strip: &[f64],
     strip_width: usize,  // = number of frames
@@ -258,6 +259,7 @@ pub fn render_cineprint_png(
 }
 
 /// Draw a thumbnail scaled to fit the given display dimensions.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_thumbnail_scaled(
     img: &mut [u8],
     canvas_w: usize,
@@ -295,6 +297,7 @@ pub(crate) fn draw_thumbnail_scaled(
 }
 
 /// Draw a 1px rectangle outline.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect(
     img: &mut [u8],
     canvas_w: usize,
@@ -340,6 +343,7 @@ pub(crate) fn draw_rect(
 }
 
 /// Draw a line using Bresenham's algorithm.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_line(
     img: &mut [u8],
     canvas_w: usize,

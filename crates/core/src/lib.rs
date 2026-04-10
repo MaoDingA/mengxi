@@ -19,6 +19,7 @@ pub mod db;
 pub mod feedback;
 pub mod feature_pipeline;
 pub mod feature_translation;
+pub mod format_traits;
 pub mod fingerprint;
 pub mod lut_diff;
 pub mod lut_generation;
@@ -36,3 +37,6 @@ pub mod tile_search;
 pub mod vector_index;
 pub mod vectorscope;
 pub mod viz;
+
+#[cfg(test)]
+mod test_db;

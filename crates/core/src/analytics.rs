@@ -793,60 +793,7 @@ mod tests {
     use super::*;
 
     fn setup_test_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE analytics_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                command TEXT NOT NULL,
-                args_json TEXT NOT NULL DEFAULT '{}',
-                started_at INTEGER NOT NULL,
-                ended_at INTEGER NOT NULL DEFAULT 0,
-                duration_ms INTEGER NOT NULL DEFAULT 0,
-                exit_code INTEGER NOT NULL DEFAULT 0,
-                search_to_export_ms INTEGER,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                user TEXT NOT NULL DEFAULT ''
-            );
-            CREATE UNIQUE INDEX idx_sessions_session_id ON analytics_sessions(session_id);
-            CREATE INDEX idx_sessions_started ON analytics_sessions(started_at);
-            CREATE INDEX idx_sessions_command ON analytics_sessions(command);
-            CREATE INDEX idx_sessions_user ON analytics_sessions(user);
-            CREATE TABLE search_feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_name TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                file_format TEXT NOT NULL,
-                action TEXT NOT NULL CHECK(action IN ('accepted', 'rejected')),
-                search_type TEXT,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE INDEX idx_feedback_project ON search_feedback(project_name);
-            CREATE INDEX idx_feedback_created ON search_feedback(created_at);
-            CREATE UNIQUE INDEX idx_feedback_unique_entry ON search_feedback(project_name, file_path);
-            CREATE TABLE calibration_activities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_name TEXT NOT NULL,
-                fingerprint_id INTEGER NOT NULL,
-                removed_tags TEXT NOT NULL DEFAULT '[]',
-                added_tags TEXT NOT NULL DEFAULT '[]',
-                renamed_tags TEXT NOT NULL DEFAULT '[]',
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE INDEX idx_calibration_project ON calibration_activities(project_name);
-            CREATE INDEX idx_calibration_created ON calibration_activities(created_at);
-            CREATE TABLE tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fingerprint_id INTEGER NOT NULL,
-                tag TEXT NOT NULL,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                source TEXT NOT NULL DEFAULT 'ai'
-            );
-            CREATE UNIQUE INDEX idx_tags_fingerprint_tag ON tags(fingerprint_id, tag);",
-        )
-        .unwrap();
-        conn
+        crate::test_db::setup_test_db()
     }
 
     fn ts(offset_secs: i64) -> i64 {
@@ -1532,6 +1479,10 @@ mod tests {
     #[test]
     fn test_get_calibration_metrics_basic() {
         let conn = setup_test_db();
+        // Insert prerequisite rows for FK constraints
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'f.dpx', 'dpx')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.2, 'linear')", []).unwrap();
         conn.execute("INSERT INTO calibration_activities (project_name, fingerprint_id, added_tags, created_at) VALUES ('film_a', 1, '[]', 1000)", []).unwrap();
         conn.execute("INSERT INTO calibration_activities (project_name, fingerprint_id, added_tags, created_at) VALUES ('film_a', 1, '[]', 2000)", []).unwrap();
         conn.execute("INSERT INTO calibration_activities (project_name, fingerprint_id, added_tags, created_at) VALUES ('film_b', 1, '[]', 3000)", []).unwrap();
@@ -1556,6 +1507,10 @@ mod tests {
     #[test]
     fn test_get_calibration_metrics_filtered() {
         let conn = setup_test_db();
+        // Insert prerequisite rows for FK constraints
+        conn.execute("INSERT INTO projects (name, path) VALUES ('film_a', '/tmp/a')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'f.dpx', 'dpx')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.2, 'linear')", []).unwrap();
         conn.execute("INSERT INTO calibration_activities (project_name, fingerprint_id, added_tags, created_at) VALUES ('film_a', 1, '[]', ?1)", rusqlite::params![ts(1000)]).unwrap();
         conn.execute("INSERT INTO calibration_activities (project_name, fingerprint_id, added_tags, created_at) VALUES ('film_b', 1, '[]', ?1)", rusqlite::params![ts(5000)]).unwrap();
 
@@ -1595,6 +1550,10 @@ mod tests {
     #[test]
     fn test_get_vocabulary_metrics_basic() {
         let conn = setup_test_db();
+        // Insert prerequisite rows for FK constraints
+        conn.execute("INSERT INTO projects (name, path) VALUES ('p', '/tmp/p')", []).unwrap();
+        conn.execute("INSERT INTO files (project_id, filename, format) VALUES (1, 'f.dpx', 'dpx')", []).unwrap();
+        conn.execute("INSERT INTO fingerprints (file_id, histogram_r, histogram_g, histogram_b, luminance_mean, luminance_stddev, color_space_tag) VALUES (1, '[]', '[]', '[]', 0.5, 0.2, 'linear')", []).unwrap();
         // Manual tags
         conn.execute("INSERT INTO tags (fingerprint_id, tag, source, created_at) VALUES (1, 'warm', 'manual', 1000)", []).unwrap();
         conn.execute("INSERT INTO tags (fingerprint_id, tag, source, created_at) VALUES (1, 'cool', 'manual', 2000)", []).unwrap();

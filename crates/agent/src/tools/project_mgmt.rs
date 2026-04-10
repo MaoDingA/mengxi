@@ -1,12 +1,42 @@
 // tools/project_mgmt.rs — Project management tools wired to mengxi-core APIs
 
 use async_trait::async_trait;
+use mengxi_core::format_traits::{LutData, LutIo, LutIoError};
 use mengxi_core::lut_generation::{ExportLutConfig, LutGenerationError};
 use mengxi_core::project::{ImportError, VariantBreakdown};
+use mengxi_format::lut as format_lut;
 use serde_json::{json, Value};
 use std::path::Path;
 
+use crate::project_ops;
 use crate::tool::{Tool, ToolError, ToolResult};
+
+/// LUT I/O bridge for the agent layer — delegates to mengxi_format::lut.
+struct AgentLutBridge;
+
+impl LutIo for AgentLutBridge {
+    fn parse_lut(&self, path: &Path) -> Result<LutData, LutIoError> {
+        let data = format_lut::parse_lut(path).map_err(|e| LutIoError::Parse(e.to_string()))?;
+        Ok(LutData {
+            title: data.title,
+            grid_size: data.grid_size,
+            domain_min: data.domain_min,
+            domain_max: data.domain_max,
+            values: data.values,
+        })
+    }
+
+    fn serialize_lut(&self, data: &LutData, path: &Path) -> Result<(), LutIoError> {
+        let inner = format_lut::LutData {
+            title: data.title.clone(),
+            grid_size: data.grid_size,
+            domain_min: data.domain_min,
+            domain_max: data.domain_max,
+            values: data.values.clone(),
+        };
+        format_lut::serialize_lut(&inner, path).map_err(|e| LutIoError::Serialize(e.to_string()))
+    }
+}
 use crate::tools::db_util;
 
 // --- ListProjectsTool ---
@@ -111,7 +141,7 @@ impl Tool for ImportProjectTool {
 
         let conn = db_util::open_connection()?;
         let (_project, breakdown) =
-            mengxi_core::project::register_project(&conn, name, path, 0, |_, _, _| {})
+            project_ops::register_project(&conn, name, path, 0, |_, _, _| {})
                 .map_err(handle_import_error)?;
 
         let display = variant_breakdown_to_json(&breakdown, name);
@@ -151,7 +181,7 @@ impl Tool for ReextractFeaturesTool {
 
         let conn = db_util::open_connection()?;
 
-        let fps = mengxi_core::fingerprint::list_fingerprints_by_project(&conn, project)
+        let fps = project_ops::list_fingerprints_by_project(&conn, project)
             .map_err(|e| ToolError::ExecutionError(format!("DATABASE_ERROR -- {}", e)))?;
 
         if fps.is_empty() {
@@ -161,7 +191,7 @@ impl Tool for ReextractFeaturesTool {
             )));
         }
 
-        let result = mengxi_core::fingerprint::batch_reextract_grading_features(
+        let result = project_ops::batch_reextract_grading_features(
             &conn,
             &fps,
             0, // tile_grid_size=0: skip tile extraction
@@ -256,7 +286,7 @@ impl Tool for ExportLutTool {
         config.grid_size = grid_size;
 
         let result =
-            mengxi_core::lut_generation::export_lut_force(&conn, config).map_err(|e| match e {
+            mengxi_core::lut_generation::export_lut_force(&conn, &AgentLutBridge, config).map_err(|e| match e {
                 LutGenerationError::FingerprintNotFound => {
                     ToolError::ExecutionError("FINGERPRINT_NOT_FOUND -- no fingerprints for this project".into())
                 }

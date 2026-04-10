@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process;
 
 use mengxi_core::db;
-use mengxi_core::project;
+use crate::project_ops;
 
 
 pub fn execute(project: Option<String>, name: Option<String>, format: String) {
@@ -45,7 +45,7 @@ pub fn execute(project: Option<String>, name: Option<String>, format: String) {
     let tile_grid_size = cfg.import.tile_grid_size;
 
     match db::open_db() {
-        Ok(conn) => match project::register_project(&conn, &project_name, path, tile_grid_size, |current, total, filename| {
+        Ok(conn) => match project_ops::register_project(&conn, &project_name, path, tile_grid_size, |current, total, filename| {
             let percent = if total == 0 { 100 } else { (current * 100) / total };
             let filled = (percent / 5).min(20);
             let empty = 20 - filled;
@@ -241,10 +241,10 @@ pub fn execute(project: Option<String>, name: Option<String>, format: String) {
             Err(e) => {
                 if is_json {
                     let (code, message) = match &e {
-                        project::ImportError::PathNotFound(msg) => ("IMPORT_PATH_NOT_FOUND", msg.clone()),
-                        project::ImportError::DuplicateName(msg) => ("IMPORT_DUPLICATE_NAME", msg.clone()),
-                        project::ImportError::DbError(_) => ("IMPORT_DB_ERROR", "Database operation failed".to_string()),
-                        project::ImportError::CorruptFile { filename, reason } => {
+                        project_ops::ImportError::PathNotFound(msg) => ("IMPORT_PATH_NOT_FOUND", msg.clone()),
+                        project_ops::ImportError::DuplicateName(msg) => ("IMPORT_DUPLICATE_NAME", msg.clone()),
+                        project_ops::ImportError::DbError(_) => ("IMPORT_DB_ERROR", "Database operation failed".to_string()),
+                        project_ops::ImportError::CorruptFile { filename, reason } => {
                             ("IMPORT_CORRUPT_FILE", format!("Failed to decode {}: {}", filename, reason))
                         }
                     };
@@ -259,16 +259,16 @@ pub fn execute(project: Option<String>, name: Option<String>, format: String) {
                     process::exit(1);
                 } else {
                     match e {
-                        project::ImportError::PathNotFound(msg) => {
+                        project_ops::ImportError::PathNotFound(msg) => {
                             eprintln!("Error: {msg}");
                         }
-                        project::ImportError::DuplicateName(msg) => {
+                        project_ops::ImportError::DuplicateName(msg) => {
                             eprintln!("Error: {msg}");
                         }
-                        project::ImportError::DbError(msg) => {
+                        project_ops::ImportError::DbError(msg) => {
                             eprintln!("Error: IMPORT_DB_ERROR — {msg}");
                         }
-                        project::ImportError::CorruptFile { filename, reason } => {
+                        project_ops::ImportError::CorruptFile { filename, reason } => {
                             eprintln!("Error: IMPORT_CORRUPT_FILE -- Failed to decode {}: {}", filename, reason);
                         }
                     }

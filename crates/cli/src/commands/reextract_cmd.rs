@@ -1,7 +1,7 @@
 use std::process;
 
 use mengxi_core::db;
-use mengxi_core::fingerprint;
+use crate::project_ops;
 
 
 pub fn execute(project: Option<String>, file: Option<String>, format: String) {
@@ -26,7 +26,7 @@ pub fn execute(project: Option<String>, file: Option<String>, format: String) {
         }
     };
     let fps = if let Some(ref proj) = project {
-        match fingerprint::list_fingerprints_by_project(&conn, proj) {
+        match project_ops::list_fingerprints_by_project(&conn, proj) {
             Ok(fps) if fps.is_empty() => {
                 if is_json {
                     let output = serde_json::json!({
@@ -56,7 +56,7 @@ pub fn execute(project: Option<String>, file: Option<String>, format: String) {
     } else {
         // File mode: look up fingerprints for the given file path
         let file_path = file.as_ref().unwrap();
-        match fingerprint::list_fingerprints_by_file(&conn, file_path) {
+        match project_ops::list_fingerprints_by_file(&conn, file_path) {
             Ok(fps) if fps.is_empty() => {
                 if is_json {
                     let output = serde_json::json!({
@@ -90,7 +90,7 @@ pub fn execute(project: Option<String>, file: Option<String>, format: String) {
     let mut failures: Vec<serde_json::Value> = Vec::new();
 
     let reextract_cfg = crate::config::load_or_create_config().unwrap_or_default();
-    match fingerprint::batch_reextract_grading_features(
+    match project_ops::batch_reextract_grading_features(
         &conn,
         &fps,
         reextract_cfg.import.tile_grid_size,
