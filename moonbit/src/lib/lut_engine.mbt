@@ -64,11 +64,9 @@ pub fn mengxi_generate_lut(
         let (or, og, ob) = apply_transform(r_f, g_f, b_f, src_cs, dst_cs)
 
         let i = idx * n * n * 3 + g_idx * n * 3 + r_idx * 3
-        if i < out_ptr.length() { out_ptr[i] = or }
-        let i1 = i + 1
-        if i1 < out_ptr.length() { out_ptr[i1] = og }
-        let i2 = i + 2
-        if i2 < out_ptr.length() { out_ptr[i2] = ob }
+        out_ptr[i] = or
+        out_ptr[i + 1] = og
+        out_ptr[i + 2] = ob
 
         r_idx = r_idx + 1
       }

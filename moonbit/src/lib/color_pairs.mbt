@@ -28,28 +28,12 @@ fn cp_clamp(v : Double, lo : Double, hi : Double) -> Double {
 /// Compute hue angle from Oklab a,b components.
 /// Returns angle in [0, 2*pi).
 fn cp_hue_angle(a : Double, b : Double) -> Double {
-  let two_pi = 2.0 * cp_pi
-  let angle = my_atan2(b, a)
-  let normalized = angle - two_pi * @math.floor(angle / two_pi)
-  if normalized >= two_pi { normalized - two_pi } else { normalized }
+  hue_angle_from_ab(a, b)
 }
 
 /// Convert hue angle (radians) to degrees.
 fn cp_to_degrees(rad : Double) -> Double {
   rad * 180.0 / cp_pi
-}
-
-/// Normalize angle to [0, 2*pi).
-fn cp_normalize_angle(a : Double) -> Double {
-  let two_pi = 2.0 * cp_pi
-  let n = a - two_pi * @math.floor(a / two_pi)
-  if n >= two_pi { n - two_pi } else { n }
-}
-
-/// Compute angular distance between two hue angles (shortest path, [0, pi]).
-fn cp_angular_distance(a : Double, b : Double) -> Double {
-  let diff = cp_normalize_angle(a - b)
-  if diff > cp_pi { 2.0 * cp_pi - diff } else { diff }
 }
 
 /// Classify complementary pair type by hue angles.

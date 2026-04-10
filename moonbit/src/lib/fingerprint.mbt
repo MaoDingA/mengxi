@@ -80,29 +80,34 @@ fn compute_mean_stddev(values : FixedArray[Double], len : Int) -> (Double, Doubl
 ///   data_len     — number of f64 values (num_pixels * 3)
 ///   data_ptr     — interleaved RGB pixel data, normalized to [0.0, 1.0]
 ///   color_tag    — color space tag: 0=linear, 1=log, 2=video
-///   out_len      — length of output buffer (must be >= output_size() = 194)
+///   output_mode  — controls output layout (see below)
+///   out_len      — length of output buffer
 ///   out_ptr      — output buffer for histogram bins + statistics
 ///
-/// Output layout (194 f64 values):
-///   [0..64)   — Red histogram bins
-///   [64..128) — Green histogram bins
-///   [128..192)— Blue histogram bins
-///   [192]     — Luminance mean
-///   [193]     — Luminance stddev
+/// Output modes:
+///   0 = full (default, 194 f64): histograms(192) + lum_mean + lum_stddev
+///   1 = compact (6 f64): lum_mean, lum_stddev, r_mean, g_mean, b_mean, chroma_mean
+///   2 = stats_only (2 f64): lum_mean, lum_stddev
 ///
 /// Returns: number of output values written, or negative error code.
 pub fn mengxi_compute_fingerprint(
   data_len : Int,
   data_ptr : FixedArray[Double],
-  color_tag : Int,
+  _color_tag : Int,
+  output_mode : Int,
   out_len : Int,
   out_ptr : FixedArray[Double]
 ) -> Int {
   let nb = bins_per_channel()
-  let os = output_size()
 
   if data_len < 3 { return -1 }
-  if out_len < os { return -2 }
+
+  // Validate output buffer size based on mode
+  let required : Int =
+    if output_mode == 1 { 6 }
+    else if output_mode == 2 { 2 }
+    else { output_size() }
+  if out_len < required { return -2 }
 
   let num_pixels = data_len / 3
 
@@ -120,6 +125,40 @@ pub fn mengxi_compute_fingerprint(
     i = i + 1
   }
   let (mean, stddev) = compute_mean_stddev(lum_array, num_pixels)
+
+  if output_mode == 1 {
+    // Compact mode: 6 summary statistics
+    if out_ptr.length() >= 6 {
+      out_ptr[0] = mean
+      out_ptr[1] = stddev
+      // Channel means from histogram centroids
+      let mut r_sum = 0.0; let mut g_sum = 0.0; let mut b_sum = 0.0
+      let mut bi = 0
+      while bi < nb {
+        r_sum = r_sum + hist_r[bi] * (bi.to_double() + 0.5) / nb.to_double()
+        g_sum = g_sum + hist_g[bi] * (bi.to_double() + 0.5) / nb.to_double()
+        b_sum = b_sum + hist_b[bi] * (bi.to_double() + 0.5) / nb.to_double()
+        bi = bi + 1
+      }
+      out_ptr[2] = r_sum
+      out_ptr[3] = g_sum
+      out_ptr[4] = b_sum
+      // Chroma mean approximation
+      out_ptr[5] = @math.pow((r_sum - g_sum) * (r_sum - g_sum) + (g_sum - b_sum) * (g_sum - b_sum), 0.5)
+    }
+    return 6
+  } else if output_mode == 2 {
+    // Stats-only mode: luminance mean + stddev
+    if out_ptr.length() >= 2 {
+      out_ptr[0] = mean
+      out_ptr[1] = stddev
+    }
+    return 2
+  }
+
+  // Mode 0 (full): write histograms + stats (original behavior)
+  let os = output_size()
+  if out_len < os { return -2 }
 
   i = 0
   while i < nb {
@@ -149,7 +188,7 @@ pub fn mengxi_compute_fingerprint(
 fn init {
   let dummy_data = FixedArray::make(6, 0.5)
   let dummy_out = FixedArray::make(output_size(), 0.0)
-  let _ = mengxi_compute_fingerprint(6, dummy_data, 0, output_size(), dummy_out)
+  let _ = mengxi_compute_fingerprint(6, dummy_data, 0, 0, output_size(), dummy_out)
 }
 
 // ---------- Unit tests ----------
@@ -217,7 +256,7 @@ test {
   data[0] = 1.0; data[1] = 0.0; data[2] = 0.0
   data[3] = 0.0; data[4] = 1.0; data[5] = 0.0
   let out = FixedArray::make(output_size(), 0.0)
-  let result = mengxi_compute_fingerprint(6, data, 0, output_size(), out)
+  let result = mengxi_compute_fingerprint(6, data, 0, 0, output_size(), out)
   assert_eq(result, output_size())
   let lum_mean = out[bins_per_channel() * 3]
   inspect(lum_mean, content="0.4639")
@@ -226,13 +265,35 @@ test {
 test {
   let data = FixedArray::make(2, 0.5)
   let out = FixedArray::make(output_size(), 0.0)
-  let result = mengxi_compute_fingerprint(2, data, 0, output_size(), out)
+  let result = mengxi_compute_fingerprint(2, data, 0, 0, output_size(), out)
   assert_eq(result, -1)
 }
 
 test {
   let data = FixedArray::make(6, 0.5)
   let out = FixedArray::make(10, 0.0)
-  let result = mengxi_compute_fingerprint(6, data, 0, 10, out)
+  let result = mengxi_compute_fingerprint(6, data, 0, 0, 10, out)
   assert_eq(result, -2)
+}
+
+test {
+  // Compact mode (output_mode=1): returns 6 values
+  let data = FixedArray::make(6, 0.0)
+  data[0] = 1.0; data[1] = 0.0; data[2] = 0.0
+  data[3] = 0.0; data[4] = 1.0; data[5] = 0.0
+  let out = FixedArray::make(6, 0.0)
+  let result = mengxi_compute_fingerprint(6, data, 0, 1, 6, out)
+  assert_eq(result, 6)
+  // lum_mean should be positive for non-black pixels
+  assert_true(out[0] > 0.0)
+}
+
+test {
+  // Stats-only mode (output_mode=2): returns 2 values
+  let data = FixedArray::make(6, 0.5)
+  let out = FixedArray::make(2, 0.0)
+  let result = mengxi_compute_fingerprint(6, data, 0, 2, 2, out)
+  assert_eq(result, 2)
+  // Uniform gray → mean should be ~0.5 luminance
+  assert_true(out[0] > 0.0)
 }

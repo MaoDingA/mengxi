@@ -8,11 +8,6 @@
 
 // ---------- Internal helpers ----------
 
-/// Clamp value to [lo, hi].
-fn cm_clamp(v : Double, lo : Double, hi : Double) -> Double {
-  if v < lo { lo } else if v > hi { hi } else { v }
-}
-
 /// Classify a segment's mood from its average Oklab values.
 /// Returns mood tag: 0=Dark, 1=Vivid, 2=Warm, 3=Cool, 4=Neutral.
 fn cm_classify_mood(avg_l : Double, avg_a : Double, avg_b : Double) -> Int {

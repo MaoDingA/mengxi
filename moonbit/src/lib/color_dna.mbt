@@ -13,11 +13,7 @@ fn cd_clamp(v : Double, lo : Double, hi : Double) -> Double {
 /// Compute hue angle from Oklab a,b components.
 /// Returns angle in [0, 2*pi).
 fn cd_hue_angle(a : Double, b : Double) -> Double {
-  let pi = 3.14159265358979323846
-  let two_pi = 2.0 * pi
-  let angle = my_atan2(b, a)
-  let normalized = angle - two_pi * @math.floor(angle / two_pi)
-  if normalized >= two_pi { normalized - two_pi } else { normalized }
+  hue_angle_from_ab(a, b)
 }
 
 // ---------- FFI exports ----------

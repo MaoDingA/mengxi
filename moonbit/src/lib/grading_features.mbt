@@ -536,7 +536,7 @@ test {
 pub fn mengxi_extract_grading_features(
   pixel_ptr : FixedArray[Double],
   pixel_len : Int,
-  color_space_tag : Int,
+  _color_space_tag : Int,
   hist_bins : Int,
   hist_l_ptr : FixedArray[Double],
   hist_a_ptr : FixedArray[Double],

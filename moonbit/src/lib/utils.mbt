@@ -41,10 +41,57 @@ pub fn my_sqrt(x : Double) -> Double {
 /// Pi constant (MoonBit may not expose this directly in all build modes).
 pub fn pi_const() -> Double { 3.14159265358979323846 }
 
-/// Hue angle from Y,X coordinates (atan2 wrapper).
+/// Robust atan2 via Taylor series (works when @math.atan2 is unreliable).
 /// Returns angle in radians, range [-pi, pi].
+pub fn my_atan2(y : Double, x : Double) -> Double {
+  let pi = pi_const()
+  fn atan_approx(a : Double) -> Double {
+    let abs_a = if a >= 0.0 { a } else { -a }
+    let reduce = abs_a > 1.0
+    let t = if reduce { 1.0 / a } else { a }
+    let sign = if a >= 0.0 { 1.0 } else { -1.0 }
+    let val = t
+    let mut result = 0.0
+    let mut term = val
+    let mut i = 1
+    while i <= 15 {
+      result = result + term
+      term = term * (-val * val) * ((2 * i - 1).to_double()) / ((2 * i + 1).to_double())
+      i = i + 1
+    }
+    if reduce { sign * pi / 2.0 - result } else { result }
+  }
+
+  if x > 0.0 {
+    atan_approx(y / x)
+  } else if x < 0.0 && y >= 0.0 {
+    atan_approx(y / x) + pi
+  } else if x < 0.0 && y < 0.0 {
+    atan_approx(y / x) - pi
+  } else if x == 0.0 && y > 0.0 {
+    pi / 2.0
+  } else if x == 0.0 && y < 0.0 {
+    -pi / 2.0
+  } else {
+    0.0
+  }
+}
+
+/// Normalize angle to [0, 2*pi).
+pub fn normalize_angle_0_2pi(a : Double) -> Double {
+  let two_pi = 2.0 * pi_const()
+  let result = a - two_pi * @math.floor(a / two_pi)
+  if result >= two_pi { result - two_pi } else { result }
+}
+
+/// Hue angle from Oklab (a,b) → [0, 2*pi).
+pub fn hue_angle_from_ab(a : Double, b : Double) -> Double {
+  normalize_angle_0_2pi(my_atan2(b, a))
+}
+
+// Legacy alias: hue_angle delegates to my_atan2 for backward compat.
 pub fn hue_angle(y : Double, x : Double) -> Double {
-  @math.atan2(y, x)
+  my_atan2(y, x)
 }
 
 // DCE prevention
@@ -54,6 +101,9 @@ fn init {
   let _ = approx_eq_tol(0.0, 0.0, 0.001)
   let _ = my_sqrt(4.0)
   let _ = pi_const()
+  let _ = my_atan2(1.0, 0.0)
+  let _ = normalize_angle_0_2pi(0.5)
+  let _ = hue_angle_from_ab(0.1, 0.2)
   let _ = hue_angle(1.0, 0.0)
 }
 

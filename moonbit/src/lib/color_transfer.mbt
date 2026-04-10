@@ -232,8 +232,8 @@ test "color_transfer_identity" {
         let err_g = out[idx + 1] - in_g
         let err_b = out[idx + 2] - in_b
         let max_err = if err_r < 0.0 { 0.0 - err_r } else { err_r }
-        let eg = if err_g < 0.0 { 0.0 - err_g } else { err_g }
-        let eb = if err_b < 0.0 { 0.0 - err_b } else { err_b }
+        let _eg = if err_g < 0.0 { 0.0 - err_g } else { err_g }
+        let _eb = if err_b < 0.0 { 0.0 - err_b } else { err_b }
         // CDF matching with uniform data should give reasonable identity
         assert_true(max_err < 0.5)
         bi = bi + 1
