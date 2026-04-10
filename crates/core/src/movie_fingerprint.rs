@@ -36,6 +36,7 @@ type Result<T> = std::result::Result<T, MovieFingerprintError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_extract_center_column(
         pixel_len: i32,
@@ -79,6 +80,7 @@ extern "C" {
 ///
 /// # Returns
 /// Center column as interleaved RGB values (height * 3 elements).
+#[cfg(moonbit_ffi)]
 pub fn extract_center_column(
     pixels: &[f64],
     width: usize,
@@ -124,6 +126,15 @@ pub fn extract_center_column(
     Ok(output)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn extract_center_column(
+    _pixels: &[f64],
+    _width: usize,
+    _height: usize,
+) -> Result<Vec<f64>> {
+    Err(MovieFingerprintError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 /// Extract a representative color column by averaging each row across the full width.
 ///
 /// Instead of sampling a single pixel at the center (which is noisy and jarring),
@@ -167,6 +178,7 @@ const MAX_CINEIRIS_DIAMETER: usize = 4096;
 ///
 /// # Returns
 /// Strip image as interleaved RGB values (num_frames * frame_height * 3 elements).
+#[cfg(moonbit_ffi)]
 pub fn stitch_fingerprint_strip(
     columns: &[f64],
     num_frames: usize,
@@ -217,6 +229,15 @@ pub fn stitch_fingerprint_strip(
     Ok(output)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn stitch_fingerprint_strip(
+    _columns: &[f64],
+    _num_frames: usize,
+    _frame_height: usize,
+) -> Result<Vec<f64>> {
+    Err(MovieFingerprintError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 /// Apply CineIris transform to a fingerprint strip.
 ///
 /// # Arguments
@@ -227,6 +248,7 @@ pub fn stitch_fingerprint_strip(
 ///
 /// # Returns
 /// Transformed strip as interleaved RGB values.
+#[cfg(moonbit_ffi)]
 pub fn cineiris_transform(
     strip: &[f64],
     width: usize,
@@ -277,6 +299,16 @@ pub fn cineiris_transform(
     }
 
     Ok(output)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn cineiris_transform(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _diameter: usize,
+) -> Result<Vec<f64>> {
+    Err(MovieFingerprintError::FfiError("MoonBit FFI not available".to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +814,7 @@ mod tests {
         assert!(err.contains("expected P6"), "error: {}", err);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_ffi_extract_center_column() {
         // 3x3 image: center column is x=1
@@ -884,6 +917,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("no frame paths"));
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_fingerprint_creates_output_dir() {
         let dir = TempDir::new().unwrap();

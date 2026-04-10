@@ -2,6 +2,8 @@
 # build_moonbit.sh — Build MoonBit static library for Rust FFI
 # Run from project root: ./build_moonbit.sh
 
+set -e  # Exit on error
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MOONBIT_DIR="${SCRIPT_DIR}/moonbit"
 BUILD_LIB_DIR="${MOONBIT_DIR}/_build/native/debug/build/lib"
@@ -10,7 +12,7 @@ TARGET_DIR="${MOONBIT_DIR}/target"
 ARCHIVE="${TARGET_DIR}/libmoonbit_core.a"
 
 echo "Building MoonBit library..."
-(cd "$MOONBIT_DIR" && moon build --target native 2>&1 || true)
+(cd "$MOONBIT_DIR" && moon build --target native)
 
 # Compile generated C to object file
 echo "Compiling generated C..."

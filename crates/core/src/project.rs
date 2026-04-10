@@ -7,6 +7,10 @@ use std::path::Path;
 use crate::color_science;
 use crate::downsample::{self, MAX_DIMENSION};
 use crate::fingerprint::{self, FingerprintError};
+
+// TODO(architect): Core imports from Format crate violates declared dependency direction.
+// Should move format-specific parsing to CLI layer via trait abstraction.
+// See CLAUDE.md: "Dependency direction: cli → core → format"
 use mengxi_format::dpx;
 use mengxi_format::exr as exr_format;
 use mengxi_format::mov as mov_format;
@@ -916,6 +920,7 @@ mod tests {
         assert!(breakdown.variants.iter().any(|v| v.contains("10-bit")));
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_register_dpx_extracts_fingerprint() {
         let dir = tempfile::tempdir().unwrap();
@@ -949,6 +954,7 @@ mod tests {
         assert!(!hist_r.is_empty());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_register_exr_extracts_fingerprint() {
         let dir = tempfile::tempdir().unwrap();
@@ -970,6 +976,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_fingerprint_color_space_tag_mapping() {
         let dir = tempfile::tempdir().unwrap();
@@ -1001,6 +1008,7 @@ mod tests {
         assert_eq!(tags, vec!["log".to_string(), "video".to_string()]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_fingerprint_luminance_values_reasonable() {
         let dir = tempfile::tempdir().unwrap();
@@ -1031,6 +1039,7 @@ mod tests {
         assert!(mean <= 1.0, "expected luminance mean <= 1.0, got {}", mean);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_register_with_mixed_fingerprints() {
         let dir = tempfile::tempdir().unwrap();

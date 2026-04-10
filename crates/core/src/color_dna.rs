@@ -21,12 +21,16 @@ type Result<T> = std::result::Result<T, ColorDnaError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_extract_color_dna(
         strip_len: i32,
         strip_ptr: *const f64,
         width: i32,
         height: i32,
+        dna_a_ptr: *const f64,
+        dna_b_ptr: *const f64,
+        dna_len: i32,
         out_len: i32,
         out_ptr: *mut f64,
     ) -> i32;
@@ -143,6 +147,7 @@ impl ColorDnaComparison {
 /// * `strip` — Interleaved sRGB [0,1] strip data
 /// * `width` — Strip width (number of frames)
 /// * `height` — Strip height
+#[cfg(moonbit_ffi)]
 pub fn extract_color_dna(strip: &[f64], width: usize, height: usize) -> Result<ColorDna> {
     if width == 0 || height == 0 {
         return Err(ColorDnaError::InvalidInput(
@@ -184,9 +189,15 @@ pub fn extract_color_dna(strip: &[f64], width: usize, height: usize) -> Result<C
     ColorDna::from_raw(&output)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn extract_color_dna(_strip: &[f64], _width: usize, _height: usize) -> Result<ColorDna> {
+    Err(ColorDnaError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 /// Compare two color DNA signatures for visual similarity.
 ///
 /// Both DNA arrays must have the same length (18 elements each).
+#[cfg(moonbit_ffi)]
 pub fn compare_color_dna(dna_a: &ColorDna, dna_b: &ColorDna) -> Result<ColorDnaComparison> {
     let raw_a = dna_a.to_raw();
     let raw_b = dna_b.to_raw();
@@ -215,6 +226,11 @@ pub fn compare_color_dna(dna_a: &ColorDna, dna_b: &ColorDna) -> Result<ColorDnaC
     ColorDnaComparison::from_raw(&output)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn compare_color_dna(_dna_a: &ColorDna, _dna_b: &ColorDna) -> Result<ColorDnaComparison> {
+    Err(ColorDnaError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -223,6 +239,7 @@ pub fn compare_color_dna(dna_a: &ColorDna, dna_b: &ColorDna) -> Result<ColorDnaC
 mod tests {
     use super::*;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_color_dna_uniform() {
         // 4x2 strip, all gray
@@ -248,6 +265,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_compare_identical_dna() {
         let strip = vec![0.5; 4 * 2 * 3];

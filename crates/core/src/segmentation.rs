@@ -560,6 +560,7 @@ mod tests {
         assert_eq!(params.max_iterations, 10);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_segment_features_empty() {
         let data = vec![0.5, 0.0, 0.0];

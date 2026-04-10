@@ -406,6 +406,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_score_spatial_identical_tiles() {
         let tiles = vec![
@@ -436,6 +437,7 @@ mod tests {
         assert!(matches.is_empty());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_score_spatial_partial_overlap() {
         let query = vec![
@@ -451,6 +453,7 @@ mod tests {
         assert_eq!(matches.len(), 1);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_score_any_finds_best_match() {
         // Create features with distinct histograms so bhattacharyya can differentiate

@@ -294,6 +294,7 @@ mod tests {
         assert!(result.unwrap().is_empty());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_tile_features_2x2_grid() {
         // 4x4 image = 16 pixels, each 3 Oklab channels
@@ -326,6 +327,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_tile_features_4x4_grid() {
         // 8x8 image = 64 pixels
@@ -337,6 +339,7 @@ mod tests {
         assert_eq!(tiles.len(), 16);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_tile_features_non_divisible_dimensions() {
         // 5x5 image with 3x3 grid — dimensions don't divide evenly
@@ -348,6 +351,7 @@ mod tests {
         assert_eq!(tiles.len(), 9);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_tile_features_tile_pixel_isolation() {
         // Create image where top-left quadrant has different values from bottom-right

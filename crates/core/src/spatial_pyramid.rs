@@ -280,6 +280,7 @@ mod tests {
         SpatialPyramid { levels }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_pyramid_identical() {
         let p = make_pyramid(0.5);
@@ -315,6 +316,7 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-10, "SPM weights must sum to 1.0, got {}", sum);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_pyramid_different_levels() {
         // Use peaked histograms so bhattacharyya can differentiate them
@@ -373,6 +375,7 @@ mod tests {
         assert_eq!(pyramid.levels[2].tiles.len(), 16);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_build_pyramid_from_tiles_comparison() {
         // Two sets of tiles with different features

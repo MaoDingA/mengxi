@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use crate::color_science::{bhattacharyya_distance, GradingFeatures};
 
-type FingerprintSearchRow = (String, String, String, Option<Vec<u8>>, Option<String>);
+type FingerprintSearchRowWithId = (String, String, String, i64, Option<Vec<u8>>, Option<String>);
 type TagSearchRow = (i64, String, String, String, Option<Vec<u8>>, Option<String>);
 type FeatureSearchRow = (i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32);
 type CombinedSearchRow = (i64, i64, String, String, String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i32, Option<Vec<u8>>, String, Option<String>);
@@ -325,49 +325,72 @@ pub fn search_by_image(
         }
     };
 
-    // Step 2: Query all fingerprints with their embeddings
+    // Step 2: Try to use HNSW for pre-filtering
+    let db_dir = crate::db::db_dir();
+    let index_path = db_dir.join("vector_index.bin");
+
+    let candidate_fp_ids: Option<Vec<i64>> = match VectorIndex::get_or_build(conn, &index_path) {
+        Ok(idx) if idx.should_use_hnsw() => {
+            // Use HNSW to get candidate IDs (limit * 10 for recall)
+            let pre_filter_k = std::cmp::max(options.limit * 10, 500);
+            let results = idx.search(&ref_embedding, pre_filter_k);
+            if results.is_empty() {
+                None
+            } else {
+                Some(results.into_iter().map(|(id, _)| id).collect())
+            }
+        }
+        Ok(_) => {
+            // Index exists but too small — fall back to full scan
+            None
+        }
+        Err(e) => {
+            eprintln!("Warning: HNSW index unavailable ({}), falling back to full scan", e);
+            None
+        }
+    };
+
+    // Step 3: Query fingerprints (either candidates or all)
     let mut sql = String::from(
         "SELECT p.name, f.filename, f.format,
-                fp.embedding, fp.embedding_model
+                fp.id, fp.embedding, fp.embedding_model
          FROM fingerprints fp
          JOIN files f ON f.id = fp.file_id
-         JOIN projects p ON p.id = f.project_id"
+         JOIN projects p ON p.id = f.project_id
+         WHERE fp.embedding IS NOT NULL"
     );
+
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(ref ids) = candidate_fp_ids {
+        let placeholders: Vec<String> = (0..ids.len()).map(|_| "?".to_string()).collect();
+        sql.push_str(&format!(" AND fp.id IN ({})", placeholders.join(", ")));
+        for id in ids {
+            params.push(Box::new(*id));
+        }
+    }
+
     if options.project.is_some() {
-        sql.push_str(" WHERE p.name = ?1");
+        sql.push_str(" AND p.name = ?");
+        params.push(Box::new(options.project.clone().unwrap()));
     }
 
     let mut stmt = conn.prepare(&sql).map_err(|e| SearchError::DatabaseError(e.to_string()))?;
 
-    let rows: Vec<FingerprintSearchRow> =
-        match &options.project {
-            Some(proj) => stmt
-                .query_map([proj], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<Vec<u8>>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })
-                .map_err(|e| SearchError::DatabaseError(e.to_string()))?
-                .collect::<Result<_, _>>()
-                .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
-            None => stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<Vec<u8>>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })
-                .map_err(|e| SearchError::DatabaseError(e.to_string()))?
-                .collect::<Result<_, _>>()
-                .map_err(|e| SearchError::DatabaseError(e.to_string()))?,
-        };
+    let rows: Vec<FingerprintSearchRowWithId> =
+        stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| SearchError::DatabaseError(e.to_string()))?;
 
     if rows.is_empty() {
         return if options.project.is_some() {
@@ -377,10 +400,10 @@ pub fn search_by_image(
         };
     }
 
-    // Step 3: Score each fingerprint
+    // Step 4: Score each fingerprint
     let mut scored: Vec<(String, String, String, f64)> = Vec::new();
 
-    for (project_name, file_name, file_format, embedding_blob, cached_model) in rows {
+    for (project_name, file_name, file_format, _fp_id, embedding_blob, cached_model) in rows {
         match (embedding_blob, cached_model) {
             // Has cached embedding from the same model
             (Some(blob), Some(ref m)) if m == model_name || model_name.is_empty() => {
@@ -1165,60 +1188,77 @@ fn hybrid_search_impl(
     let fp_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
     let tags_map = load_tags_batch(conn, &fp_ids)?;
 
-    // Stale recomputation rate limit (FR31)
-    const MAX_RECOMPUTATIONS_PER_SEARCH: usize = 10;
-    let mut recomputation_count: usize = 0;
-    let mut rate_limit_warned = false;
-
-    // Score each candidate
-    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
-
-    for (_fp_id, _file_id, project_name, filename, format, mut hist_l, mut hist_a, mut hist_b, mut moments, hist_bins_i32, embedding_blob, candidate_cs_tag, feature_status) in rows {
-        let mut hist_bins = hist_bins_i32 as usize;
-        // Check for stale fingerprint and attempt recomputation
-        let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
-        if is_stale {
-            if recomputation_count < MAX_RECOMPUTATIONS_PER_SEARCH {
-                recomputation_count += 1;
-                match crate::fingerprint::reextract_grading_features(conn, _fp_id, 0) {
-                    Ok(crate::fingerprint::ReextractResult::Reextracted) => {
-                        // Re-read updated BLOBs from DB for correct scoring
-                        if let Ok((new_hl, new_ha, new_hb, new_m, new_bins)) = conn.query_row(
-                            "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, COALESCE(hist_bins, 64) FROM fingerprints WHERE id = ?1",
-                            rusqlite::params![_fp_id],
-                            |row| Ok((
-                                row.get::<_, Vec<u8>>(0)?,
-                                row.get::<_, Vec<u8>>(1)?,
-                                row.get::<_, Vec<u8>>(2)?,
-                                row.get::<_, Vec<u8>>(3)?,
-                                row.get::<_, i32>(4)?,
-                            )),
-                        ) {
-                            hist_l = new_hl;
-                            hist_a = new_ha;
-                            hist_b = new_hb;
-                            moments = new_m;
-                            hist_bins = new_bins as usize;
-                        }
-                        eprintln!("info: recomputed stale features for {} ({})", project_name, filename);
-                    }
-                    Ok(crate::fingerprint::ReextractResult::Skipped(reason)) => {
-                        eprintln!("warning: skipped stale recomputation for {} ({}): {}", project_name, filename, reason);
-                    }
-                    Ok(crate::fingerprint::ReextractResult::Error(reason)) => {
-                        eprintln!("warning: stale recomputation failed for {} ({}): {}", project_name, filename, reason);
-                    }
-                    Err(e) => {
-                        eprintln!("warning: stale recomputation failed for {} ({}): {}", project_name, filename, e);
-                    }
-                }
+    // First pass: collect stale fingerprint IDs for batch re-extraction
+    let stale_fp_ids: Vec<(i64, String)> = rows.iter()
+        .filter_map(|(fp_id, file_id, _project_name, _filename, _format, _hl, _ha, _hb, _moments, _bins, _emb, _cs_tag, feature_status)| {
+            let is_stale = feature_status.is_none() || feature_status.as_deref() == Some("stale");
+            if is_stale {
+                let path = format!("file_id_{}", file_id);
+                Some((*fp_id, path))
             } else {
-                if !rate_limit_warned {
-                    eprintln!("warning: stale recomputation rate limit ({} per search) reached, skipping remaining stale candidates", MAX_RECOMPUTATIONS_PER_SEARCH);
-                    rate_limit_warned = true;
+                None
+            }
+        })
+        .collect();
+
+    // Batch recompute stale features (single transaction instead of N queries)
+    const MAX_RECOMPUTATIONS_PER_SEARCH: usize = 10;
+    let mut recomputed_count = 0;
+    if !stale_fp_ids.is_empty() {
+        let batch_count = stale_fp_ids.len().min(MAX_RECOMPUTATIONS_PER_SEARCH);
+        if batch_count > 0 {
+            let batch = &stale_fp_ids[..batch_count];
+            match crate::fingerprint::batch_reextract_grading_features(
+                conn,
+                batch,
+                0, // tile_grid_size
+                |current, total, _path| {
+                    eprintln!("info: batch re-extracting stale features ({}/{})", current, total);
+                },
+            ) {
+                Ok(result) => {
+                    recomputed_count = result.reextracted;
+                    eprintln!("info: batch recomputed {} stale features ({} skipped, {} failed)",
+                        recomputed_count, result.skipped, result.failed);
+                }
+                Err(e) => {
+                    eprintln!("warning: batch stale recomputation failed: {}", e);
                 }
             }
         }
+    }
+
+    // Second pass: reload updated BLOBs and score candidates
+    let mut scored: Vec<(f64, hybrid_scoring::HybridScore, String, String, String, String, String)> = Vec::new();
+
+    for (_fp_id, _file_id, project_name, filename, format, hist_l, hist_a, hist_b, moments, hist_bins_i32, embedding_blob, candidate_cs_tag, _feature_status) in rows {
+        let hist_bins = hist_bins_i32 as usize;
+
+        // Reload BLOBs if this fingerprint was among the recomputed ones
+        let (hist_l, hist_a, hist_b, moments, hist_bins) = if recomputed_count > 0 && stale_fp_ids.iter().any(|(id, _)| *id == _fp_id) {
+            match conn.query_row(
+                "SELECT oklab_hist_l, oklab_hist_a, oklab_hist_b, color_moments, COALESCE(hist_bins, 64) FROM fingerprints WHERE id = ?1",
+                rusqlite::params![_fp_id],
+                |row| Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i32>(4)?,
+                )),
+            ) {
+                Ok((new_hl, new_ha, new_hb, new_m, new_bins)) => {
+                    eprintln!("debug: using recomputed features for {} ({})", project_name, filename);
+                    (new_hl, new_ha, new_hb, new_m, new_bins as usize)
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to reload recomputed features for {} ({}): {}, using original", project_name, filename, e);
+                    (hist_l, hist_a, hist_b, moments, hist_bins)
+                }
+            }
+        } else {
+            (hist_l, hist_a, hist_b, moments, hist_bins)
+        };
 
         // Deserialize grading features
         let candidate_features = match GradingFeatures::from_separate_blobs(&hist_l, &hist_a, &hist_b, &moments, hist_bins) {
@@ -1734,7 +1774,7 @@ mod tests {
         let score = cosine_similarity(&a, &b);
         assert!(score > 0.0);
         assert!(score < 1.0);
-        assert!((score - 0.70710678).abs() < 1e-5);
+        assert!((score - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-5);
     }
 
     // --- Embedding serialization tests ---
@@ -1986,6 +2026,7 @@ mod tests {
 
     // --- Hybrid search tests ---
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_all_signals() {
         let conn = setup_test_db();
@@ -2038,6 +2079,7 @@ mod tests {
         assert!((results[0].score_breakdown.clip.unwrap() - 1.0).abs() < 1e-6);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_missing_clip() {
         let conn = setup_test_db();
@@ -2084,6 +2126,7 @@ mod tests {
         assert!(results[0].score_breakdown.grading > 0.9);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_missing_clip_and_tag() {
         let conn = setup_test_db();
@@ -2126,6 +2169,7 @@ mod tests {
         assert!(results[0].score > 0.9);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_ranking() {
         let conn = setup_test_db();
@@ -2197,6 +2241,7 @@ mod tests {
             "Expected near (score={}) >= far (score={})", results[0].score, results[1].score);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_limit() {
         let conn = setup_test_db();
@@ -2238,6 +2283,7 @@ mod tests {
         assert_eq!(results.len(), 2);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_project_scoped() {
         let conn = setup_test_db();
@@ -2297,6 +2343,7 @@ mod tests {
         (gf.hist_l_blob(), gf.hist_a_blob(), gf.hist_b_blob(), gf.moments_blob())
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_search_identical_features() {
         let conn = setup_test_db();
@@ -2360,6 +2407,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_search_ranking_order() {
         let conn = setup_test_db();
@@ -2424,6 +2472,7 @@ mod tests {
             "Expected near (score={}) >= far (score={})", results[0].score, results[1].score);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_search_limit() {
         let conn = setup_test_db();
@@ -2460,6 +2509,7 @@ mod tests {
 
     // --- Stale recomputation tests ---
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_stale_fingerprint_updated_to_fresh() {
         let conn = setup_test_db();
@@ -2496,6 +2546,7 @@ mod tests {
         assert_eq!(status, "stale");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_null_feature_status_treated_as_stale() {
         let conn = setup_test_db();
@@ -2532,6 +2583,7 @@ mod tests {
         assert!(status.is_none());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_fresh_fingerprint_not_recomputed() {
         let conn = setup_test_db();
@@ -2566,6 +2618,7 @@ mod tests {
         assert_eq!(status, "fresh");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_rate_limit_stale_recomputation() {
         let conn = setup_test_db();
@@ -2608,6 +2661,7 @@ mod tests {
         assert_eq!(stale_count, 12);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_hybrid_search_atomic_transition_no_double_recompute() {
         let conn = setup_test_db();

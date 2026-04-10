@@ -2,6 +2,34 @@
 #include <stdatomic.h>
 #include <string.h>
 
+/* ============================================================
+ * FFI Constants — must match MoonBit enum definitions
+ * ============================================================ */
+
+/* ACES Color Space Tags — must match MoonBit ACESColorSpace enum */
+#define ACES_AP0       10  /* ACES 2065-1 (AP0) */
+#define ACES_AP1       11  /* ACEScg (AP1) */
+#define ACES_ACESCCT   12  /* ACEScct */
+#define ACES_REC709    20  /* Rec709 / sRGB */
+
+/* MoonBit Ref-Counting Adjustments
+ * MoonBit's FFI automatically calls incref/decref on FixedArray parameters.
+ * We bump ref counts to survive these automatic decref calls, preventing
+ * premature freeing of our arrays. We handle cleanup manually.
+ *
+ * Values depend on the number of FixedArray parameters and exit paths:
+ * - RC_BUMP_SINGLE: Single array with simple control flow
+ * - RC_BUMP_DOUBLE: Two arrays with multiple exit paths
+ * - RC_BUMP_MULTI:  Many arrays (6+), generous safety margin
+ */
+#define RC_BUMP_SINGLE  2   /* Single array, 1-2 exit paths */
+#define RC_BUMP_DOUBLE  6   /* Two arrays, 3-4 exit paths */
+#define RC_BUMP_QUAD    8   /* Four or more arrays, generous margin */
+
+/* Grading Features Constants */
+#define GRADING_HIST_BINS_DEFAULT 64  /* Default histogram bin count */
+#define GRADING_MOMENTS_COUNT 12      /* L/a/b × 4 moments (mean/std/skew/kurt) */
+
 /* C wrapper for MoonBit FFI.
    MoonBit FixedArray[Double] is a managed object (ref-counted), NOT a raw C pointer.
    MoonBit's generated code calls moonbit_decref on all FixedArray parameters
@@ -252,8 +280,8 @@ int32_t mengxi_compute_fingerprint(
    * We bump ref counts so that MoonBit's decrefs don't trigger moonbit_drop_object,
    * which would free our arrays prematurely. We handle cleanup ourselves.
    */
-  Moonbit_object_header(mb_data)->rc += 4;  /* 3 incref calls + 1 decref in loop exit */
-  Moonbit_object_header(mb_out)->rc += 2;   /* 1 decref on each early return path + 1 at end */
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;  /* 3 incref calls + 1 decref in loop exit */
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_SINGLE;    /* 1 decref on each early return path + 1 at end */
 
   /* Call MoonBit function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib28mengxi__compute__fingerprint(
@@ -287,7 +315,7 @@ int32_t mengxi_generate_lut(
 
   /* Bump ref count to survive MoonBit's decref on FixedArray param.
    * mengxi_generate_lut has 3 early return paths + 1 normal exit. */
-  Moonbit_object_header(mb_out)->rc += 8;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_QUAD;
 
   /* Call MoonBit function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib21mengxi__generate__lut(
@@ -332,8 +360,8 @@ int32_t mengxi_aces_transform(
    * mengxi_aces_transform has 3 early return paths + 1 normal exit, each
    * decrefing both arrays. Generous bump to prevent premature freeing.
    */
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   /* Call MoonBit function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib23mengxi__aces__transform(
@@ -373,8 +401,8 @@ int32_t mengxi_srgb_to_oklab(
 
   memcpy(mb_data, data_ptr, data_len * sizeof(double));
 
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib23mengxi__srgb__to__oklab(
     data_len, mb_data, out_len, mb_out
@@ -411,8 +439,8 @@ int32_t mengxi_oklab_to_srgb(
 
   memcpy(mb_data, data_ptr, data_len * sizeof(double));
 
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib23mengxi__oklab__to__srgb(
     data_len, mb_data, out_len, mb_out
@@ -449,8 +477,8 @@ int32_t mengxi_acescct_to_oklab(
 
   memcpy(mb_data, data_ptr, data_len * sizeof(double));
 
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib26mengxi__acescct__to__oklab(
     data_len, mb_data, out_len, mb_out
@@ -487,8 +515,8 @@ int32_t mengxi_oklab_to_acescct(
 
   memcpy(mb_data, data_ptr, data_len * sizeof(double));
 
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib26mengxi__oklab__to__acescct(
     data_len, mb_data, out_len, mb_out
@@ -525,8 +553,8 @@ int32_t mengxi_linear_to_oklab(
 
   memcpy(mb_data, data_ptr, data_len * sizeof(double));
 
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib25mengxi__linear__to__oklab(
     data_len, mb_data, out_len, mb_out
@@ -563,8 +591,8 @@ int32_t mengxi_oklab_to_linear(
 
   memcpy(mb_data, data_ptr, data_len * sizeof(double));
 
-  Moonbit_object_header(mb_data)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_data)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib25mengxi__oklab__to__linear(
     data_len, mb_data, out_len, mb_out
@@ -582,8 +610,6 @@ int32_t mengxi_oklab_to_linear(
 
 /* Default histogram bin count (used when caller passes 0) */
 #define GRADING_HIST_BINS_DEFAULT 64
-/* Moments count: mean + stddev + skewness + kurtosis for each of L, a, b */
-#define GRADING_MOMENTS_COUNT 12
 
 int32_t mengxi_extract_grading_features(
   int32_t pixel_len,
@@ -630,13 +656,13 @@ int32_t mengxi_extract_grading_features(
 
   /* Bump ref counts to survive MoonBit's incref/decref on FixedArray params.
    * 9 FixedArray params × generous bump. */
-  Moonbit_object_header(mb_pixels)->rc += 8;
-  Moonbit_object_header(mb_hist_l)->rc += 8;
-  Moonbit_object_header(mb_hist_a)->rc += 8;
-  Moonbit_object_header(mb_hist_b)->rc += 8;
-  Moonbit_object_header(mb_moments)->rc += 8;
-  Moonbit_object_header(mb_hist_len)->rc += 8;
-  Moonbit_object_header(mb_moments_len)->rc += 8;
+  Moonbit_object_header(mb_pixels)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_hist_l)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_hist_a)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_hist_b)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_moments)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_hist_len)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_moments_len)->rc += RC_BUMP_QUAD;
 
   /* Call MoonBit compound function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib34mengxi__extract__grading__features(
@@ -710,9 +736,9 @@ int32_t mengxi_bhattacharyya_distance(
   memcpy(mb_candidate, candidate_hist, total_len * sizeof(double));
 
   /* Bump ref counts to survive MoonBit's incref/decref */
-  Moonbit_object_header(mb_query)->rc += 8;
-  Moonbit_object_header(mb_candidate)->rc += 8;
-  Moonbit_object_header(mb_out)->rc += 8;
+  Moonbit_object_header(mb_query)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_candidate)->rc += RC_BUMP_QUAD;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_QUAD;
 
   /* Call MoonBit function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__bhattacharyya__distance(

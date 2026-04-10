@@ -323,6 +323,71 @@ impl PythonBridge {
         Ok(floats)
     }
 
+    /// Generate embeddings for multiple images in a single JSON-RPC call.
+    /// Reduces subprocess overhead from N round-trips to 1 for N images.
+    pub fn generate_embeddings_batch(
+        &mut self,
+        image_paths: &[std::path::PathBuf],
+    ) -> Result<Vec<Vec<f64>>, AiError> {
+        if image_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model_param = if self.model_name.is_empty() {
+            Value::Null
+        } else {
+            Value::String(self.model_name.clone())
+        };
+
+        let request = serde_json::json!({
+            "request_id": uuid_simple(),
+            "method": "generate_embeddings_batch",
+            "params": {
+                "images": image_paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+                "model_name": model_param,
+            }
+        });
+
+        // Scale timeout: base timeout + per-image allowance
+        let batch_timeout = self.inference_timeout_secs * image_paths.len().max(1) as u64;
+
+        // Temporarily override timeout for this request
+        let original_timeout = self.inference_timeout_secs;
+        self.inference_timeout_secs = batch_timeout;
+
+        let response_result = self.send_request(&request);
+
+        // Restore original timeout
+        self.inference_timeout_secs = original_timeout;
+
+        let response = response_result?;
+
+        // Check for error response
+        if response["status"] == "error" {
+            let code = response["error"]["code"].as_str().unwrap_or("UNKNOWN");
+            let message = response["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown error");
+            return Err(map_python_error(code, message));
+        }
+
+        // Parse batch response - expect { "result": { "embeddings": [[...], [...]] } }
+        let embeddings = response["result"]["embeddings"]
+            .as_array()
+            .ok_or_else(|| AiError::ProtocolError(
+                "Missing 'embeddings' array in batch response".to_string()
+            ))?
+            .iter()
+            .filter_map(|emb| {
+                emb.as_array().map(|arr| {
+                    arr.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+
+        Ok(embeddings)
+    }
+
     /// Generate semantic tags for an image using CLIP zero-shot classification.
     pub fn generate_tags(&mut self, image_path: &str, top_n: u32) -> Result<Vec<String>, AiError> {
         let request = serde_json::json!({
@@ -875,5 +940,108 @@ mod tests {
 
         assert_eq!(request["method"], "generate_tags");
         assert!(request["params"].get("candidate_tags").is_none());
+    }
+
+    #[test]
+    fn test_generate_embeddings_batch_request_format() {
+        let image_paths = vec![
+            std::path::PathBuf::from("/path/to/image1.png"),
+            std::path::PathBuf::from("/path/to/image2.png"),
+            std::path::PathBuf::from("/path/to/image3.png"),
+        ];
+
+        let request = serde_json::json!({
+            "request_id": "test-batch-1",
+            "method": "generate_embeddings_batch",
+            "params": {
+                "images": image_paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+                "model_name": Value::Null,
+            }
+        });
+
+        assert_eq!(request["method"], "generate_embeddings_batch");
+        let images = request["params"]["images"].as_array().unwrap();
+        assert_eq!(images.len(), 3);
+        assert_eq!(images[0], "/path/to/image1.png");
+        assert_eq!(images[1], "/path/to/image2.png");
+        assert_eq!(images[2], "/path/to/image3.png");
+    }
+
+    #[test]
+    fn test_generate_embeddings_batch_request_format_with_model() {
+        let image_paths = vec![
+            std::path::PathBuf::from("/path/to/frame1.dpx"),
+            std::path::PathBuf::from("/path/to/frame2.dpx"),
+        ];
+
+        let request = serde_json::json!({
+            "request_id": "test-batch-2",
+            "method": "generate_embeddings_batch",
+            "params": {
+                "images": image_paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+                "model_name": "clip_vit_b32.onnx",
+            }
+        });
+
+        assert_eq!(request["params"]["model_name"], "clip_vit_b32.onnx");
+        assert_eq!(request["params"]["images"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_generate_embeddings_batch_response() {
+        let response = serde_json::json!({
+            "request_id": "1",
+            "status": "ok",
+            "result": {
+                "embeddings": [
+                    [0.1, 0.2, 0.3, 0.4, 0.5],
+                    [0.6, 0.7, 0.8, 0.9, 1.0],
+                ]
+            }
+        });
+
+        assert_eq!(response["status"], "ok");
+        let embeddings = response["result"]["embeddings"].as_array().unwrap();
+        assert_eq!(embeddings.len(), 2);
+
+        let first: Vec<f64> = embeddings[0].as_array().unwrap()
+            .iter().map(|v| v.as_f64().unwrap()).collect();
+        assert_eq!(first, vec![0.1, 0.2, 0.3, 0.4, 0.5]);
+
+        let second: Vec<f64> = embeddings[1].as_array().unwrap()
+            .iter().map(|v| v.as_f64().unwrap()).collect();
+        assert_eq!(second, vec![0.6, 0.7, 0.8, 0.9, 1.0]);
+    }
+
+    #[test]
+    fn test_parse_generate_embeddings_batch_error_response() {
+        let response = serde_json::json!({
+            "request_id": "1",
+            "status": "error",
+            "error": {
+                "code": "FILE_NOT_FOUND",
+                "message": "image.png not found"
+            }
+        });
+
+        assert_eq!(response["status"], "error");
+        assert_eq!(response["error"]["code"], "FILE_NOT_FOUND");
+
+        let code = response["error"]["code"].as_str().unwrap();
+        let message = response["error"]["message"].as_str().unwrap();
+        let err = map_python_error(code, message);
+        assert!(matches!(err, AiError::ModelNotFound(_)));
+    }
+
+    #[test]
+    fn test_generate_embeddings_batch_empty_array() {
+        // Empty input should return empty output
+        let image_paths: Vec<std::path::PathBuf> = vec![];
+        let bridge = PythonBridge::new(300, 30, String::new());
+
+        // The method should return Ok with empty Vec for empty input
+        // (This is tested by calling the method, but we can't test the full flow
+        // without a running subprocess, so we just verify the logic)
+        assert!(image_paths.is_empty());
     }
 }

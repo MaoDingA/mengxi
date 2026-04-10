@@ -44,6 +44,42 @@ def handle_generate_embedding(params: dict) -> dict:
         return {"code": "INFERENCE_ERROR", "message": str(e)}
 
 
+def handle_generate_embeddings_batch(params: dict) -> dict:
+    """Handle generate_embeddings_batch method request."""
+    from .embedding import generate_embedding
+
+    images = params.get("images")
+    if not images:
+        return {"code": "INVALID_PARAMS", "message": "'images' is required"}
+
+    if not isinstance(images, list):
+        return {"code": "INVALID_PARAMS", "message": "'images' must be a list"}
+
+    if not all(isinstance(img, str) for img in images):
+        return {"code": "INVALID_PARAMS", "message": "'images' elements must be strings"}
+
+    model_name = params.get("model_name")  # Optional
+    models_dir = params.get("models_dir")  # Optional
+
+    try:
+        embeddings = []
+        for image_path in images:
+            embedding = generate_embedding(
+                image_path=image_path,
+                model_name=model_name,
+                models_dir=models_dir,
+            )
+            embeddings.append(embedding)
+        return {"embeddings": embeddings}
+    except FileNotFoundError as e:
+        return {"code": "FILE_NOT_FOUND", "message": str(e)}
+    except RuntimeError as e:
+        return {"code": "INFERENCE_ERROR", "message": str(e)}
+    except Exception as e:
+        logger.exception("Unexpected error during batch inference")
+        return {"code": "INFERENCE_ERROR", "message": str(e)}
+
+
 def handle_generate_tags(params: dict) -> dict:
     """Handle generate_tags method request."""
     from .tagging import generate_tags
@@ -90,6 +126,7 @@ def handle_ping(params: dict) -> dict:
 
 METHOD_HANDLERS = {
     "generate_embedding": handle_generate_embedding,
+    "generate_embeddings_batch": handle_generate_embeddings_batch,
     "generate_tags": handle_generate_tags,
     "ping": handle_ping,
 }

@@ -18,6 +18,7 @@ type Result<T> = std::result::Result<T, VectorscopeError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_compute_vectorscope_density(
         strip_len: i32,
@@ -53,6 +54,7 @@ pub struct VectorscopeDensity {
  /// Each pixel is converted to Oklab, its hue angle and chroma are computed,
  /// and binned into a polar grid of `angle_bins × radius_bins`.
  /// The result is normalized to [0, 1].
+ #[cfg(moonbit_ffi)]
  pub fn compute_vectorscope_density(
      strip: &[f64],
      width: usize,
@@ -103,4 +105,16 @@ pub struct VectorscopeDensity {
          radius_bins,
          grid: output,
      })
+ }
+
+ #[cfg(not(moonbit_ffi))]
+ pub fn compute_vectorscope_density(
+     _strip: &[f64],
+     _width: usize,
+     _height: usize,
+     _angle_bins: usize,
+     _radius_bins: usize,
+     _max_chroma_permille: usize,
+ ) -> Result<VectorscopeDensity> {
+     Err(VectorscopeError::FfiError("MoonBit FFI not available".to_string()))
  }

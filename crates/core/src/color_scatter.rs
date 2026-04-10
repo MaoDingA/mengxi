@@ -21,6 +21,7 @@ type Result<T> = std::result::Result<T, ColorScatterError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_extract_frame_scatter(
         strip_len: i32,
@@ -117,6 +118,7 @@ impl ScatterDensity {
 /// * `strip` — Interleaved sRGB [0,1] strip data
 /// * `width` — Strip width (number of frames)
 /// * `height` — Strip height
+#[cfg(moonbit_ffi)]
 pub fn extract_frame_scatter(strip: &[f64], width: usize, height: usize) -> Result<ColorScatter> {
     if width == 0 || height == 0 {
         return Err(ColorScatterError::InvalidInput(
@@ -158,6 +160,15 @@ pub fn extract_frame_scatter(strip: &[f64], width: usize, height: usize) -> Resu
     ColorScatter::from_raw(&output, width)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn extract_frame_scatter(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+) -> Result<ColorScatter> {
+    Err(ColorScatterError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 /// Compute a-b scatter density grid from a fingerprint strip.
 ///
 /// # Arguments
@@ -167,6 +178,7 @@ pub fn extract_frame_scatter(strip: &[f64], width: usize, height: usize) -> Resu
 /// * `grid_size` — Resolution of the density grid (e.g., 32)
 /// * `a_range_permille` — a-axis range * 1000 (e.g., 500 = ±0.5)
 /// * `b_range_permille` — b-axis range * 1000 (e.g., 500 = ±0.5)
+#[cfg(moonbit_ffi)]
 pub fn compute_scatter_density(
     strip: &[f64],
     width: usize,
@@ -221,6 +233,18 @@ pub fn compute_scatter_density(
     })
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn compute_scatter_density(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _grid_size: usize,
+    _a_range_permille: i32,
+    _b_range_permille: i32,
+) -> Result<ScatterDensity> {
+    Err(ColorScatterError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -229,6 +253,7 @@ pub fn compute_scatter_density(
 mod tests {
     use super::*;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_frame_scatter_uniform() {
         // 4x2 strip, all gray
@@ -256,6 +281,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_compute_scatter_density_uniform() {
         let strip = vec![0.5; 4 * 2 * 3];

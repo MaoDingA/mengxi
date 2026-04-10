@@ -21,6 +21,7 @@ type Result<T> = std::result::Result<T, ColorPairsError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_detect_dominant_pairs(
         strip_len: i32,
@@ -147,6 +148,7 @@ impl DominantPairsResult {
 /// * `width` — Strip width (number of frames)
 /// * `height` — Strip height
 /// * `min_chroma_permille` — Minimum chroma threshold * 1000 (default: 20 = 0.02)
+#[cfg(moonbit_ffi)]
 pub fn detect_dominant_pairs(
     strip: &[f64],
     width: usize,
@@ -193,6 +195,16 @@ pub fn detect_dominant_pairs(
     DominantPairsResult::from_raw(&output)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn detect_dominant_pairs(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _min_chroma_permille: i32,
+) -> Result<DominantPairsResult> {
+    Err(ColorPairsError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -201,6 +213,7 @@ pub fn detect_dominant_pairs(
 mod tests {
     use super::*;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_detect_pairs_uniform_gray() {
         // All gray → no chromatic pixels → 0 pairs
@@ -223,6 +236,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_detect_pairs_teal_orange() {
         // 4x2 strip: first 4 pixels orange-ish, next 4 pixels teal-ish

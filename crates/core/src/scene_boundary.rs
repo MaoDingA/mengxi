@@ -21,6 +21,7 @@ type Result<T> = std::result::Result<T, SceneBoundaryError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_detect_scene_boundaries(
         strip_len: i32,
@@ -78,6 +79,7 @@ const BOUNDARY_ELEMENTS: usize = 8;
 /// * `threshold` — Change threshold [0.0, 1.0], e.g. 0.3
 /// * `min_scene_frames` — Minimum frames between boundaries
 /// * `max_boundaries` — Maximum number of boundaries to detect (0 = use default 50)
+#[cfg(moonbit_ffi)]
 pub fn detect_scene_boundaries(
     strip: &[f64],
     width: usize,
@@ -156,6 +158,18 @@ pub fn detect_scene_boundaries(
     Ok(boundaries)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn detect_scene_boundaries(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _threshold: f64,
+    _min_scene_frames: usize,
+    _max_boundaries: usize,
+) -> Result<Vec<SceneBoundary>> {
+    Err(SceneBoundaryError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -164,6 +178,7 @@ pub fn detect_scene_boundaries(
 mod tests {
     use super::*;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_detect_uniform_no_boundaries() {
         // Uniform strip → no boundaries
@@ -172,6 +187,7 @@ mod tests {
         assert!(boundaries.is_empty());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_detect_abrupt_change() {
         // 10x1 strip: first 5 white, last 5 black

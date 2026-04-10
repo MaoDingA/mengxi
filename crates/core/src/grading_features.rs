@@ -294,7 +294,7 @@ mod tests {
             hist_l: vec![f64::MAX; 64],
             hist_a: vec![f64::MIN; 64],
             hist_b: vec![f64::INFINITY; 64],
-            moments: [f64::NEG_INFINITY, 1.0, -1.0, 0.0, 0.5, 3.14159, 2.71828, -0.5, 0.0, 0.0, 0.0, 0.0],
+            moments: [f64::NEG_INFINITY, 1.0, -1.0, 0.0, 0.5, std::f64::consts::PI, std::f64::consts::E, -0.5, 0.0, 0.0, 0.0, 0.0],
         };
         let blob = original.to_blob();
         let restored = GradingFeatures::from_blob(&blob, 64).unwrap();
@@ -560,7 +560,7 @@ mod tests {
             hist_l: vec![f64::MAX; 64],
             hist_a: vec![f64::MIN; 64],
             hist_b: vec![f64::INFINITY; 64],
-            moments: [f64::NEG_INFINITY, 1.0, -1.0, 0.0, 0.5, 3.14159, 2.71828, -0.5, 0.0, 0.0, 0.0, 0.0],
+            moments: [f64::NEG_INFINITY, 1.0, -1.0, 0.0, 0.5, std::f64::consts::PI, std::f64::consts::E, -0.5, 0.0, 0.0, 0.0, 0.0],
         };
         let restored = GradingFeatures::from_separate_blobs(
             &original.hist_l_blob(),

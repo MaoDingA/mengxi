@@ -249,6 +249,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("library directory"));
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_visual_search_empty_directory() {
         let dir = TempDir::new().unwrap();
@@ -259,6 +260,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("no valid"));
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_visual_search_ranks_similar_higher() {
         let dir = TempDir::new().unwrap();
@@ -281,6 +283,7 @@ mod tests {
         assert_eq!(results[0].name, "similar");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_visual_search_limit() {
         let dir = TempDir::new().unwrap();
@@ -297,6 +300,7 @@ mod tests {
         assert_eq!(results.len(), 3);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_visual_search_paths() {
         let dir = TempDir::new().unwrap();

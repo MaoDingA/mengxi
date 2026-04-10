@@ -25,6 +25,7 @@ type Result<T> = std::result::Result<T, ColorTransferError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_generate_color_transfer_lut(
         src_len: i32,
@@ -150,6 +151,7 @@ impl ColorTransferLut {
 /// * `tgt` — Target strip interleaved sRGB [0,1] data
 /// * `tgt_w`, `tgt_h` — Target dimensions
 /// * `grid_size` — LUT grid size (e.g. 33), 0 = default 33
+#[cfg(moonbit_ffi)]
 pub fn generate_color_transfer_lut(
     src: &[f64],
     src_w: usize,
@@ -204,6 +206,19 @@ pub fn generate_color_transfer_lut(
     })
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn generate_color_transfer_lut(
+    _src: &[f64],
+    _src_w: usize,
+    _src_h: usize,
+    _tgt: &[f64],
+    _tgt_w: usize,
+    _tgt_h: usize,
+    _grid_size: usize,
+) -> Result<ColorTransferLut> {
+    Err(ColorTransferError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -213,6 +228,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_color_transfer_identity() {
         let strip = vec![0.5; 2 * 2 * 3];
@@ -224,6 +240,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_color_transfer_sample() {
         let strip = vec![0.5; 2 * 2 * 3];
@@ -251,6 +268,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_write_cube_file() {
         let dir = TempDir::new().unwrap();

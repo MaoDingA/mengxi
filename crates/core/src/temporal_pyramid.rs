@@ -21,6 +21,7 @@ type Result<T> = std::result::Result<T, TemporalPyramidError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_extract_temporal_features(
         strip_len: i32,
@@ -88,6 +89,7 @@ impl TemporalFeatures {
 /// * `height` — Strip height
 /// * `segments` — Slice of (start_frame, end_frame) pairs
 /// * `hist_bins` — Histogram bins per channel (0 = default 64)
+#[cfg(moonbit_ffi)]
 pub fn extract_temporal_features(
     strip: &[f64],
     width: usize,
@@ -179,9 +181,21 @@ pub fn extract_temporal_features(
     })
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn extract_temporal_features(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _segments: &[(usize, usize)],
+    _hist_bins: usize,
+) -> Result<TemporalFeatures> {
+    Err(TemporalPyramidError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 /// Convenience: extract temporal features for equal-width segments.
 ///
 /// Divides the strip into `num_segments` equal parts.
+#[cfg(moonbit_ffi)]
 pub fn extract_temporal_features_uniform(
     strip: &[f64],
     width: usize,
@@ -212,6 +226,17 @@ pub fn extract_temporal_features_uniform(
     extract_temporal_features(strip, width, height, &segments, hist_bins)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn extract_temporal_features_uniform(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _num_segments: usize,
+    _hist_bins: usize,
+) -> Result<TemporalFeatures> {
+    Err(TemporalPyramidError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -220,6 +245,7 @@ pub fn extract_temporal_features_uniform(
 mod tests {
     use super::*;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_temporal_single_segment() {
         let strip = vec![0.5; 4 * 1 * 3]; // 4x1 strip, gray
@@ -231,6 +257,7 @@ mod tests {
         assert!(mean_l > 0.3 && mean_l < 0.8, "mean_l = {}", mean_l);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_temporal_two_segments() {
         let mut strip = vec![0.0; 6 * 1 * 3]; // 6x1 strip
@@ -248,6 +275,7 @@ mod tests {
         assert!(features.segments[1].moments[0] < 0.3);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_temporal_uniform() {
         let strip = vec![0.5; 12 * 1 * 3];

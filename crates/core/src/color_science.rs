@@ -22,6 +22,30 @@ impl ACESColorSpace {
         }
     }
 
+    /// Parse ACES color space from the explicit aces_color_space column.
+    /// Returns ACEScg default for NULL or unrecognized values.
+    pub fn from_aces_column(s: Option<&str>) -> Self {
+        match s.map(|v| v.to_lowercase()).as_deref() {
+            Some("aces2065-1") | Some("ap0") => ACESColorSpace::ACES2065_1,
+            Some("acescg") | Some("ap1") => ACESColorSpace::ACEScg,
+            Some("acescct") => ACESColorSpace::ACEScct,
+            Some("rec709") | Some("srgb") | Some("bt709") => ACESColorSpace::Rec709,
+            None | Some(_) => ACESColorSpace::ACEScg, // Explicit NULL = use default
+        }
+    }
+
+    /// Infer ACES color space from an encoding tag (best-effort heuristic).
+    /// Used ONLY when aces_color_space is NULL and we need a reasonable guess.
+    /// This is intentionally conservative: linear→ACEScg, log→ACEScct, video→Rec709.
+    pub fn infer_from_encoding_tag(encoding_tag: &str) -> Self {
+        match encoding_tag.to_lowercase().as_str() {
+            "linear" => ACESColorSpace::ACEScg,
+            "log" => ACESColorSpace::ACEScct,
+            "video" | "srgb" => ACESColorSpace::Rec709,
+            _ => ACESColorSpace::ACEScg,
+        }
+    }
+
     pub fn as_int(&self) -> i32 {
         match self {
             ACESColorSpace::ACES2065_1 => 10,
@@ -56,6 +80,7 @@ pub enum ColorScienceError {
     GradingFeatureDecodeError(String),
 }
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_aces_transform(
         data_len: i32,
@@ -148,6 +173,7 @@ extern "C" {
 /// # Returns
 /// * `Ok(Vec<f64>)` with transformed pixel data on success.
 /// * `Err(ColorScienceError)` if data is invalid or transform fails.
+#[cfg(moonbit_ffi)]
 pub fn apply_aces_transform(
     pixel_data: &[f64],
     src: ACESColorSpace,
@@ -225,6 +251,7 @@ pub fn apply_aces_transform(
 /// # Returns
 /// * `Ok(Vec<f64>)` with `grid_size^3 * 3` values in red-fastest order on success.
 /// * `Err(ColorScienceError)` if parameters are invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn generate_lut(
     grid_size: u32,
     src: ACESColorSpace,
@@ -288,6 +315,7 @@ pub fn generate_lut(
 /// # Returns
 /// * `Ok(Vec<f64>)` with interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...].
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn srgb_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     if pixel_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -341,6 +369,7 @@ pub fn srgb_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> 
 /// # Returns
 /// * `Ok(Vec<f64>)` with interleaved sRGB values [R0,G0,B0, R1,G1,B1, ...].
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn oklab_to_srgb(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     if oklab_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -394,6 +423,7 @@ pub fn oklab_to_srgb(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> 
 /// # Returns
 /// * `Ok(Vec<f64>)` with interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...].
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn acescct_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     if pixel_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -447,6 +477,7 @@ pub fn acescct_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceErro
 /// # Returns
 /// * `Ok(Vec<f64>)` with interleaved ACEScct values [R0,G0,B0, R1,G1,B1, ...].
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn oklab_to_acescct(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     if oklab_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -500,6 +531,7 @@ pub fn oklab_to_acescct(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceErro
 /// # Returns
 /// * `Ok(Vec<f64>)` with interleaved Oklab values [L0,a0,b0, L1,a1,b1, ...].
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn linear_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     if pixel_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -553,6 +585,7 @@ pub fn linear_to_oklab(pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
 /// # Returns
 /// * `Ok(Vec<f64>)` with interleaved Linear sRGB values [R0,G0,B0, R1,G1,B1, ...].
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
     if oklab_data.len() < 3 {
         return Err(ColorScienceError::FfiError(
@@ -608,6 +641,7 @@ pub fn oklab_to_linear(oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError
 /// # Returns
 /// * `Ok(GradingFeatures)` with 3 histograms (`hist_bins` bins each) and 12 moments.
 /// * `Err(ColorScienceError)` if data is invalid or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn extract_grading_features(
     oklab_data: &[f64],
     color_space_tag: i32,
@@ -704,6 +738,7 @@ pub fn extract_grading_features(
 /// # Returns
 /// * `Ok(f64)` similarity score in [0.0, 1.0] where 1.0 = identical distributions.
 /// * `Err(ColorScienceError)` if normalization fails or FFI fails.
+#[cfg(moonbit_ffi)]
 pub fn bhattacharyya_distance(
     query: &GradingFeatures,
     candidate: &GradingFeatures,
@@ -812,6 +847,7 @@ pub fn rgb_to_oklab_batch(
 }
 
 /// Check if MoonBit ACES FFI is available by testing a trivial transform.
+#[cfg(moonbit_ffi)]
 pub fn is_aces_ffi_available() -> bool {
     let data = [0.5_f64, 0.5, 0.5];
     let mut output = [0.0_f64; 3];
@@ -826,6 +862,78 @@ pub fn is_aces_ffi_available() -> bool {
         )
     };
     result == 3
+}
+
+// Fallback implementations when MoonBit FFI is disabled
+
+#[cfg(not(moonbit_ffi))]
+pub fn apply_aces_transform(
+    _pixel_data: &[f64],
+    _src: ACESColorSpace,
+    _dst: ACESColorSpace,
+) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn generate_lut(
+    _grid_size: u32,
+    _src: ACESColorSpace,
+    _dst: ACESColorSpace,
+) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn srgb_to_oklab(_pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn oklab_to_srgb(_oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn acescct_to_oklab(_pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn oklab_to_acescct(_oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn linear_to_oklab(_pixel_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn oklab_to_linear(_oklab_data: &[f64]) -> Result<Vec<f64>, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn extract_grading_features(
+    _oklab_data: &[f64],
+    _color_space_tag: i32,
+    _hist_bins: usize,
+) -> Result<GradingFeatures, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn bhattacharyya_distance(
+    _query: &GradingFeatures,
+    _candidate: &GradingFeatures,
+) -> Result<f64, ColorScienceError> {
+    Err(ColorScienceError::FfiUnavailable)
+}
+
+#[cfg(not(moonbit_ffi))]
+pub fn is_aces_ffi_available() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -861,6 +969,7 @@ mod tests {
         assert!(!ACESColorSpace::Rec709.is_log());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_log_data_rejected() {
         let data = [0.5_f64, 0.5, 0.5];
@@ -874,12 +983,14 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_too_few_pixels() {
         let result = apply_aces_transform(&[0.5], ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_identity_transform() {
         let data = [0.3_f64, 0.6, 0.9];
@@ -890,6 +1001,7 @@ mod tests {
         assert!((result[2] - 0.9).abs() < 1e-10);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_aces2065_to_acescg_roundtrip() {
         let data = [0.5_f64, 0.25, 0.75];
@@ -900,6 +1012,7 @@ mod tests {
         assert!((back[2] - 0.75).abs() < 1e-4);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescg_to_rec709_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -909,6 +1022,7 @@ mod tests {
         assert!((result[2]).abs() < 1e-10);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescg_to_rec709_grey() {
         let data = [0.18_f64, 0.18, 0.18];
@@ -919,6 +1033,7 @@ mod tests {
         assert!(result[2] > 0.4 && result[2] < 0.7);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_is_aces_ffi_available() {
         assert!(is_aces_ffi_available());
@@ -941,6 +1056,7 @@ mod tests {
 
     // -- generate_lut tests --
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_size_2() {
         let result = generate_lut(2, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
@@ -949,6 +1065,7 @@ mod tests {
         assert_eq!(values.len(), 24); // 2^3 * 3
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_size_33() {
         let result = generate_lut(33, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
@@ -957,6 +1074,7 @@ mod tests {
         assert_eq!(values.len(), 107811); // 33^3 * 3
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_identity() {
         // Grid size 2: indices normalize to 0.0 and 1.0
@@ -977,6 +1095,7 @@ mod tests {
         assert!((v[23] - 1.0).abs() < 1e-10);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_black() {
         let result = generate_lut(2, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
@@ -987,18 +1106,21 @@ mod tests {
         assert!((v[2]).abs() < 1e-10);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_grid_size_too_small() {
         let result = generate_lut(1, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_grid_size_too_large() {
         let result = generate_lut(257, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_log_rejected() {
         let result = generate_lut(2, ACESColorSpace::ACEScct, ACESColorSpace::Rec709);
@@ -1011,6 +1133,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_generate_lut_values_in_range() {
         let result = generate_lut(5, ACESColorSpace::ACEScg, ACESColorSpace::Rec709);
@@ -1023,6 +1146,7 @@ mod tests {
 
     // -- sRGB ↔ Oklab tests --
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_white() {
         let data = [1.0_f64, 1.0, 1.0];
@@ -1032,6 +1156,7 @@ mod tests {
         assert!(result[2].abs() < 1e-4, "b should be ~0.0, got {}", result[2]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -1041,6 +1166,7 @@ mod tests {
         assert!(result[2].is_finite(), "b should be finite");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_red() {
         let data = [1.0_f64, 0.0, 0.0];
@@ -1048,6 +1174,7 @@ mod tests {
         assert!(result[1] > 0.0, "Red should have positive a, got {}", result[1]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_green() {
         let data = [0.0_f64, 1.0, 0.0];
@@ -1055,6 +1182,7 @@ mod tests {
         assert!(result[1] < 0.0, "Green should have negative a, got {}", result[1]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_srgb_roundtrip() {
         let colors = [
@@ -1082,6 +1210,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_multi_pixel() {
         let data = [1.0_f64, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -1091,24 +1220,28 @@ mod tests {
         assert!(result[4] < 0.0, "Green pixel a should be negative");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_too_few_pixels() {
         let result = srgb_to_oklab(&[0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_srgb_to_oklab_not_divisible_by_3() {
         let result = srgb_to_oklab(&[0.5, 0.5, 0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_srgb_too_few_pixels() {
         let result = oklab_to_srgb(&[0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_srgb_roundtrip_preserves_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -1124,6 +1257,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_srgb_white_identity() {
         let data = [1.0_f64, 0.0, 0.0];
@@ -1133,6 +1267,7 @@ mod tests {
 
     // -- ACEScct ↔ Oklab tests --
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_to_oklab_achromatic() {
         let data = [0.5_f64, 0.5, 0.5];
@@ -1143,6 +1278,7 @@ mod tests {
         assert!(result[2].abs() < 1e-3, "b should be near 0 for achromatic, got {}", result[2]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_to_oklab_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -1152,6 +1288,7 @@ mod tests {
         assert!(result[2].is_finite(), "b should be finite");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_roundtrip() {
         let colors = [
@@ -1175,6 +1312,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_to_oklab_multi_pixel() {
         let data = [0.5_f64, 0.5, 0.5, 1.0, 0.0, 0.0];
@@ -1185,30 +1323,35 @@ mod tests {
         assert!(result[2].abs() < 1e-3);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_to_oklab_too_few_pixels() {
         let result = acescct_to_oklab(&[0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_to_oklab_not_divisible_by_3() {
         let result = acescct_to_oklab(&[0.5, 0.5, 0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_acescct_too_few_pixels() {
         let result = oklab_to_acescct(&[0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_acescct_not_divisible_by_3() {
         let result = oklab_to_acescct(&[0.5, 0.5, 0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_roundtrip_preserves_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -1223,6 +1366,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_negative_input_no_nan() {
         let data = [-0.1_f64, -0.1, -0.1];
@@ -1236,6 +1380,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_acescct_minimum_code_value() {
         // Minimum code value (0.0729) maps to linear 0.0 — no round-trip expected
@@ -1251,6 +1396,7 @@ mod tests {
 
     // -- Linear sRGB ↔ Oklab tests --
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_white() {
         let data = [1.0_f64, 1.0, 1.0];
@@ -1260,6 +1406,7 @@ mod tests {
         assert!(result[2].abs() < 1e-4, "b should be ~0.0, got {}", result[2]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -1270,6 +1417,7 @@ mod tests {
         assert!(result[0].abs() < 1e-10, "L should be ~0 for black");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_achromatic() {
         // 18% scene-referred grey
@@ -1279,6 +1427,7 @@ mod tests {
         assert!(result[2].abs() < 1e-3, "b should be near 0 for achromatic, got {}", result[2]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_red() {
         let data = [1.0_f64, 0.0, 0.0];
@@ -1286,6 +1435,7 @@ mod tests {
         assert!(result[1] > 0.0, "Red should have positive a, got {}", result[1]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_green() {
         let data = [0.0_f64, 1.0, 0.0];
@@ -1293,6 +1443,7 @@ mod tests {
         assert!(result[1] < 0.0, "Green should have negative a, got {}", result[1]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_roundtrip() {
         let colors = [
@@ -1318,6 +1469,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_hdr_specular() {
         // HDR specular highlight (2.0, 2.0, 2.0) should produce finite achromatic values
@@ -1342,6 +1494,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_multi_pixel() {
         let data = [1.0_f64, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -1351,30 +1504,35 @@ mod tests {
         assert!(result[4] < 0.0, "Green pixel a should be negative");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_too_few_pixels() {
         let result = linear_to_oklab(&[0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_to_oklab_not_divisible_by_3() {
         let result = linear_to_oklab(&[0.5, 0.5, 0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_linear_too_few_pixels() {
         let result = oklab_to_linear(&[0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_oklab_to_linear_not_divisible_by_3() {
         let result = oklab_to_linear(&[0.5, 0.5, 0.5, 0.5]);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_roundtrip_preserves_black() {
         let data = [0.0_f64, 0.0, 0.0];
@@ -1389,6 +1547,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_linear_all_ones() {
         // All 1.0 input should produce Oklab ~(1, 0, 0)
@@ -1406,6 +1565,7 @@ mod tests {
 
     // -- extract_grading_features tests --
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_pure_black() {
         // Pure black in Oklab: L=0, a=0, b=0
@@ -1425,6 +1585,7 @@ mod tests {
         assert!(result.moments[1].abs() < 1e-10, "L_std should be 0 for black");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_solid_color() {
         // Solid color: all pixels are L=0.5, a=0.1, b=-0.1
@@ -1452,6 +1613,7 @@ mod tests {
         assert!(result.moments[9].abs() < 1e-10, "b_std should be 0 for solid");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_single_pixel() {
         let oklab_data = [0.75_f64, 0.0, 0.0]; // bright achromatic
@@ -1465,6 +1627,7 @@ mod tests {
         assert!(result.moments[1].abs() < 1e-10, "L_std should be 0 for single pixel");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_multi_pixel() {
         // 4 pixels: two different colors
@@ -1492,6 +1655,7 @@ mod tests {
         assert!(result.moments[4].abs() < 1e-10, "b_mean should be 0 for achromatic");
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_histogram_sums() {
         // Histogram bin counts should sum to pixel count
@@ -1523,18 +1687,21 @@ mod tests {
         );
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_too_few_pixels() {
         let result = extract_grading_features(&[0.5, 0.5], 2, GradingFeatures::HIST_BINS);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_not_divisible_by_3() {
         let result = extract_grading_features(&[0.5, 0.5, 0.5, 0.5], 2, GradingFeatures::HIST_BINS);
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_all_finite() {
         // All output values should be finite (no NaN/Inf)
@@ -1561,6 +1728,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_large_dataset() {
         // 1000 pixels with varied values
@@ -1593,6 +1761,7 @@ mod tests {
         );
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_nan_input_rejected() {
         // NaN input should be rejected by the FFI function (returns -3)
@@ -1601,6 +1770,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_extract_grading_features_mixed_nan_rejected() {
         // Any NaN in the input causes rejection (safer than silently dropping pixels)
@@ -1611,6 +1781,7 @@ mod tests {
 
     // --- rgb_to_oklab_batch tests ---
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_distance_identical() {
         let gf = GradingFeatures {
@@ -1623,6 +1794,7 @@ mod tests {
         assert!((score - 1.0).abs() < 1e-10, "Identical features should score 1.0, got {}", score);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_distance_orthogonal() {
         let mut q_l = vec![0.0; 64];
@@ -1649,6 +1821,7 @@ mod tests {
         assert!(score > 0.6, "a/b identical should score > 0.6, got {}", score);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_distance_all_zeros() {
         let gf = GradingFeatures {
@@ -1662,6 +1835,7 @@ mod tests {
         assert!((score - 1.0).abs() < 1e-10, "Both zero should normalize to uniform, got {}", score);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_bhattacharyya_distance_with_nan_rejected() {
         let mut hist_l = vec![10.0; 64];
@@ -1676,6 +1850,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_rgb_to_oklab_batch_linear() {
         let pixel = [0.5_f64, 0.5, 0.5];
@@ -1685,6 +1860,7 @@ mod tests {
         assert!((result[0] - 0.7937).abs() < 0.01, "L={}", result[0]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_rgb_to_oklab_batch_video() {
         let pixel = [0.5_f64, 0.5, 0.5];
@@ -1694,6 +1870,7 @@ mod tests {
         assert!((result[0] - 0.5982).abs() < 0.01, "L={}", result[0]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_rgb_to_oklab_batch_log() {
         let pixel = [0.5_f64, 0.5, 0.5];
@@ -1703,6 +1880,7 @@ mod tests {
         assert!(result[0] > 0.0, "L={}", result[0]);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_rgb_to_oklab_batch_empty_returns_error() {
         // FFI functions require at least 1 pixel (3 values)
@@ -1710,6 +1888,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_rgb_to_oklab_batch_single_pixel() {
         let pixel = [0.25_f64, 0.5, 0.75];
@@ -1719,6 +1898,7 @@ mod tests {
         }
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_rgb_to_oklab_batch_invalid_tag() {
         let pixel = [0.5_f64, 0.5, 0.5];

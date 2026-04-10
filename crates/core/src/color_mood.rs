@@ -21,6 +21,7 @@ type Result<T> = std::result::Result<T, ColorMoodError>;
 // FFI declarations
 // ---------------------------------------------------------------------------
 
+#[cfg(moonbit_ffi)]
 extern "C" {
     fn mengxi_compute_mood_timeline(
         strip_len: i32,
@@ -109,6 +110,7 @@ const SEGMENT_ELEMENTS: usize = 6;
 /// * `width` — Strip width (number of frames)
 /// * `height` — Strip height
 /// * `boundaries` — Frame indices where scene boundaries occur (sorted ascending)
+#[cfg(moonbit_ffi)]
 pub fn compute_mood_timeline(
     strip: &[f64],
     width: usize,
@@ -178,6 +180,16 @@ pub fn compute_mood_timeline(
     Ok(segments)
 }
 
+#[cfg(not(moonbit_ffi))]
+pub fn compute_mood_timeline(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _boundaries: &[usize],
+) -> Result<Vec<MoodSegment>> {
+    Err(ColorMoodError::FfiError("MoonBit FFI not available".to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -186,6 +198,7 @@ pub fn compute_mood_timeline(
 mod tests {
     use super::*;
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_mood_timeline_single_segment() {
         let strip = vec![0.5; 4 * 2 * 3]; // 4 frames, 2 rows, gray
@@ -194,6 +207,7 @@ mod tests {
         assert_eq!(segments[0].start_frame, 0);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_mood_timeline_warm_dark() {
         // 6 frames, 1 row: first 3 warm red, last 3 dark
