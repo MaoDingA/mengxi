@@ -15,8 +15,6 @@ let cp_hue_bins : Int = 24
 /// Maximum number of color pairs to detect
 let cp_max_pairs : Int = 6
 
-/// Pi constant
-let cp_pi : Double = 3.14159265358979323846
 
 // ---------- Internal helpers ----------
 
@@ -33,7 +31,7 @@ fn cp_hue_angle(a : Double, b : Double) -> Double {
 
 /// Convert hue angle (radians) to degrees.
 fn cp_to_degrees(rad : Double) -> Double {
-  rad * 180.0 / cp_pi
+  rad * 180.0 / pi_const()
 }
 
 /// Classify complementary pair type by hue angles.
@@ -142,7 +140,7 @@ pub fn mengxi_detect_dominant_pairs(
 
     if chroma >= min_chroma {
       let angle = cp_hue_angle(a, b)
-      let bin = (angle / (2.0 * cp_pi) * bins.to_double()).to_int()
+      let bin = (angle / (2.0 * pi_const()) * bins.to_double()).to_int()
       let bin_idx = cp_clamp(bin.to_double(), 0.0, (bins - 1).to_double()).to_int()
       hue_hist[bin_idx] = hue_hist[bin_idx] + 1.0
       total_counted = total_counted + 1.0
@@ -236,8 +234,8 @@ pub fn mengxi_detect_dominant_pairs(
   let mut pi = 0
   while pi < pair_count {
     let (bin_a, bin_b, score) = pair_scores[pi]
-    let hue_a = bin_a.to_double() / bins.to_double() * 2.0 * cp_pi
-    let hue_b = bin_b.to_double() / bins.to_double() * 2.0 * cp_pi
+    let hue_a = bin_a.to_double() / bins.to_double() * 2.0 * pi_const()
+    let hue_b = bin_b.to_double() / bins.to_double() * 2.0 * pi_const()
     let norm_score = if max_score > 0.0 { score / max_score } else { 0.0 }
     let pair_type = cp_classify_pair(hue_a, hue_b)
 

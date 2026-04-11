@@ -300,13 +300,18 @@ static atomic_int runtime_initialized = 0;
 
 
 
+/* ASSUMPTION: moonbit_runtime_init() initializes process-global state.
+ * If it initializes thread-local GC state instead, replace this CAS
+ * pattern with pthread_once() for correct per-thread initialization. */
 static void ensure_runtime_init(void) {
-  if (!atomic_load(&runtime_initialized)) {
+  int expected = 0;
+  if (atomic_compare_exchange_strong(&runtime_initialized, &expected, 1)) {
+    /* We won the race -- initialize exactly once */
     static char argv0[] = "mengxi";
     static char* argv[] = { argv0, NULL };
     moonbit_runtime_init(1, argv);
-    atomic_store(&runtime_initialized, 1);
   }
+  /* Losers (and subsequent callers) fall through; init is already done */
 }
 
 int32_t mengxi_compute_fingerprint(
@@ -1602,7 +1607,7 @@ int32_t mengxi_display_p3_to_oklab(
 
 /* ============================================================
  * mengxi_oklab_to_display_p3 — Oklab to Display P3 conversion
- * Mangled name: lib30 (discovered after build via nm)
+ * Mangled name: lib30? (COPY-PASTE SUSPECT - verify via nm after build)
  * ============================================================ */
 int32_t mengxi_oklab_to_display_p3(
   int32_t data_len, double* data_ptr,

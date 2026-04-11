@@ -78,7 +78,7 @@ pub fn mengxi_extract_color_dna(
     // Hue angle → bin (skip low-chroma pixels)
     if chroma > 0.001 {
       let angle = cd_hue_angle(a, bv)
-      let bin = (angle / (2.0 * 3.14159265358979323846) * 12.0).to_int()
+      let bin = (angle / (2.0 * pi_const()) * 12.0).to_int()
       let bin_idx = cd_clamp(bin.to_double(), 0.0, 11.0).to_int()
       hue_bins[bin_idx] = hue_bins[bin_idx] + 1.0
     }

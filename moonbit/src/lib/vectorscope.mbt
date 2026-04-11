@@ -43,8 +43,8 @@ pub fn mengxi_compute_vectorscope_density(
   let mut max_val = 0.0
 
   // Iterate over all pixels in the strip
-  for col = 0; col < width; col = col + 1 {
-    for row = 0; row < height; row = row + 1 {
+  for col in 0..<width {
+    for row in 0..<height {
       let idx = (col * height + row) * 3
       let r = strip_ptr[idx]
       let g = strip_ptr[idx + 1]
@@ -56,7 +56,7 @@ pub fn mengxi_compute_vectorscope_density(
         continue  // skip near-achromatic pixels
       }
       let hue = cp_hue_angle(a_val, b_val) // [0, 2*pi)
-      let angle_deg = hue * 180.0 / 3.14159265358979323
+      let angle_deg = hue * 180.0 / pi_const()
       let mut angle_bin = (angle_deg / 360.0 * angle_bins.to_double()).to_int()
       if angle_bin >= angle_bins {
         angle_bin = angle_bins - 1
@@ -76,7 +76,7 @@ pub fn mengxi_compute_vectorscope_density(
 
   // Normalize to [0, 1]
   if max_val > 0.0 {
-    for i = 0; i < grid_size; i = i + 1 {
+    for i in 0..<grid_size {
       out_ptr[i] = grid[i] / max_val
     }
   } else {

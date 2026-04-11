@@ -23,9 +23,6 @@
 /// Number of color categories
 let cd_num_categories : Int = 7
 
-/// Pi constant
-let cd_pi : Double = 3.14159265358979323846
-
 // ---------- Internal helpers ----------
 
 /// Classify a pixel by Oklab hue angle, lightness, and chroma.
@@ -36,7 +33,7 @@ fn cd_classify_pixel(l : Double, a : Double, b : Double, min_chroma : Double) ->
     return -1  // NEUTRAL
   }
   let hue = cp_hue_angle(a, b) // [0, 2*pi)
-  let deg = hue * 180.0 / cd_pi
+  let deg = hue * 180.0 / pi_const()
 
   // SKIN check: warm hue + low chroma + adequate lightness
   if deg >= 15.0 && deg < 45.0 && chroma < 0.15 && l > 0.3 {
@@ -102,8 +99,8 @@ pub fn mengxi_classify_color_distribution(
   let mut neutral_count = 0
 
   // Iterate over all pixels in the strip
-  for col = 0; col < width; col = col + 1 {
-    for row = 0; row < height; row = row + 1 {
+  for col in 0..<width {
+    for row in 0..<height {
       let idx = (col * height + row) * 3
       let r = strip_ptr[idx]
       let g = strip_ptr[idx + 1]
@@ -126,7 +123,7 @@ pub fn mengxi_classify_color_distribution(
 
   // Write output: for each category, [fraction, avg_r, avg_g, avg_b]
   let total_f = total_pixels.to_double()
-  for i = 0; i < cd_num_categories; i = i + 1 {
+  for i in 0..<cd_num_categories {
     let base = i * 4
     let c = counts[i]
     if c > 0 {

@@ -90,3 +90,21 @@ SQLite via rusqlite bundled. WAL mode. 16 numbered migrations in `migrations/`. 
 ## Security
 
 Fully offline. Source files read-only. No auto-overwrite. Python subprocess same-user permissions.
+
+## Mandatory Pre-Task Checklist (MoonBit Work)
+
+**Before ANY planning, review, or code change touching `moonbit/src/`, you MUST:**
+
+1. **Load the `moonbit-practice` skill reference** — invoke it via `/moonbit-practice` or read its SKILL.md at `~/.claude/plugins/marketplaces/moonbit-practice/skills/moonbit-practice/SKILL.md`
+2. **Consult relevant reference docs** inside `reference/`:
+   - `ffi.md` — before any FFI changes
+   - `ffi-native.md` — before native build / link changes
+   - `language.md` — before writing new MoonBit syntax
+   - `testing.md` — before writing/modifying tests
+   - `ide.md` — before code navigation (prefer `moon ide` over grep)
+   - `refactor.md` — before restructuring code
+   - `performance.md` — before optimization work
+3. **Cross-check your approach against the skill's Common Pitfalls list** — verify you're not using deprecated syntax (`fn name[T]`, `else` in for-loop, `!` macro suffix, etc.)
+4. **Use `moon ide` for navigation**, not Read/Grep/grep, when working with MoonBit symbols
+
+**Enforcement:** If you skip this checklist and introduce a violation that the skill explicitly warns against (deprecated syntax, wrong FFI pattern, bad test pattern), that is a process failure — fix it immediately and note what was missed.

@@ -122,7 +122,7 @@ fn do_cineiris_transform(
   strip_height : Int,
   iris_diameter : Int
 ) -> FixedArray[Double] {
-  let pi = 3.14159265358979323846
+  let pi = pi_const()
   let two_pi = 2.0 * pi
 
   let strip_expected = strip_width * strip_height * 3
