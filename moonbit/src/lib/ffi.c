@@ -105,11 +105,12 @@ extern void moonbit_runtime_init(int argc, char** argv);
 extern double* moonbit_make_double_array(int32_t len, double value);
 extern void moonbit_drop_object(void*);
 extern int32_t _M0FP216mengxi_2dmoonbit3lib28mengxi__compute__fingerprint(
-  int32_t,
-  double*,
-  int32_t,
-  int32_t,
-  double*
+  int32_t,   /* data_len */
+  double*,    /* data_ptr */
+  int32_t,    /* color_tag */
+  int32_t,    /* output_mode */
+  int32_t,    /* out_len */
+  double*     /* out_ptr */
 );
 extern int32_t _M0FP216mengxi_2dmoonbit3lib23mengxi__aces__transform(
   int32_t,
@@ -318,6 +319,7 @@ int32_t mengxi_compute_fingerprint(
   int32_t data_len,
   double* data_ptr,
   int32_t color_tag,
+  int32_t output_mode,
   int32_t out_len,
   double* out_ptr
 ) {
@@ -347,7 +349,7 @@ int32_t mengxi_compute_fingerprint(
 
   /* Call MoonBit function */
   int32_t result = _M0FP216mengxi_2dmoonbit3lib28mengxi__compute__fingerprint(
-    data_len, mb_data, color_tag, out_len, mb_out
+    data_len, mb_data, color_tag, output_mode, out_len, mb_out
   );
 
   /* Copy output data back to Rust buffer before freeing */

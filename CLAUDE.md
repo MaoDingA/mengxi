@@ -11,7 +11,7 @@ Three-language monorepo: Rust CLI + MoonBit core algorithms + Python AI subsyste
 ```bash
 ./build_moonbit.sh          # Step 1: MoonBit → libmoonbit_core.a (MUST run first)
 cargo build --release       # Step 2: Rust binary (links static lib)
-cargo test                  # 351 Rust tests
+cargo test                  # 905 Rust tests (core:559, format:98, cli:182, agent:66)
 ```
 
 Requires: Rust nightly, MoonBit v0.8.x. Python 3.11+ is optional (runtime subprocess only).
@@ -19,7 +19,7 @@ Requires: Rust nightly, MoonBit v0.8.x. Python 3.11+ is optional (runtime subpro
 ## Architecture
 
 ```
-crates/cli    → binary "mx" (clap 4.5, 9 subcommands)
+crates/cli    → binary "mx" (clap 4.5, 25 top-level commands + db subcommands)
 crates/core   → library "mengxi-core" (rusqlite 0.38, FFI bridge, Python bridge)
 crates/format → library "mengxi-format" (DPX, EXR, MOV, LUT parsers)
 moonbit/src/  → pure functions compiled to libmoonbit_core.a

@@ -671,4 +671,131 @@ mod tests {
         let result = find_project_config(dir.path());
         assert!(result.is_none());
     }
+
+    // --- Edge case tests for missing config and format errors ---
+
+    #[test]
+    fn test_load_or_create_config_missing_file_creates_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        assert!(!config_path.exists());
+
+        // Load non-existent config should create with defaults
+        let toml_str = toml::to_string_pretty(&Config::default()).unwrap();
+        fs::write(&config_path, &toml_str).unwrap();
+
+        let loaded = fs::read_to_string(&config_path).unwrap();
+        let config: Config = toml::from_str(&loaded).unwrap();
+        assert_eq!(config.general.log_level, "info");
+        assert_eq!(config.general.default_search_limit, 5);
+    }
+
+    #[test]
+    fn test_load_project_config_toml_syntax_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Various TOML syntax errors
+        let invalid_toml_cases = vec![
+            "[search\n", // Unclosed bracket
+            "search = {", // Unclosed brace
+            "grading_weight = 0.5\nclip_weight = ", // Incomplete value
+            "[[search]]", // Array of tables instead of table
+        ];
+
+        for (i, invalid_toml) in invalid_toml_cases.iter().enumerate() {
+            fs::write(&config_path, invalid_toml).unwrap();
+            let result = load_project_config(&config_path);
+            assert!(result.is_err(), "Case {} should fail: {}", i, invalid_toml);
+            let err = result.unwrap_err();
+            assert!(err.contains("CONFIG_VALIDATION_ERROR"));
+            assert!(err.contains("invalid TOML"));
+        }
+    }
+
+    #[test]
+    fn test_load_project_config_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "").unwrap();
+
+        let result = load_project_config(&config_path);
+        // Empty file is valid TOML - should use defaults
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.grading_weight, 0.6);
+        assert_eq!(config.clip_weight, 0.3);
+        assert_eq!(config.tag_weight, 0.1);
+    }
+
+    #[test]
+    fn test_load_project_config_non_toml_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Non-TOML content (JSON, YAML, plain text)
+        let non_toml_cases = vec![
+            "{\"search\": {\"grading_weight\": 0.5}}", // JSON
+            "search:\n  grading_weight: 0.5", // YAML
+            "This is just plain text, not TOML at all.",
+        ];
+
+        for non_toml in non_toml_cases {
+            fs::write(&config_path, non_toml).unwrap();
+            let result = load_project_config(&config_path);
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.contains("CONFIG_VALIDATION_ERROR"));
+            assert!(err.contains("invalid TOML"));
+        }
+    }
+
+    #[test]
+    fn test_config_path_empty_string_handling() {
+        // Test that empty string values are handled correctly in config
+        let config = Config {
+            general: GeneralConfig {
+                log_level: "".to_string(),
+                data_dir: "".to_string(),
+                default_search_limit: 5,
+                default_export_format: "".to_string(),
+                user: "".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.general.log_level, "");
+        assert_eq!(parsed.general.data_dir, "");
+        assert_eq!(parsed.general.default_export_format, "");
+        assert_eq!(parsed.general.user, "");
+    }
+
+    #[test]
+    fn test_resolve_search_config_project_with_invalid_weights() {
+        let dir = tempfile::tempdir().unwrap();
+        let mengxi_dir = dir.path().join(".mengxi");
+        fs::create_dir_all(&mengxi_dir).unwrap();
+
+        // Test various invalid weight configurations
+        let invalid_cases = vec![
+            // Negative weights
+            "[search]\ngrading_weight = -0.5\nclip_weight = 1.0\ntag_weight = 0.5",
+            // Weights sum to > 1.0
+            "[search]\ngrading_weight = 0.8\nclip_weight = 0.8\ntag_weight = 0.1",
+            // One weight is 0
+            "[search]\ngrading_weight = 0.0\nclip_weight = 0.5\ntag_weight = 0.5",
+            // Infinity
+            "[search]\ngrading_weight = inf\nclip_weight = 0.5\ntag_weight = 0.5",
+        ];
+
+        for invalid_toml in invalid_cases {
+            fs::write(mengxi_dir.join("config"), invalid_toml).unwrap();
+            let result = resolve_search_config(dir.path());
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.contains("CONFIG_VALIDATION_ERROR"));
+        }
+    }
 }

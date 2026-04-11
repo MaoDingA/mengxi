@@ -65,6 +65,7 @@ extern "C" {
         data_len: i32,
         data_ptr: *const f64,
         color_tag: i32,
+        output_mode: i32,
         out_len: i32,
         out_ptr: *mut f64,
     ) -> i32;
@@ -108,6 +109,7 @@ pub fn extract_fingerprint(
             pixel_data.len() as i32,
             pixel_data.as_ptr(),
             tag.as_int(),
+            0, // output_mode = Full (default)
             OUTPUT_SIZE as i32,
             output.as_mut_ptr(),
         )
@@ -147,6 +149,7 @@ pub fn is_ffi_available() -> bool {
             3,
             data.as_ptr(),
             ColorSpaceTag::Linear.as_int(),
+            0, // output_mode = Full (default)
             OUTPUT_SIZE as i32,
             output.as_mut_ptr(),
         )
@@ -265,6 +268,7 @@ mod tests {
                 3,
                 data.as_ptr(),
                 0,
+                0, // output_mode
                 10,
                 output.as_mut_ptr(),
             )

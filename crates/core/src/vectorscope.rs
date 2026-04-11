@@ -116,3 +116,54 @@ pub struct VectorscopeDensity {
  ) -> Result<VectorscopeDensity> {
      Err(VectorscopeError::FfiError("MoonBit FFI not available".to_string()))
  }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vectorscope_ffi_error_display() {
+        let err = VectorscopeError::FfiError("test error".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("VECTORSCOPE_FFI_ERROR"));
+        assert!(display.contains("test error"));
+    }
+
+    #[test]
+    fn test_vectorscope_invalid_input_display() {
+        let err = VectorscopeError::InvalidInput("invalid strip".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("VECTORSCOPE_INVALID_INPUT"));
+        assert!(display.contains("invalid strip"));
+    }
+
+    #[test]
+    fn test_density_struct_default() {
+        let density = VectorscopeDensity {
+            angle_bins: 36,
+            radius_bins: 16,
+            grid: vec![0.0_f64; 36 * 16],
+        };
+        assert_eq!(density.angle_bins, 36);
+        assert_eq!(density.radius_bins, 16);
+        assert_eq!(density.grid.len(), 36 * 16);
+        assert!(density.grid.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    #[cfg(not(moonbit_ffi))]
+    fn test_unavailable_returns_err() {
+        let result = compute_vectorscope_density(&[], 1, 1, 36, 16, 100);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VectorscopeError::FfiError(msg) => {
+                assert!(msg.contains("MoonBit FFI not available"));
+            }
+            _ => panic!("Expected FfiError"),
+        }
+    }
+}
