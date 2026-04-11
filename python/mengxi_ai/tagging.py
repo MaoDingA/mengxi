@@ -2,6 +2,7 @@
 
 import logging
 import os
+import tempfile
 from typing import Optional
 
 import numpy as np
@@ -140,6 +141,16 @@ def _load_text_encoder_session(models_dir: str, text_model_name: Optional[str]) 
     return ort.InferenceSession(model_path)
 
 
+def _get_cache_key(model_name: str, models_dir: str) -> str:
+    """Generate cache key based on model name and mtime."""
+    model_path = os.path.join(models_dir, model_name)
+    mtime = 0
+    if os.path.isfile(model_path):
+        mtime = int(os.path.getmtime(model_path))
+    safe_name = model_name.replace(".onnx", "").replace("/", "_").replace("\\", "_")
+    return f"tag_text_embeddings_{safe_name}_mtime{mtime}.npy"
+
+
 def _load_or_compute_text_embeddings(
     text_session: ort.InferenceSession,
     models_dir: str,
@@ -147,15 +158,11 @@ def _load_or_compute_text_embeddings(
     candidate_tags: list[str],
     tokenizer,  # ClipTokenizer
 ) -> np.ndarray:
-    """Load cached text embeddings or compute and cache them.
-
-    Cache is keyed on model_name so swapping the text encoder
-    invalidates stale embeddings (Fix #2).
+    """Load cached text embeddings or compute and cache them (atomic write + mtime invalidation).
 
     Returns a numpy array of shape (num_tags, embedding_dim).
     """
-    safe_name = model_name.replace(".onnx", "").replace("/", "_").replace("\\", "_")
-    cache_path = os.path.join(models_dir, f"tag_text_embeddings_{safe_name}.npy")
+    cache_path = os.path.join(models_dir, _get_cache_key(model_name, models_dir))
 
     if os.path.isfile(cache_path):
         logger.info("Loading cached text embeddings from %s", cache_path)
@@ -188,16 +195,28 @@ def _load_or_compute_text_embeddings(
     norms = np.maximum(norms, 1e-8)
     text_features = text_features / norms
 
-    # Cache to disk
+    # Atomic write: write to temp file, then rename
     try:
         os.makedirs(models_dir, exist_ok=True)
-        np.save(cache_path, text_features)
-        logger.info(
-            "Cached text embeddings to %s (%d tags, dim=%d)",
-            cache_path,
-            text_features.shape[0],
-            text_features.shape[1],
-        )
+
+        temp_fd, temp_path = tempfile.mkstemp(dir=models_dir, suffix=".npy.tmp")
+        try:
+            with os.fdopen(temp_fd, "wb") as f:
+                np.save(f, text_features)
+            # Atomic rename (overwrites target if exists)
+            os.replace(temp_path, cache_path)
+            logger.info(
+                "Cached text embeddings to %s (%d tags, dim=%d)",
+                cache_path,
+                text_features.shape[0],
+                text_features.shape[1],
+            )
+        except (OSError, IOError) as e:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
     except OSError as e:
         logger.warning("Failed to cache text embeddings: %s", e)
 

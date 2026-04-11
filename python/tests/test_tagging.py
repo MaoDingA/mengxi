@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 import numpy as np
+import unittest.mock as mock
 from PIL import Image
 
 # Add parent directory to path for imports
@@ -315,6 +316,90 @@ class TestClipTokenizerSpecialTokens(unittest.TestCase):
 
     def test_context_length(self):
         self.assertEqual(CLIP_CONTEXT_LENGTH, 77)
+
+
+class TestGenerateTagsWithMocks(unittest.TestCase):
+    """Tests for generate_tags using mocks (no real ONNX models)."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.dirname(__file__))
+        from conftest import create_temp_models_dir
+        self.models_dir = create_temp_models_dir()
+
+    def _make_tagging_mocks(self, num_tags: int, embed_dim: int = 512):
+        """Create a side_effect that returns different mocks per call.
+
+        Call 1 → text encoder session (output shape: num_tags × embed_dim).
+        Call 2+ → image encoder session (output shape: 1 × embed_dim).
+        """
+        from conftest import MockOnnxSession
+        call_count = [0]
+
+        def _session_side_effect(_model_path):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Call 1: registry.load_model() → image encoder
+                sess = MockOnnxSession(output_shape=(1, embed_dim), output_dim=embed_dim)
+                sess._inputs[0].shape = (1, 3, 224, 224)
+            else:
+                # Call 2+: _load_text_encoder_session() → text encoder
+                sess = MockOnnxSession(output_shape=(num_tags, embed_dim), output_dim=embed_dim)
+                sess._inputs[0].shape = (num_tags, 77)
+            return sess
+
+        return _session_side_effect
+
+    @mock.patch("onnxruntime.InferenceSession")
+    @mock.patch("mengxi_ai.tagging.Image.open")
+    def test_generate_tags_returns_list(self, mock_open, mock_session_cls):
+        from conftest import mock_image_open as _mock_open
+        from mengxi_ai.tagging import generate_tags
+
+        mock_open.side_effect = _mock_open
+        mock_session_cls.side_effect = self._make_tagging_mocks(len(CANDIDATE_TAGS))
+
+        result = generate_tags(
+            image_path="/fake/image.png",
+            models_dir=self.models_dir,
+            top_n=5,
+        )
+        self.assertIsInstance(result, list)
+        self.assertLessEqual(len(result), 5)
+
+    @mock.patch("onnxruntime.InferenceSession")
+    @mock.patch("mengxi_ai.tagging.Image.open")
+    def test_generate_tags_custom_candidate_tags(self, mock_open, mock_session_cls):
+        from conftest import mock_image_open as _mock_open
+        from mengxi_ai.tagging import generate_tags
+
+        mock_open.side_effect = _mock_open
+        mock_session_cls.side_effect = self._make_tagging_mocks(10)
+
+        result = generate_tags(
+            image_path="/fake/image.png",
+            models_dir=self.models_dir,
+            candidate_tags=["custom tag 1", "custom tag 2"],
+            top_n=2,
+        )
+        self.assertIsInstance(result, list)
+        self.assertTrue(any("custom" in tag for tag in result))
+
+    @mock.patch("onnxruntime.InferenceSession")
+    @mock.patch("mengxi_ai.tagging.Image.open")
+    def test_generate_tags_top_n_clamped(self, mock_open, mock_session_cls):
+        from conftest import mock_image_open as _mock_open
+        from mengxi_ai.tagging import generate_tags
+
+        mock_open.side_effect = _mock_open
+        mock_session_cls.side_effect = self._make_tagging_mocks(len(CANDIDATE_TAGS))
+
+        # Request more tags than available
+        result = generate_tags(
+            image_path="/fake/image.png",
+            models_dir=self.models_dir,
+            top_n=999,
+        )
+        self.assertLessEqual(len(result), len(CANDIDATE_TAGS))
 
 
 if __name__ == "__main__":

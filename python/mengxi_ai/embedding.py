@@ -57,11 +57,23 @@ def generate_embedding(
     model_info = registry.load_model(model_name)
 
     logger.info("Preprocessing image: %s", image_path)
-    input_array = _preprocess_image(image_path, target_size=model_info.input_shape[2:4] if len(model_info.input_shape) >= 4 else DEFAULT_IMAGE_SIZE)
+    input_array = _preprocess_image(
+        image_path,
+        target_size=model_info.input_shape[2:4]
+        if len(model_info.input_shape) >= 4
+        else DEFAULT_IMAGE_SIZE,
+    )
 
     logger.info("Running inference (output_dim=%d)...", model_info.output_dim)
-    input_name = registry.session.get_inputs()[0].name
-    output = registry.session.run(None, {input_name: input_array})
+
+    # CRITICAL: Acquire session lock before calling run()
+    # get_cached_session returns (session, model_info, session_lock)
+    _, _, session_lock = registry.get_cached_session(registry.models_dir, model_name)
+    session = registry.session
+
+    with session_lock:
+        input_name = session.get_inputs()[0].name
+        output = session.run(None, {input_name: input_array})
 
     # Extract embedding vector from output
     embedding = output[0].flatten()
