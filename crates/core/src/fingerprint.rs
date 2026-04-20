@@ -282,6 +282,55 @@ mod tests {
         assert!(is_ffi_available());
     }
 
+    /// Verifies static symbol linkage of all FFI functions.
+    /// Complements test_is_ffi_available() (runtime call-chain verification at L281).
+    #[test]
+    #[cfg(moonbit_ffi)]
+    fn test_all_ffi_symbols_linked() {
+        // If we reach here, the linker resolved all extern "C" declarations.
+        // A missing symbol would cause a compile-time error, not a test failure.
+        // This test explicitly documents that assumption and verifies runtime availability.
+        assert!(is_ffi_available(), "FFI symbols linked but runtime init failed");
+    }
+
+    /// Tests concurrent FFI calls from multiple threads.
+    ///
+    /// # Platform Risk
+    /// MoonBit runtime GC may use thread-local state (see ffi.c L304-306 CAS comment).
+    /// If GC state is per-thread rather than per-process, concurrent calls after single-threaded
+    /// init could corrupt GC state. This test passes on some platforms and crashes on others.
+    ///
+    /// # How to Run
+    /// ```bash
+    /// cargo test -p mengxi-core --lib -- fingerprint::tests::test_concurrent_fingerprint_extraction --nocapture --ignored
+    /// ```
+    /// For CI: run under ThreadSanitizer (`RUSTFLAGS="-Zsanitizer=thread"`) if available.
+    #[test]
+    #[cfg(moonbit_ffi)]
+    #[ignore]
+    fn test_concurrent_fingerprint_extraction() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let data = vec![0.5_f64; 30]; // 10 pixels RGB
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = vec![];
+
+        for _ in 0..4 {
+            let b = barrier.clone();
+            let d = data.clone();
+            handles.push(thread::spawn(move || {
+                b.wait();
+                let result = extract_fingerprint(&d, "linear");
+                assert!(result.is_ok(), "concurrent FFI call failed: {:?}", result.err());
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+    }
+
     #[test]
     fn test_fingerprint_error_display() {
         let err = FingerprintError::FfiUnavailable;

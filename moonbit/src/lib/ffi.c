@@ -852,8 +852,8 @@ int32_t mengxi_extract_center_column(
 
   memcpy(mb_pixels, pixel_ptr, pixel_len * sizeof(double));
 
-  Moonbit_object_header(mb_pixels)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_pixels)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__extract__center__column(
     pixel_len, mb_pixels, width, height, out_len, mb_out
@@ -900,8 +900,8 @@ int32_t mengxi_stitch_fingerprint_strip(
 
   memcpy(mb_columns, columns_ptr, columns_len * sizeof(double));
 
-  Moonbit_object_header(mb_columns)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_columns)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib34mengxi__stitch__fingerprint__strip(
     columns_len, mb_columns, num_frames, frame_height, out_len, mb_out
@@ -949,8 +949,8 @@ int32_t mengxi_cineiris_transform(
 
   memcpy(mb_pixels, strip_pixel_ptr, strip_pixel_len * sizeof(double));
 
-  Moonbit_object_header(mb_pixels)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_pixels)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib27mengxi__cineiris__transform(
     strip_pixel_len, mb_pixels, strip_width, strip_height, iris_diameter, out_len, mb_out
@@ -994,8 +994,8 @@ int32_t mengxi_extract_color_dna(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib27mengxi__extract__color__dna(
     strip_len, mb_strip, width, height, out_len, mb_out
@@ -1046,9 +1046,9 @@ int32_t mengxi_compare_color_dna(
   memcpy(mb_a, dna_a_ptr, dna_len * sizeof(double));
   memcpy(mb_b, dna_b_ptr, dna_len * sizeof(double));
 
-  Moonbit_object_header(mb_a)->rc += 6;
-  Moonbit_object_header(mb_b)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_a)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_b)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib27mengxi__compare__color__dna(
     mb_a, mb_b, dna_len, out_len, mb_out
@@ -1096,8 +1096,8 @@ int32_t mengxi_detect_scene_boundaries(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib33mengxi__detect__scene__boundaries(
     strip_len, mb_strip, width, height,
@@ -1157,9 +1157,9 @@ int32_t mengxi_compute_mood_timeline(
     memcpy(mb_bounds, boundaries_ptr, boundaries_len * sizeof(double));
   }
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_bounds)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_bounds)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__compute__mood__timeline(
     strip_len, mb_strip, width, height,
@@ -1219,9 +1219,9 @@ int32_t mengxi_generate_color_transfer_lut(
   memcpy(mb_src, src_ptr, src_len * sizeof(double));
   memcpy(mb_tgt, tgt_ptr, tgt_len * sizeof(double));
 
-  Moonbit_object_header(mb_src)->rc += 6;
-  Moonbit_object_header(mb_tgt)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_src)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_tgt)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib38mengxi__generate__color__transfer__lut(
     src_len, mb_src, src_w, src_h,
@@ -1279,9 +1279,9 @@ int32_t mengxi_extract_temporal_features(
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
   memcpy(mb_segs, segments_ptr, segments_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_segs)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_segs)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib35mengxi__extract__temporal__features(
     strip_len, mb_strip, width, height,
@@ -1330,8 +1330,8 @@ int32_t mengxi_extract_frame_scatter(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__extract__frame__scatter(
     strip_len, mb_strip, width, height, out_len, mb_out
@@ -1379,8 +1379,8 @@ int32_t mengxi_compute_scatter_density(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib33mengxi__compute__scatter__density(
     strip_len, mb_strip, width, height,
@@ -1428,8 +1428,8 @@ int32_t mengxi_detect_dominant_pairs(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib31mengxi__detect__dominant__pairs(
     strip_len, mb_strip, width, height,
@@ -1491,8 +1491,8 @@ int32_t mengxi_compute_vectorscope_density(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib37mengxi__compute__vectorscope__density(
     strip_len, mb_strip, width, height,
@@ -1556,8 +1556,8 @@ int32_t mengxi_classify_color_distribution(
 
   memcpy(mb_strip, strip_ptr, strip_len * sizeof(double));
 
-  Moonbit_object_header(mb_strip)->rc += 6;
-  Moonbit_object_header(mb_out)->rc += 6;
+  Moonbit_object_header(mb_strip)->rc += RC_BUMP_DOUBLE;
+  Moonbit_object_header(mb_out)->rc += RC_BUMP_DOUBLE;
 
   int32_t result = _M0FP216mengxi_2dmoonbit3lib37mengxi__classify__color__distribution(
     strip_len, mb_strip, width, height,

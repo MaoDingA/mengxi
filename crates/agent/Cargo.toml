@@ -16,6 +16,7 @@ tokio-stream = "0.1"
 log = { workspace = true }
 mengxi-core = { path = "../core" }
 mengxi-format = { path = "../format" }
+# TODO: remove once project_ops.rs is migrated to core db API (documented exception)
 rusqlite = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 

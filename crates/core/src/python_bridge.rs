@@ -43,7 +43,8 @@ impl Subprocess {
             .spawn()
             .map_err(|e| {
                 AiError::SubprocessNotFound(format!(
-                    "Failed to spawn Python subprocess '{}': {}. Is Python installed?",
+                    "Failed to spawn Python subprocess '{}' (requires Python 3.11+): {}. \
+                     Run 'cd python && uv sync' to set up.",
                     python, e
                 ))
             })?;
@@ -182,7 +183,8 @@ impl PythonBridge {
             Ok("python".into())
         } else {
             Err(AiError::SubprocessNotFound(
-                "Python not found. Run 'cd python && uv sync' to set up the environment.".into(),
+                "Python not found (requires Python 3.11+). \
+                 Run 'cd python && uv sync' to set up the environment.".into(),
             ))
         }
     }

@@ -37,7 +37,9 @@ fn main() {
     let moon_home =
         std::env::var("MOONBIT_HOME").unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            format!("{}/.moon", home)
+            let fallback = format!("{}/.moon", home);
+            println!("cargo:warning=MOONBIT_HOME not set, using fallback: {}", fallback);
+            fallback
         });
     let moon_lib_path = std::path::Path::new(&moon_home).join("lib");
     if moon_lib_path.join("libbacktrace.a").exists() {

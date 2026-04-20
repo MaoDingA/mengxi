@@ -1,10 +1,11 @@
-// session/store.rs — SessionStore: SQLite-backed session persistence with branching & compaction
+// session/store.rs — SessionStore: SQLite-backed session persistence with branching & compaction.
+// All DB operations are delegated to mengxi_core::db agent-session API (no direct rusqlite).
 
 use crate::llm::{Message, MessageContent, Role};
 use crate::session::types::{Branch, BranchTreeNode, Session, SessionError, SessionInfo};
-use mengxi_core::db::DbConnection;
+use mengxi_core::db::{self, DbConnection};
 
-/// Session persistence store. Stateless — opens a DB connection per operation.
+/// Session persistence store. Stateless -- opens a DB connection per operation.
 pub struct SessionStore;
 
 impl Default for SessionStore {
@@ -19,23 +20,19 @@ impl SessionStore {
     }
 
     fn conn() -> Result<DbConnection, SessionError> {
-        mengxi_core::db::open_db().map_err(|e| SessionError::DbError(e.to_string()))
+        db::open_db().map_err(|e| SessionError::DbError(e.to_string()))
     }
 
     /// Resolve a branch UUID by name within a session.
     pub fn resolve_branch_id(session_id: &str, name: &str) -> Result<String, SessionError> {
         let conn = Self::conn()?;
-        conn.query_row(
-            "SELECT id FROM session_branches WHERE session_id = ?1 AND name = ?2",
-            rusqlite::params![session_id, name],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                SessionError::BranchNotFound(format!("branch '{}' not found in session", name))
-            }
-            e => SessionError::DbError(e.to_string()),
-        })
+        db::agent_branch_resolve_id(&conn, session_id, name)
+            .map_err(|e| match e {
+                db::DbError::Query(msg) if msg.contains("no rows") => {
+                    SessionError::BranchNotFound(format!("branch '{}' not found in session", name))
+                }
+                e => SessionError::DbError(e.to_string()),
+            })
     }
 
     // ── Session CRUD ─────────────────────────────────────────────
@@ -46,25 +43,16 @@ impl SessionStore {
         provider: Option<&str>,
         model: Option<&str>,
     ) -> Result<Session, SessionError> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = now_epoch();
         let conn = Self::conn()?;
 
-        conn.execute(
-            "INSERT INTO agent_sessions (id, title, provider, model, created_at, updated_at)
-             VALUES (?1, '', ?2, ?3, ?4, ?4)",
-            [&id as &dyn rusqlite::types::ToSql, &provider, &model, &now as &dyn rusqlite::types::ToSql],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        // Create session record
+        let id = db::agent_session_create(&conn, provider, model)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        // Create the "main" branch with a UUID id
-        let main_branch_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO session_branches (id, session_id, parent_branch_id, branch_point_seq, name, created_at)
-             VALUES (?1, ?2, NULL, NULL, 'main', ?3)",
-            rusqlite::params![main_branch_id, id, now],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        // Create the "main" branch (no parent -- root of the tree)
+        let now = epoch_now();
+        let _main_branch = db::agent_branch_create(&conn, &id, None, -1, "main")
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
         Ok(Session {
             id,
@@ -79,80 +67,43 @@ impl SessionStore {
     /// Get a session by ID.
     pub fn get_session(&self, id: &str) -> Result<Option<Session>, SessionError> {
         let conn = Self::conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, provider, model, created_at, updated_at
-                 FROM agent_sessions WHERE id = ?1",
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-        let result: Result<Session, rusqlite::Error> = stmt.query_row([id], |row| {
-            Ok(Session {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                provider: row.get(2)?,
-                model: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        });
-
-        match result {
-            Ok(session) => Ok(Some(session)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(SessionError::DbError(e.to_string())),
-        }
+        let record = db::agent_session_get(&conn, id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
+        Ok(record.map(|r| Session {
+            id: r.id,
+            title: r.title,
+            provider: r.provider,
+            model: r.model,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }))
     }
 
     /// List all sessions ordered by most recently updated.
     pub fn list_sessions(&self) -> Result<Vec<SessionInfo>, SessionError> {
         let conn = Self::conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT s.id, s.title, COUNT(m.id) AS msg_count, s.updated_at
-                 FROM agent_sessions s
-                 LEFT JOIN session_messages m ON m.session_id = s.id AND m.is_compacted = 0
-                 GROUP BY s.id
-                 ORDER BY s.updated_at DESC",
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-        let rows = stmt
-            .query_map([], |row: &rusqlite::Row<'_>| {
-                Ok(SessionInfo {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    message_count: row.get(2)?,
-                    updated_at: row.get(3)?,
-                })
-            })
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-        let mut infos = Vec::new();
-        for row in rows {
-            let info = row.map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-            infos.push(info);
-        }
-        Ok(infos)
+        let rows = db::agent_session_list(&conn)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| SessionInfo {
+            id: r.id,
+            title: r.title,
+            message_count: r.message_count,
+            updated_at: r.updated_at,
+        }).collect())
     }
 
     /// Update a session's title.
     pub fn update_title(&self, session_id: &str, title: &str) -> Result<(), SessionError> {
         let conn = Self::conn()?;
-        conn.execute(
-            "UPDATE agent_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![title, now_epoch(), session_id],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-        Ok(())
+        db::agent_session_update_title(&conn, session_id, title)
+            .map_err(|e| SessionError::DbError(e.to_string()))
     }
 
     /// Delete a session and all its branches/messages (CASCADE).
     pub fn delete_session(&self, session_id: &str) -> Result<(), SessionError> {
         let conn = Self::conn()?;
-        conn.execute("DELETE FROM agent_sessions WHERE id = ?1", [session_id])
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-        Ok(())
+        db::agent_session_delete(&conn, session_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))
     }
 
     // ── Message operations (main branch, backward-compatible) ────
@@ -161,23 +112,17 @@ impl SessionStore {
     pub fn save_message(
         &self,
         session_id: &str,
-        seq: i64,
+        _seq: i64,
         msg: &Message,
     ) -> Result<(), SessionError> {
-        let branch_id = Self::resolve_branch_id(session_id, "main")?;
         let conn = Self::conn()?;
         let content_json = serde_json::to_string(&msg.content)
             .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
         let role_str = role_to_str(&msg.role);
 
-        conn.execute(
-            "INSERT INTO session_messages (session_id, seq, role, content, branch_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![session_id, seq, role_str, content_json, branch_id],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        db::agent_message_save_main(&conn, session_id, role_str, &content_json)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        touch_session(&conn, session_id)?;
         Ok(())
     }
 
@@ -187,32 +132,17 @@ impl SessionStore {
         session_id: &str,
         messages: &[Message],
     ) -> Result<(), SessionError> {
-        let branch_id = Self::resolve_branch_id(session_id, "main")?;
         let conn = Self::conn()?;
 
-        let max_seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) FROM session_messages WHERE session_id = ?1 AND branch_id = ?2",
-                rusqlite::params![session_id, branch_id],
-                |row: &rusqlite::Row<'_>| row.get(0),
-            )
-            .unwrap_or(-1);
-
-        for (i, msg) in messages.iter().enumerate() {
-            let seq = max_seq + 1 + i as i64;
+        for msg in messages {
             let content_json = serde_json::to_string(&msg.content)
                 .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
             let role_str = role_to_str(&msg.role);
 
-            conn.execute(
-                "INSERT INTO session_messages (session_id, seq, role, content, branch_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![session_id, seq, role_str, content_json, branch_id],
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+            db::agent_message_save_main(&conn, session_id, role_str, &content_json)
+                .map_err(|e| SessionError::DbError(e.to_string()))?;
         }
 
-        touch_session(&conn, session_id)?;
         Ok(())
     }
 
@@ -235,27 +165,18 @@ impl SessionStore {
         let conn = Self::conn()?;
 
         // Validate parent branch exists in this session
-        let parent_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM session_branches WHERE id = ?1 AND session_id = ?2",
-                rusqlite::params![parent_branch_id, session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|c| c > 0)
-            .unwrap_or(false);
+        let branches = db::agent_branch_list(&conn, session_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
+        let parent_exists = branches.iter().any(|b| b.id == parent_branch_id);
 
         if !parent_exists {
             return Err(SessionError::BranchNotFound(parent_branch_id.to_string()));
         }
 
         // Validate branch_point_seq is within parent's message range
-        let parent_max_seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) FROM session_messages WHERE session_id = ?1 AND branch_id = ?2",
-                rusqlite::params![session_id, parent_branch_id],
-                |row: &rusqlite::Row<'_>| row.get(0),
-            )
-            .unwrap_or(-1);
+        let raw_msgs = db::agent_message_load_for_branch(&conn, session_id, parent_branch_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
+        let parent_max_seq = raw_msgs.last().map_or(-1, |m| m.seq);
 
         if branch_point_seq > parent_max_seq {
             return Err(SessionError::InvalidBranchPoint(format!(
@@ -264,111 +185,71 @@ impl SessionStore {
             )));
         }
 
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = now_epoch();
-
-        conn.execute(
-            "INSERT INTO session_branches (id, session_id, parent_branch_id, branch_point_seq, name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![id, session_id, parent_branch_id, branch_point_seq, name, now],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        let record = db::agent_branch_create(&conn, session_id, Some(parent_branch_id), branch_point_seq, name)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
         Ok(Branch {
-            id,
-            session_id: session_id.to_string(),
-            parent_branch_id: Some(parent_branch_id.to_string()),
-            branch_point_seq: Some(branch_point_seq),
-            name: name.to_string(),
-            created_at: now,
+            id: record.id,
+            session_id: record.session_id,
+            parent_branch_id: record.parent_branch_id,
+            branch_point_seq: record.branch_point_seq,
+            name: record.name,
+            created_at: record.created_at,
         })
     }
 
     /// Get a specific branch by its UUID.
     pub fn get_branch(&self, session_id: &str, branch_id: &str) -> Result<Branch, SessionError> {
         let conn = Self::conn()?;
-        let result = conn.query_row(
-            "SELECT id, session_id, parent_branch_id, branch_point_seq, name, created_at
-             FROM session_branches WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![branch_id, session_id],
-            |row| {
-                Ok(Branch {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    parent_branch_id: row.get(2)?,
-                    branch_point_seq: row.get(3)?,
-                    name: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            },
-        );
+        let branches = db::agent_branch_list(&conn, session_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        match result {
-            Ok(b) => Ok(b),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Err(SessionError::BranchNotFound(branch_id.to_string()))
-            }
-            Err(e) => Err(SessionError::DbError(e.to_string())),
-        }
+        branches
+            .into_iter()
+            .find(|b| b.id == branch_id)
+            .map(|r| Branch {
+                id: r.id,
+                session_id: r.session_id,
+                parent_branch_id: r.parent_branch_id,
+                branch_point_seq: r.branch_point_seq,
+                name: r.name,
+                created_at: r.created_at,
+            })
+            .ok_or_else(|| SessionError::BranchNotFound(branch_id.to_string()))
     }
 
     /// Get the main branch for a session.
     pub fn get_main_branch(&self, session_id: &str) -> Result<Branch, SessionError> {
         let conn = Self::conn()?;
-        let result = conn.query_row(
-            "SELECT id, session_id, parent_branch_id, branch_point_seq, name, created_at
-             FROM session_branches WHERE session_id = ?1 AND name = 'main'",
-            [session_id],
-            |row| {
-                Ok(Branch {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    parent_branch_id: row.get(2)?,
-                    branch_point_seq: row.get(3)?,
-                    name: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            },
-        );
+        let record = db::agent_branch_get_main(&conn, session_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        match result {
-            Ok(b) => Ok(b),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Err(SessionError::BranchNotFound("main".to_string()))
-            }
-            Err(e) => Err(SessionError::DbError(e.to_string())),
-        }
+        record
+            .map(|r| Branch {
+                id: r.id,
+                session_id: r.session_id,
+                parent_branch_id: r.parent_branch_id,
+                branch_point_seq: r.branch_point_seq,
+                name: r.name,
+                created_at: r.created_at,
+            })
+            .ok_or_else(|| SessionError::BranchNotFound("main".to_string()))
     }
 
     /// List all branches for a session.
     pub fn list_branches(&self, session_id: &str) -> Result<Vec<Branch>, SessionError> {
         let conn = Self::conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, session_id, parent_branch_id, branch_point_seq, name, created_at
-                 FROM session_branches WHERE session_id = ?1 ORDER BY created_at ASC",
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        let records = db::agent_branch_list(&conn, session_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        let rows = stmt
-            .query_map([session_id], |row: &rusqlite::Row<'_>| {
-                Ok(Branch {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    parent_branch_id: row.get(2)?,
-                    branch_point_seq: row.get(3)?,
-                    name: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            })
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-        let mut branches = Vec::new();
-        for row in rows {
-            let b = row.map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-            branches.push(b);
-        }
-        Ok(branches)
+        Ok(records.into_iter().map(|r| Branch {
+            id: r.id,
+            session_id: r.session_id,
+            parent_branch_id: r.parent_branch_id,
+            branch_point_seq: r.branch_point_seq,
+            name: r.name,
+            created_at: r.created_at,
+        }).collect())
     }
 
     /// Build a branch tree for navigation.
@@ -379,17 +260,12 @@ impl SessionStore {
         // Count messages per branch
         let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for b in &branches {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1 AND branch_id = ?2 AND is_compacted = 0",
-                    rusqlite::params![session_id, b.id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            counts.insert(b.id.clone(), count);
+            let msgs = db::agent_message_load_for_branch(&conn, session_id, &b.id)
+                .unwrap_or_default();
+            counts.insert(b.id.clone(), msgs.len() as i64);
         }
 
-        // Find root (main branch — has name = 'main')
+        // Find root (main branch -- has name = 'main')
         let root = branches
             .iter()
             .find(|b| b.name == "main")
@@ -432,24 +308,9 @@ impl SessionStore {
             .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
         let role_str = role_to_str(&msg.role);
 
-        let max_seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) FROM session_messages WHERE session_id = ?1 AND branch_id = ?2",
-                rusqlite::params![session_id, branch_id],
-                |row: &rusqlite::Row<'_>| row.get(0),
-            )
-            .unwrap_or(-1);
+        let seq = db::agent_message_save(&conn, session_id, branch_id, role_str, &content_json)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        let seq = max_seq + 1;
-
-        conn.execute(
-            "INSERT INTO session_messages (session_id, seq, role, content, branch_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![session_id, seq, role_str, content_json, branch_id],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-        touch_session(&conn, session_id)?;
         Ok(seq)
     }
 
@@ -462,29 +323,15 @@ impl SessionStore {
     ) -> Result<(), SessionError> {
         let conn = Self::conn()?;
 
-        let max_seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) FROM session_messages WHERE session_id = ?1 AND branch_id = ?2",
-                rusqlite::params![session_id, branch_id],
-                |row: &rusqlite::Row<'_>| row.get(0),
-            )
-            .unwrap_or(-1);
-
-        for (i, msg) in messages.iter().enumerate() {
-            let seq = max_seq + 1 + i as i64;
+        for msg in messages {
             let content_json = serde_json::to_string(&msg.content)
                 .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
             let role_str = role_to_str(&msg.role);
 
-            conn.execute(
-                "INSERT INTO session_messages (session_id, seq, role, content, branch_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![session_id, seq, role_str, content_json, branch_id],
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+            db::agent_message_save(&conn, session_id, branch_id, role_str, &content_json)
+                .map_err(|e| SessionError::DbError(e.to_string()))?;
         }
 
-        touch_session(&conn, session_id)?;
         Ok(())
     }
 
@@ -494,7 +341,6 @@ impl SessionStore {
         session_id: &str,
         branch_id: &str,
     ) -> Result<Vec<Message>, SessionError> {
-        let conn = Self::conn()?;
         let branch = self.get_branch(session_id, branch_id)?;
 
         let mut messages = Vec::new();
@@ -508,7 +354,7 @@ impl SessionStore {
         }
 
         // Load this branch's own messages
-        let own = load_branch_messages_raw(&conn, session_id, branch_id)?;
+        let own = load_branch_messages_raw(session_id, branch_id)?;
         messages.extend(own);
 
         Ok(messages)
@@ -521,20 +367,14 @@ impl SessionStore {
         branch_id: &str,
     ) -> Result<i64, SessionError> {
         let conn = Self::conn()?;
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM session_messages
-                 WHERE session_id = ?1 AND branch_id = ?2 AND is_compacted = 0",
-                rusqlite::params![session_id, branch_id],
-                |row| row.get(0),
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-        Ok(count)
+        let records = db::agent_message_load_for_branch(&conn, session_id, branch_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
+        Ok(records.len() as i64)
     }
 
     // ── Compaction DB operations ─────────────────────────────────
 
-    /// Mark messages as compacted (is_compacted = 1) up to a given seq.
+    /// Mark messages as compacted up to a given seq.
     pub fn mark_messages_compacted(
         &self,
         session_id: &str,
@@ -542,14 +382,9 @@ impl SessionStore {
         up_to_seq: i64,
     ) -> Result<usize, SessionError> {
         let conn = Self::conn()?;
-        let affected = conn
-            .execute(
-                "UPDATE session_messages SET is_compacted = 1
-                 WHERE session_id = ?1 AND branch_id = ?2 AND seq <= ?3 AND is_compacted = 0",
-                rusqlite::params![session_id, branch_id, up_to_seq],
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-        Ok(affected)
+        let count = db::agent_message_mark_compacted(&conn, session_id, branch_id, up_to_seq)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
+        Ok(count)
     }
 
     /// Insert a summary message (system role) at a given seq in a branch.
@@ -558,7 +393,7 @@ impl SessionStore {
         session_id: &str,
         branch_id: &str,
         summary_text: &str,
-        at_seq: i64,
+        _at_seq: i64,
     ) -> Result<(), SessionError> {
         let conn = Self::conn()?;
         let content_json = serde_json::to_string(&vec![MessageContent::Text {
@@ -566,14 +401,9 @@ impl SessionStore {
         }])
         .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
 
-        conn.execute(
-            "INSERT INTO session_messages (session_id, seq, role, content, branch_id, is_compacted)
-             VALUES (?1, ?2, 'system', ?3, ?4, 0)",
-            rusqlite::params![session_id, at_seq, content_json, branch_id],
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        db::agent_session_insert_summary(&conn, session_id, branch_id, &content_json)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
-        touch_session(&conn, session_id)?;
         Ok(())
     }
 
@@ -584,64 +414,33 @@ impl SessionStore {
         branch_id: &str,
     ) -> Result<Vec<(i64, Message)>, SessionError> {
         let conn = Self::conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT seq, role, content FROM session_messages
-                 WHERE session_id = ?1 AND branch_id = ?2 AND is_compacted = 0
-                 ORDER BY seq ASC",
-            )
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-        let rows = stmt
-            .query_map(rusqlite::params![session_id, branch_id], |row: &rusqlite::Row<'_>| {
-                let seq: i64 = row.get(0)?;
-                let role_str: String = row.get(1)?;
-                let content_json: String = row.get(2)?;
-                Ok((seq, role_str, content_json))
-            })
-            .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+        let records = db::agent_message_load_for_branch(&conn, session_id, branch_id)
+            .map_err(|e| SessionError::DbError(e.to_string()))?;
 
         let mut messages = Vec::new();
-        for row in rows {
-            let (seq, role_str, content_json) =
-                row.map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-            let role = str_to_role(&role_str)?;
-            let content: Vec<MessageContent> = serde_json::from_str(&content_json)
+        for rec in records {
+            let role = str_to_role(&rec.role)?;
+            let content: Vec<MessageContent> = serde_json::from_str(&rec.content_json)
                 .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
-            messages.push((seq, Message { role, content }));
+            messages.push((rec.seq, Message { role, content }));
         }
         Ok(messages)
     }
 }
 
-/// Load raw messages for a branch (uncompacted only).
+/// Load raw messages for a branch via core API (uncompacted only).
 fn load_branch_messages_raw(
-    conn: &DbConnection,
     session_id: &str,
     branch_id: &str,
 ) -> Result<Vec<Message>, SessionError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT role, content FROM session_messages
-             WHERE session_id = ?1 AND branch_id = ?2 AND is_compacted = 0
-             ORDER BY seq ASC",
-        )
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![session_id, branch_id], |row: &rusqlite::Row<'_>| {
-            let role_str: String = row.get(0)?;
-            let content_json: String = row.get(1)?;
-            Ok((role_str, content_json))
-        })
-        .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
+    let conn = SessionStore::conn()?;
+    let records = db::agent_message_load_for_branch(&conn, session_id, branch_id)
+        .map_err(|e| SessionError::DbError(e.to_string()))?;
 
     let mut messages = Vec::new();
-    for row in rows {
-        let (role_str, content_json) =
-            row.map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-        let role = str_to_role(&role_str)?;
-        let content: Vec<MessageContent> = serde_json::from_str(&content_json)
+    for rec in records {
+        let role = str_to_role(&rec.role)?;
+        let content: Vec<MessageContent> = serde_json::from_str(&rec.content_json)
             .map_err(|e: serde_json::Error| SessionError::SerializationError(e.to_string()))?;
         messages.push(Message { role, content });
     }
@@ -668,16 +467,7 @@ fn str_to_role(s: &str) -> Result<Role, SessionError> {
     }
 }
 
-fn touch_session(conn: &DbConnection, session_id: &str) -> Result<(), SessionError> {
-    conn.execute(
-        "UPDATE agent_sessions SET updated_at = ?1 WHERE id = ?2",
-        rusqlite::params![now_epoch(), session_id],
-    )
-    .map_err(|e: rusqlite::Error| SessionError::DbError(e.to_string()))?;
-    Ok(())
-}
-
-fn now_epoch() -> i64 {
+fn epoch_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -911,6 +701,150 @@ mod tests {
         assert_eq!(raw.len(), 2);
         assert_eq!(raw[0].0, 0);
         assert_eq!(raw[1].0, 1);
+
+        store.delete_session(&session.id).unwrap();
+    }
+
+    // =================================================================
+    // Task 4.2: SessionStore CRUD round-trip tests (3 tests)
+    // =================================================================
+
+    #[test]
+    fn test_create_and_get_session_roundtrip() {
+        let store = SessionStore::new();
+        let session = store
+            .create_session(Some("openai"), Some("gpt-4"))
+            .unwrap();
+
+        // Verify created session fields
+        assert!(!session.id.is_empty());
+        assert!(session.provider.as_deref() == Some("openai"));
+        assert!(session.model.as_deref() == Some("gpt-4"));
+        assert!(session.created_at > 0);
+        assert!(session.updated_at > 0);
+
+        // Retrieve the session by ID
+        let fetched = store.get_session(&session.id).unwrap();
+        assert!(fetched.is_some());
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.id, session.id);
+        assert_eq!(fetched.provider, session.provider);
+        assert_eq!(fetched.model, session.model);
+        assert_eq!(fetched.created_at, session.created_at);
+
+        store.delete_session(&session.id).unwrap();
+    }
+
+    #[test]
+    fn test_create_save_main_message_and_load_messages_for_branch_roundtrip() {
+        let store = SessionStore::new();
+        let session = store.create_session(None, None).unwrap();
+        let main_id = main_branch_id(&session.id);
+
+        // Save messages to main branch via save_message (backward-compat API)
+        store
+            .save_message(&session.id, 0, &Message::user("Hello, assistant!"))
+            .unwrap();
+        store
+            .save_message(&session.id, 1, &Message::assistant("Hi there! How can I help?"))
+            .unwrap();
+
+        // Load messages for the main branch
+        let msgs = store
+            .load_messages_for_branch(&session.id, &main_id)
+            .unwrap();
+
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::User);
+        assert_eq!(msgs[1].role, Role::Assistant);
+        // Verify content survived serialization round-trip
+        let user_text = msgs[0]
+            .content
+            .iter()
+            .find_map(|c| match c {
+                MessageContent::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(user_text.contains("Hello"));
+
+        store.delete_session(&session.id).unwrap();
+    }
+
+    #[test]
+    fn test_get_nonexistent_session_returns_none() {
+        let store = SessionStore::new();
+
+        // Use a UUID that almost certainly doesn't exist
+        let fake_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let result = store.get_session(fake_id).unwrap();
+        assert!(
+            result.is_none(),
+            "Expected None for non-existent session ID, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_list_sessions_returns_created_session() {
+        let store = SessionStore::new();
+        let session = store.create_session(Some("anthropic"), Some("claude-sonnet")).unwrap();
+
+        let sessions = store.list_sessions().unwrap();
+        assert!(!sessions.is_empty());
+        let found = sessions.iter().any(|s| s.id == session.id);
+        assert!(found, "list_sessions should include the newly created session");
+
+        store.delete_session(&session.id).unwrap();
+    }
+
+    #[test]
+    fn test_update_title_and_verify() {
+        let store = SessionStore::new();
+        let session = store.create_session(None, None).unwrap();
+
+        store.update_title(&session.id, "My Test Session").unwrap();
+
+        let fetched = store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(fetched.title, "My Test Session");
+
+        store.delete_session(&session.id).unwrap();
+    }
+
+    #[test]
+    fn test_delete_session_then_get_returns_none() {
+        let store = SessionStore::new();
+        let session = store.create_session(None, None).unwrap();
+
+        store.delete_session(&session.id).unwrap();
+
+        let fetched = store.get_session(&session.id).unwrap();
+        assert!(fetched.is_none(), "After delete, get_session should return None");
+    }
+
+    #[test]
+    fn test_create_session_default_provider_model() {
+        let store = SessionStore::new();
+        let session = store.create_session(None, None).unwrap();
+
+        assert!(session.provider.is_none());
+        assert!(session.model.is_none());
+        assert!(!session.id.is_empty());
+
+        store.delete_session(&session.id).unwrap();
+    }
+
+    #[test]
+    fn test_save_message_on_branch_increments_seq() {
+        let store = SessionStore::new();
+        let session = store.create_session(None, None).unwrap();
+        let main_id = main_branch_id(&session.id);
+
+        let seq1 = store.save_message_on_branch(&session.id, &main_id, &Message::user("msg1")).unwrap();
+        let seq2 = store.save_message_on_branch(&session.id, &main_id, &Message::assistant("msg2")).unwrap();
+
+        assert_eq!(seq1, 0);
+        assert_eq!(seq2, 1);
 
         store.delete_session(&session.id).unwrap();
     }
