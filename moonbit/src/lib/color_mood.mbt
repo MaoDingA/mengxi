@@ -8,16 +8,17 @@
 
 // ---------- Internal helpers ----------
 
+///|
 /// Classify a segment's mood from its average Oklab values.
 /// Returns mood tag: 0=Dark, 1=Vivid, 2=Warm, 3=Cool, 4=Neutral.
 fn cm_classify_mood(avg_l : Double, avg_a : Double, avg_b : Double) -> Int {
   let chroma = @math.pow(avg_a * avg_a + avg_b * avg_b, 0.5)
   if avg_l < 0.3 && chroma < 0.05 {
     0 // Dark
-  } else if avg_l > 0.6 && chroma > 0.15 {
-    1 // Vivid
   } else if avg_a > 0.05 {
     2 // Warm
+  } else if avg_l > 0.6 && chroma > 0.15 {
+    1 // Vivid
   } else if avg_a < -0.05 || avg_b > 0.1 {
     3 // Cool
   } else {
@@ -25,6 +26,7 @@ fn cm_classify_mood(avg_l : Double, avg_a : Double, avg_b : Double) -> Int {
   }
 }
 
+///|
 /// Compute average Oklab for a range of columns in the strip.
 /// Returns (avg_L, avg_a, avg_b).
 fn cm_segment_avg_oklab(
@@ -32,7 +34,7 @@ fn cm_segment_avg_oklab(
   strip_width : Int,
   height : Int,
   start_col : Int,
-  end_col : Int
+  end_col : Int,
 ) -> (Double, Double, Double) {
   if start_col >= end_col || start_col < 0 || end_col > strip_width {
     return (0.5, 0.0, 0.0)
@@ -57,11 +59,16 @@ fn cm_segment_avg_oklab(
     col = col + 1
   }
   let n = ((end_col - start_col) * height).to_double()
-  if n > 0.0 { (sum_l / n, sum_a / n, sum_b / n) } else { (0.5, 0.0, 0.0) }
+  if n > 0.0 {
+    (sum_l / n, sum_a / n, sum_b / n)
+  } else {
+    (0.5, 0.0, 0.0)
+  }
 }
 
 // ---------- FFI export ----------
 
+///|
 /// Compute mood timeline for segments defined by scene boundaries.
 ///
 /// Input:
@@ -89,16 +96,22 @@ pub fn mengxi_compute_mood_timeline(
   boundaries_ptr : FixedArray[Double],
   boundaries_len : Int,
   out_len : Int,
-  out_ptr : FixedArray[Double]
+  out_ptr : FixedArray[Double],
 ) -> Int {
-  if width <= 0 || height <= 0 { return -1 }
+  if width <= 0 || height <= 0 {
+    return -1
+  }
   let expected = width * height * 3
-  if strip_len < expected { return -1 }
+  if strip_len < expected {
+    return -1
+  }
 
   // Number of segments = boundaries_len + 1
   let num_segments = boundaries_len + 1
   let needed = 1 + num_segments * 6
-  if out_len < needed { return -2 }
+  if out_len < needed {
+    return -2
+  }
 
   // Build segment boundaries: [0, b0, b1, ..., bN, width]
   let seg_starts = FixedArray::make(num_segments + 1, 0)
@@ -107,7 +120,13 @@ pub fn mengxi_compute_mood_timeline(
   while bi < boundaries_len {
     let bval = boundaries_ptr[bi].to_int()
     // Clamp boundary to valid range
-    seg_starts[bi + 1] = if bval < 1 { 1 } else if bval >= width { width - 1 } else { bval }
+    seg_starts[bi + 1] = if bval < 1 {
+      1
+    } else if bval > width {
+      width
+    } else {
+      bval
+    }
     bi = bi + 1
   }
 
@@ -121,7 +140,7 @@ pub fn mengxi_compute_mood_timeline(
     let safe_start = if start < 0 { 0 } else { start }
 
     let (avg_l, avg_a, avg_b) = cm_segment_avg_oklab(
-      strip_ptr, width, height, safe_start, safe_end
+      strip_ptr, width, height, safe_start, safe_end,
     )
     let mood = cm_classify_mood(avg_l, avg_a, avg_b)
 
@@ -141,6 +160,7 @@ pub fn mengxi_compute_mood_timeline(
 
 // ---------- DCE prevention ----------
 
+///|
 fn init {
   let strip = FixedArray::make(12, 0.5)
   let bounds = FixedArray::make(1, 1.0)
@@ -150,6 +170,7 @@ fn init {
 
 // ---------- Tests ----------
 
+///|
 test "mood_timeline_single_segment" {
   // 4x1 strip, no boundaries → 1 segment
   let strip = FixedArray::make(12, 0.5)
@@ -164,17 +185,30 @@ test "mood_timeline_single_segment" {
   assert_true(out[3] >= 0.0 && out[3] <= 4.0) // mood tag valid
 }
 
+///|
 test "mood_timeline_warm_dark" {
   // 6x1 strip: first 3 frames warm red, last 3 frames dark
   let strip = FixedArray::make(18, 0.0)
   // Warm red: high R, low G,B → Oklab a > 0
-  strip[0] = 0.9; strip[1] = 0.2; strip[2] = 0.1  // frame 0
-  strip[3] = 0.9; strip[4] = 0.2; strip[5] = 0.1  // frame 1
-  strip[6] = 0.9; strip[7] = 0.2; strip[8] = 0.1  // frame 2
+  strip[0] = 0.9
+  strip[1] = 0.2
+  strip[2] = 0.1 // frame 0
+  strip[3] = 0.9
+  strip[4] = 0.2
+  strip[5] = 0.1 // frame 1
+  strip[6] = 0.9
+  strip[7] = 0.2
+  strip[8] = 0.1 // frame 2
   // Dark: low everything → Oklab L < 0.3
-  strip[9] = 0.05; strip[10] = 0.05; strip[11] = 0.05   // frame 3
-  strip[12] = 0.05; strip[13] = 0.05; strip[14] = 0.05  // frame 4
-  strip[15] = 0.05; strip[16] = 0.05; strip[17] = 0.05  // frame 5
+  strip[9] = 0.05
+  strip[10] = 0.05
+  strip[11] = 0.05 // frame 3
+  strip[12] = 0.05
+  strip[13] = 0.05
+  strip[14] = 0.05 // frame 4
+  strip[15] = 0.05
+  strip[16] = 0.05
+  strip[17] = 0.05 // frame 5
 
   let bounds = FixedArray::make(1, 3.0) // boundary at frame 3
   let out = FixedArray::make(1 + 2 * 6, 0.0)
@@ -192,11 +226,12 @@ test "mood_timeline_warm_dark" {
   assert_eq(out[7 + 2], 0.0) // mood = Dark
 }
 
+///|
 test "mood_classify_rules" {
   // Dark: L<0.3, chroma<0.05
   assert_eq(cm_classify_mood(0.2, 0.01, 0.01), 0)
-  // Vivid: L>0.6, chroma>0.15
-  assert_eq(cm_classify_mood(0.8, 0.15, 0.1), 1)
+  // Vivid: L>0.6, chroma>0.15 without warm/cool bias
+  assert_eq(cm_classify_mood(0.8, 0.0, 0.2), 1)
   // Warm: a>0.05
   assert_eq(cm_classify_mood(0.5, 0.1, 0.0), 2)
   // Cool: a<-0.05
@@ -207,10 +242,17 @@ test "mood_classify_rules" {
   assert_eq(cm_classify_mood(0.5, 0.01, 0.01), 4)
 }
 
+///|
 test "mood_timeline_error_cases" {
   let strip = FixedArray::make(12, 0.5)
   let bounds = FixedArray::make(0, 0.0)
   let out = FixedArray::make(13, 0.0)
-  assert_eq(mengxi_compute_mood_timeline(12, strip, 0, 2, bounds, 0, 13, out), -1)
-  assert_eq(mengxi_compute_mood_timeline(12, strip, 4, 1, bounds, 0, 5, out), -2)
+  assert_eq(
+    mengxi_compute_mood_timeline(12, strip, 0, 2, bounds, 0, 13, out),
+    -1,
+  )
+  assert_eq(
+    mengxi_compute_mood_timeline(12, strip, 4, 1, bounds, 0, 5, out),
+    -2,
+  )
 }
