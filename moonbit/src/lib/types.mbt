@@ -9,19 +9,49 @@
 
 // ---------- Encoding type constants ----------
 
-pub fn cs_linear() -> Int { 0 }
-pub fn cs_log() -> Int { 1 }
-pub fn cs_video() -> Int { 2 }
+///|
+fn cs_linear() -> Int {
+  0
+}
+
+///|
+fn cs_log() -> Int {
+  1
+}
+
+///|
+fn cs_video() -> Int {
+  2
+}
 
 // ---------- ACES color space constants ----------
 
-pub fn cs_aces2065_1() -> Int { 10 }
-pub fn cs_acescg() -> Int { 11 }
-pub fn cs_acescct() -> Int { 12 }
-pub fn cs_rec709() -> Int { 20 }
+///|
+fn cs_aces2065_1() -> Int {
+  10
+}
+
+///|
+fn cs_acescg() -> Int {
+  11
+}
+
+///|
+fn cs_acescct() -> Int {
+  12
+}
+
+///|
+fn cs_rec709() -> Int {
+  20
+}
 
 // Display P3 color space (D65 white point, SMPTE RP 431-2 primaries)
-pub fn cs_display_p3() -> Int { 30 }
+
+///|
+fn cs_display_p3() -> Int {
+  30
+}
 
 // Tag 31 RESERVED for future DCI-P3 implementation.
 // DCI-P3 requires Bradford D65->DCI white point adaptation (~15-20 lines)
@@ -29,13 +59,15 @@ pub fn cs_display_p3() -> Int { 30 }
 
 // ---------- Helpers ----------
 
+///|
 /// Check if a color space tag represents a log-encoded space.
-pub fn is_log_space(tag : Int) -> Bool {
+fn is_log_space(tag : Int) -> Bool {
   tag == cs_acescct() || tag == cs_log()
 }
 
 // ---------- DCE prevention ----------
 
+///|
 fn init {
   let _ = cs_linear()
   let _ = cs_log()
@@ -50,12 +82,14 @@ fn init {
 
 // ---------- Unit tests ----------
 
+///|
 test {
   assert_eq(cs_linear(), 0)
   assert_eq(cs_log(), 1)
   assert_eq(cs_video(), 2)
 }
 
+///|
 test {
   assert_eq(cs_aces2065_1(), 10)
   assert_eq(cs_acescg(), 11)
@@ -64,6 +98,7 @@ test {
   assert_eq(cs_display_p3(), 30)
 }
 
+///|
 test {
   assert_eq(is_log_space(cs_acescct()), true)
   assert_eq(is_log_space(cs_log()), true)

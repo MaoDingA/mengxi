@@ -3,48 +3,23 @@
 // Classifies strip pixels into 7 color categories based on Oklab hue angle.
 // Produces per-category fraction + average RGB, plus neutral fraction.
 //
-// Uses inline Oklab conversion to avoid per-pixel FFI overhead.
+// Classification is implemented in MoonBit and exposed through FFI.
 
 // ---------------------------------------------------------------------------
-// Inline Oklab conversion (matches MoonBit srgb_to_oklab exactly)
+// FFI declarations
 // ---------------------------------------------------------------------------
 
-/// sRGB gamma decode (IEC 61966-2-1 piecewise)
-#[inline]
-fn srgb_gamma_decode(c: f64) -> f64 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Linear sRGB → Oklab (single pixel)
-#[inline]
-pub(crate) fn srgb_to_oklab_pixel(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-    let lr = srgb_gamma_decode(r);
-    let lg = srgb_gamma_decode(g);
-    let lb = srgb_gamma_decode(b);
-
-    // Linear sRGB → LMS
-    let l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
-    let m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
-    let s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
-
-    // Cube root (clamp to 0 to avoid NaN)
-    let l_c = if l < 0.0 { 0.0 } else { l };
-    let m_c = if m < 0.0 { 0.0 } else { m };
-    let s_c = if s < 0.0 { 0.0 } else { s };
-    let l3 = l_c.powf(1.0 / 3.0);
-    let m3 = m_c.powf(1.0 / 3.0);
-    let s3 = s_c.powf(1.0 / 3.0);
-
-    // LMS' → Oklab
-    let ok_l = 0.2104542553 * l3 + 0.7936177850 * m3 - 0.0040720468 * s3;
-    let ok_a = 1.9779984951 * l3 - 2.4285922050 * m3 + 0.4505937099 * s3;
-    let ok_b = 0.0259040371 * l3 + 0.7827717662 * m3 - 0.8086757660 * s3;
-
-    (ok_l, ok_a, ok_b)
+#[cfg(moonbit_ffi)]
+extern "C" {
+    fn mengxi_classify_color_distribution(
+        strip_len: i32,
+        strip_ptr: *const f64,
+        width: i32,
+        height: i32,
+        min_chroma_permille: i32,
+        out_len: i32,
+        out_ptr: *mut f64,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,41 +50,29 @@ pub struct ColorDistribution {
 }
 
 // ---------------------------------------------------------------------------
-// Classification
+// Public API
 // ---------------------------------------------------------------------------
 
-pub(crate) fn classify_pixel(l: f64, a: f64, b: f64, min_chroma: f64) -> Option<ColorCategory> {
-    let chroma = (a * a + b * b).sqrt();
-    if chroma < min_chroma {
-        return None;
-    }
+const RAW_OUT_LEN: usize = NUM_CATEGORIES * 4 + 1;
 
-    let deg = b.atan2(a).to_degrees();
-    let deg = if deg < 0.0 { deg + 360.0 } else { deg };
-
-    // SKIN: warm hue + moderate chroma + adequate lightness
-    if (15.0..45.0).contains(&deg) && chroma < 0.15 && l > 0.3 {
-        return Some(ColorCategory::Skin);
-    }
-
-    if (345.0..=360.0).contains(&deg) || (0.0..45.0).contains(&deg) {
-        Some(ColorCategory::Red)
-    } else if deg < 70.0 {
-        Some(ColorCategory::Yellow)
-    } else if deg < 165.0 {
-        Some(ColorCategory::Green)
-    } else if deg < 200.0 {
-        Some(ColorCategory::Cyan)
-    } else if deg < 270.0 {
-        Some(ColorCategory::Blue)
-    } else {
-        Some(ColorCategory::Magenta)
+fn empty_distribution() -> ColorDistribution {
+    ColorDistribution {
+        categories: [[0.0; 4]; NUM_CATEGORIES],
+        neutral_fraction: 0.0,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+fn parse_raw_distribution(raw: &[f64]) -> ColorDistribution {
+    let mut categories = [[0.0f64; 4]; NUM_CATEGORIES];
+    for (i, category) in categories.iter_mut().enumerate() {
+        let base = i * 4;
+        category.copy_from_slice(&raw[base..base + 4]);
+    }
+    ColorDistribution {
+        categories,
+        neutral_fraction: raw[NUM_CATEGORIES * 4],
+    }
+}
 
 /// Classify color distribution from fingerprint strip data.
 ///
@@ -124,62 +87,48 @@ pub fn classify_color_distribution(
     height: usize,
     min_chroma: f64,
 ) -> ColorDistribution {
-    let total_pixels = width * height;
-
-    let mut counts = [0usize; NUM_CATEGORIES];
-    let mut sum_r = [0.0f64; NUM_CATEGORIES];
-    let mut sum_g = [0.0f64; NUM_CATEGORIES];
-    let mut sum_b = [0.0f64; NUM_CATEGORIES];
-    let mut neutral_count = 0usize;
-
-    for col in 0..width {
-        for row in 0..height {
-            let idx = (col * height + row) * 3;
-            if idx + 2 >= strip.len() {
-                break;
-            }
-            let r = strip[idx];
-            let g = strip[idx + 1];
-            let bv = strip[idx + 2];
-
-            let (l_val, a_val, b_val) = srgb_to_oklab_pixel(r, g, bv);
-
-            match classify_pixel(l_val, a_val, b_val, min_chroma) {
-                None => neutral_count += 1,
-                Some(cat) => {
-                    let i = cat as usize;
-                    counts[i] += 1;
-                    sum_r[i] += r;
-                    sum_g[i] += g;
-                    sum_b[i] += bv;
-                }
-            }
-        }
+    if width == 0 || height == 0 || strip.len() < width * height * 3 {
+        return empty_distribution();
     }
 
-    let total_f = total_pixels as f64;
-    let mut categories = [[0.0f64; 4]; NUM_CATEGORIES];
+    classify_color_distribution_impl(strip, width, height, min_chroma)
+}
 
-    for i in 0..NUM_CATEGORIES {
-        if counts[i] > 0 {
-            let cf = counts[i] as f64;
-            categories[i][0] = cf / total_f;
-            categories[i][1] = sum_r[i] / cf;
-            categories[i][2] = sum_g[i] / cf;
-            categories[i][3] = sum_b[i] / cf;
-        }
-    }
-
-    let neutral_fraction = if total_pixels > 0 {
-        neutral_count as f64 / total_f
-    } else {
-        0.0
+#[cfg(moonbit_ffi)]
+fn classify_color_distribution_impl(
+    strip: &[f64],
+    width: usize,
+    height: usize,
+    min_chroma: f64,
+) -> ColorDistribution {
+    let mut output = [0.0_f64; RAW_OUT_LEN];
+    let min_chroma_permille = (min_chroma * 1000.0).round() as i32;
+    let result = unsafe {
+        mengxi_classify_color_distribution(
+            strip.len() as i32,
+            strip.as_ptr(),
+            width as i32,
+            height as i32,
+            min_chroma_permille,
+            RAW_OUT_LEN as i32,
+            output.as_mut_ptr(),
+        )
     };
-
-    ColorDistribution {
-        categories,
-        neutral_fraction,
+    if result == RAW_OUT_LEN as i32 {
+        parse_raw_distribution(&output)
+    } else {
+        empty_distribution()
     }
+}
+
+#[cfg(not(moonbit_ffi))]
+fn classify_color_distribution_impl(
+    _strip: &[f64],
+    _width: usize,
+    _height: usize,
+    _min_chroma: f64,
+) -> ColorDistribution {
+    empty_distribution()
 }
 
 // ---------------------------------------------------------------------------
@@ -232,34 +181,7 @@ impl ColorCategory {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_classify_red_pixel() {
-        let (l, a, b) = srgb_to_oklab_pixel(1.0, 0.0, 0.0);
-        let result = classify_pixel(l, a, b, 0.03);
-        assert_eq!(result, Some(ColorCategory::Red));
-    }
-
-    #[test]
-    fn test_classify_blue_pixel() {
-        let (l, a, b) = srgb_to_oklab_pixel(0.0, 0.0, 1.0);
-        let result = classify_pixel(l, a, b, 0.03);
-        assert_eq!(result, Some(ColorCategory::Blue));
-    }
-
-    #[test]
-    fn test_classify_gray_is_neutral() {
-        let (l, a, b) = srgb_to_oklab_pixel(0.5, 0.5, 0.5);
-        let result = classify_pixel(l, a, b, 0.03);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_classify_green_pixel() {
-        let (l, a, b) = srgb_to_oklab_pixel(0.0, 1.0, 0.0);
-        let result = classify_pixel(l, a, b, 0.03);
-        assert_eq!(result, Some(ColorCategory::Green));
-    }
-
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_distribution_all_red() {
         let strip: Vec<f64> = vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -272,6 +194,7 @@ mod tests {
         assert!((dist.neutral_fraction).abs() < 0.01);
     }
 
+    #[cfg(moonbit_ffi)]
     #[test]
     fn test_distribution_all_gray() {
         let strip: Vec<f64> = vec![0.5; 12];
@@ -283,19 +206,12 @@ mod tests {
         );
     }
 
+    #[cfg(not(moonbit_ffi))]
     #[test]
-    fn test_oklab_white_roundtrip() {
-        let (l, a, b) = srgb_to_oklab_pixel(1.0, 1.0, 1.0);
-        assert!((l - 1.0).abs() < 0.001, "L = {}", l);
-        assert!(a.abs() < 0.001, "a = {}", a);
-        assert!(b.abs() < 0.001, "b = {}", b);
-    }
-
-    #[test]
-    fn test_oklab_black() {
-        let (l, a, b) = srgb_to_oklab_pixel(0.0, 0.0, 0.0);
-        assert!(l.abs() < 0.001, "L = {}", l);
-        assert!(a.abs() < 0.001);
-        assert!(b.abs() < 0.001);
+    fn test_distribution_without_ffi_is_empty() {
+        let strip: Vec<f64> = vec![1.0, 0.0, 0.0];
+        let dist = classify_color_distribution(&strip, 1, 1, 0.03);
+        assert_eq!(dist.neutral_fraction, 0.0);
+        assert_eq!(dist.categories, [[0.0; 4]; NUM_CATEGORIES]);
     }
 }

@@ -1,0 +1,66 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mengxi-moonbit/lib"
+
+// Values
+pub fn mengxi_aces_transform(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_acescct_to_oklab(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_bhattacharyya_distance(FixedArray[Double], FixedArray[Double], Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_cineiris_transform(Int, FixedArray[Double], Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_classify_color_distribution(Int, FixedArray[Double], Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_compare_color_dna(FixedArray[Double], FixedArray[Double], Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_compute_fingerprint(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_compute_mood_timeline(Int, FixedArray[Double], Int, Int, FixedArray[Double], Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_compute_scatter_density(Int, FixedArray[Double], Int, Int, Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_compute_vectorscope_density(Int, FixedArray[Double], Int, Int, Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_detect_dominant_pairs(Int, FixedArray[Double], Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_detect_scene_boundaries(Int, FixedArray[Double], Int, Int, Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_display_p3_to_oklab(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_extract_center_column(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_extract_color_dna(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_extract_frame_scatter(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_extract_grading_features(FixedArray[Double], Int, Int, Int, FixedArray[Double], FixedArray[Double], FixedArray[Double], FixedArray[Double], FixedArray[Double], FixedArray[Double]) -> Int
+
+pub fn mengxi_extract_temporal_features(Int, FixedArray[Double], Int, Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_generate_color_transfer_lut(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double], Int, Int, Int, Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_generate_lut(Int, Int, Int, FixedArray[Double], Int) -> Int
+
+pub fn mengxi_linear_to_oklab(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_oklab_to_acescct(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_oklab_to_display_p3(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_oklab_to_linear(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_oklab_to_srgb(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_srgb_to_oklab(Int, FixedArray[Double], Int, FixedArray[Double]) -> Int
+
+pub fn mengxi_stitch_fingerprint_strip(Int, FixedArray[Double], Int, Int, Int, FixedArray[Double]) -> Int
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits
+

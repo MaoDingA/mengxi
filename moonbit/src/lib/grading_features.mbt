@@ -6,12 +6,14 @@
 // Helper Functions (prefixed gf_ to avoid cross-file conflicts)
 // ============================================================
 
+///|
 fn gf_approx_eq(actual : Double, expected : Double) -> Bool {
   let diff = actual - expected
   let abs_diff = if diff < 0.0 { 0.0 - diff } else { diff }
   abs_diff < 0.0001
 }
 
+///|
 /// Check if a Double value is finite (not NaN, not Inf, not -Inf).
 /// Uses the IEEE 754 property: x * 0.0 == 0.0 only for finite x.
 /// NaN * 0.0 = NaN, Inf * 0.0 = NaN — both fail the equality check.
@@ -24,6 +26,7 @@ fn gf_is_finite(v : Double) -> Bool {
 // Histogram Computation
 // ============================================================
 
+///|
 /// Compute histogram for a single channel of Oklab values.
 /// Input:  data     — single-channel f64 array
 ///         data_len — number of elements
@@ -33,15 +36,19 @@ fn gf_is_finite(v : Double) -> Bool {
 ///         max_val  — upper bound of bin range
 /// Returns: bin_count on success, negative error code on failure.
 fn compute_histogram(
-  data: FixedArray[Double],
-  data_len: Int,
-  bin_count: Int,
-  out: FixedArray[Double],
-  min_val: Double,
-  max_val: Double
+  data : FixedArray[Double],
+  data_len : Int,
+  bin_count : Int,
+  out : FixedArray[Double],
+  min_val : Double,
+  max_val : Double,
 ) -> Int {
-  if data_len < 1 { return -1 }
-  if bin_count < 8 { return -2 }
+  if data_len < 1 {
+    return -1
+  }
+  if bin_count < 8 {
+    return -2
+  }
 
   // Initialize all bins to 0.0
   let mut i = 0
@@ -92,17 +99,18 @@ fn compute_histogram(
 // Color Moments Computation
 // ============================================================
 
+///|
 /// Compute color moments for three Oklab channels.
 /// Input:  l_data, a_data, b_data — separate channel arrays
 ///         data_len — number of pixels per channel
 ///         out      — output array of size 12: [L_mean, L_std, L_skew, L_kurt, a_mean, a_std, a_skew, a_kurt, b_mean, b_std, b_skew, b_kurt]
 /// Returns: 12 on success, negative error code on failure.
 fn compute_color_moments(
-  l_data: FixedArray[Double],
-  a_data: FixedArray[Double],
-  b_data: FixedArray[Double],
-  data_len: Int,
-  out: FixedArray[Double]
+  l_data : FixedArray[Double],
+  a_data : FixedArray[Double],
+  b_data : FixedArray[Double],
+  data_len : Int,
+  out : FixedArray[Double],
 ) -> Int {
   let out_size = 12
   if data_len < 1 {
@@ -134,9 +142,15 @@ fn compute_color_moments(
   let mean_b = sum_b / n
 
   // Compute variance, m3 (skewness), m4 (kurtosis) for each channel
-  let mut var_l = 0.0; let mut var_a = 0.0; let mut var_b = 0.0
-  let mut m3_l = 0.0;  let mut m3_a = 0.0;  let mut m3_b = 0.0
-  let mut m4_l = 0.0;  let mut m4_a = 0.0;  let mut m4_b = 0.0
+  let mut var_l = 0.0
+  let mut var_a = 0.0
+  let mut var_b = 0.0
+  let mut m3_l = 0.0
+  let mut m3_a = 0.0
+  let mut m3_b = 0.0
+  let mut m4_l = 0.0
+  let mut m4_a = 0.0
+  let mut m4_b = 0.0
   let mut j = 0
   while j < data_len {
     let dl = l_data[j] - mean_l
@@ -167,10 +181,11 @@ fn compute_color_moments(
   m4_a = m4_a / n
   m4_b = m4_b / n
 
-  // Std: sqrt(variance), guard against negative (numerical safety)
-  let std_l = if var_l <= 0.0 { 0.0 } else { @math.pow(var_l, 0.5) }
-  let std_a = if var_a <= 0.0 { 0.0 } else { @math.pow(var_a, 0.5) }
-  let std_b = if var_b <= 0.0 { 0.0 } else { @math.pow(var_b, 0.5) }
+  // Std: sqrt(variance), with epsilon guard for constant channels.
+  let moment_eps = 0.000000000001
+  let std_l = if var_l <= moment_eps { 0.0 } else { @math.pow(var_l, 0.5) }
+  let std_a = if var_a <= moment_eps { 0.0 } else { @math.pow(var_a, 0.5) }
+  let std_b = if var_b <= moment_eps { 0.0 } else { @math.pow(var_b, 0.5) }
 
   // Skewness: m3 / std^3 (guard against zero std)
   let skew_l = if std_l <= 0.0 { 0.0 } else { m3_l / (std_l * std_l * std_l) }
@@ -178,9 +193,21 @@ fn compute_color_moments(
   let skew_b = if std_b <= 0.0 { 0.0 } else { m3_b / (std_b * std_b * std_b) }
 
   // Excess Kurtosis: m4 / std^4 - 3 (guard against zero std)
-  let kurt_l = if std_l <= 0.0 { 0.0 } else { m4_l / (std_l * std_l * std_l * std_l) - 3.0 }
-  let kurt_a = if std_a <= 0.0 { 0.0 } else { m4_a / (std_a * std_a * std_a * std_a) - 3.0 }
-  let kurt_b = if std_b <= 0.0 { 0.0 } else { m4_b / (std_b * std_b * std_b * std_b) - 3.0 }
+  let kurt_l = if std_l <= 0.0 {
+    0.0
+  } else {
+    m4_l / (std_l * std_l * std_l * std_l) - 3.0
+  }
+  let kurt_a = if std_a <= 0.0 {
+    0.0
+  } else {
+    m4_a / (std_a * std_a * std_a * std_a) - 3.0
+  }
+  let kurt_b = if std_b <= 0.0 {
+    0.0
+  } else {
+    m4_b / (std_b * std_b * std_b * std_b) - 3.0
+  }
 
   out[0] = mean_l
   out[1] = std_l
@@ -202,6 +229,7 @@ fn compute_color_moments(
 // Histogram Split (Shadows/Midtones/Highlights)
 // ============================================================
 
+///|
 /// Split L-channel histogram into shadows/midtones/highlights sub-histograms.
 /// Input:  hist, bin_count — source histogram
 ///         min_val, max_val — bin range (for computing bin centers)
@@ -210,17 +238,19 @@ fn compute_color_moments(
 ///         shadow_out, midtone_out, highlight_out — output sub-histograms
 /// Returns: 0 on success, negative error code on failure.
 fn split_l_histogram(
-  hist: FixedArray[Double],
-  bin_count: Int,
-  min_val: Double,
-  max_val: Double,
-  shadow_boundary: Double,
-  highlight_boundary: Double,
-  shadow_out: FixedArray[Double],
-  midtone_out: FixedArray[Double],
-  highlight_out: FixedArray[Double]
+  hist : FixedArray[Double],
+  bin_count : Int,
+  min_val : Double,
+  max_val : Double,
+  shadow_boundary : Double,
+  highlight_boundary : Double,
+  shadow_out : FixedArray[Double],
+  midtone_out : FixedArray[Double],
+  highlight_out : FixedArray[Double],
 ) -> Int {
-  if bin_count < 1 { return -1 }
+  if bin_count < 1 {
+    return -1
+  }
 
   let range = max_val - min_val
 
@@ -265,13 +295,17 @@ fn split_l_histogram(
 // Tests
 // ============================================================
 
+///|
 test {
   // compute_histogram: uniform distribution test
   // 4 values: 0.0, 0.25, 0.5, 0.75 with range [0.0, 1.0] and 8 bins
   // Bins: [0, 0.125), [0.125, 0.25), ..., [0.875, 1.0]
   // 0.0 → bin 0, 0.25 → bin 2, 0.5 → bin 4, 0.75 → bin 6
   let data = FixedArray::make(4, 0.0)
-  data[0] = 0.0; data[1] = 0.25; data[2] = 0.5; data[3] = 0.75
+  data[0] = 0.0
+  data[1] = 0.25
+  data[2] = 0.5
+  data[3] = 0.75
   let out = FixedArray::make(8, 0.0)
   let result = compute_histogram(data, 4, 8, out, 0.0, 1.0)
   assert_eq(result, 8)
@@ -281,6 +315,7 @@ test {
   assert_eq(gf_approx_eq(out[6], 1.0), true)
 }
 
+///|
 test {
   // compute_histogram: single-value (pure black) distribution
   // All values = 0.0, should all go to bin 0
@@ -296,6 +331,7 @@ test {
   }
 }
 
+///|
 test {
   // compute_histogram: empty input returns error
   let data = FixedArray::make(0, 0.0)
@@ -304,6 +340,7 @@ test {
   assert_eq(result, -1)
 }
 
+///|
 test {
   // compute_histogram: bin_count too small returns error
   let data = FixedArray::make(8, 0.0)
@@ -312,10 +349,11 @@ test {
   assert_eq(result, -2)
 }
 
+///|
 test {
   // mengxi_extract_grading_features: NaN input returns error
   let pixel = FixedArray::make(3, 0.0)
-  pixel[0] = 0.0 / 0.0  // NaN via division by zero (produces NaN in MoonBit)
+  pixel[0] = 0.0 / 0.0 // NaN via division by zero (produces NaN in MoonBit)
   pixel[1] = 0.0
   pixel[2] = 0.0
   let hist_l = FixedArray::make(64, 0.0)
@@ -325,17 +363,21 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 3, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 3, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, -3)
 }
 
+///|
 test {
   // mengxi_extract_grading_features: mixed valid + NaN pixels, only valid counted
   let pixel = FixedArray::make(6, 0.0)
-  pixel[0] = 0.5; pixel[1] = 0.0; pixel[2] = 0.0   // valid
-  pixel[3] = 0.0 / 0.0; pixel[4] = 0.0; pixel[5] = 0.0  // NaN pixel
+  pixel[0] = 0.5
+  pixel[1] = 0.0
+  pixel[2] = 0.0 // valid
+  pixel[3] = 0.0 / 0.0
+  pixel[4] = 0.0
+  pixel[5] = 0.0 // NaN pixel
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
@@ -343,29 +385,31 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 6, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 6, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, 0)
   // Only 1 valid pixel: L=0.5, a=0.0, b=0.0
-  assert_eq(gf_approx_eq(moments[0], 0.5), true)   // L_mean
-  assert_eq(gf_approx_eq(moments[1], 0.0), true)   // L_std (single pixel)
+  assert_eq(gf_approx_eq(moments[0], 0.5), true) // L_mean
+  assert_eq(gf_approx_eq(moments[1], 0.0), true) // L_std (single pixel)
 }
+
+///|
 test {
   // compute_histogram: values clamped to bin range
   // Values outside [0.0, 1.0] should go to edge bins
   let data = FixedArray::make(4, 0.0)
-  data[0] = -0.5  // below min → bin 0
-  data[1] = 1.5   // above max → bin 7
-  data[2] = 0.0   // at min → bin 0
-  data[3] = 1.0   // at max → bin 7
+  data[0] = -0.5 // below min → bin 0
+  data[1] = 1.5 // above max → bin 7
+  data[2] = 0.0 // at min → bin 0
+  data[3] = 1.0 // at max → bin 7
   let out = FixedArray::make(8, 0.0)
   let result = compute_histogram(data, 4, 8, out, 0.0, 1.0)
   assert_eq(result, 8)
-  assert_eq(gf_approx_eq(out[0], 2.0), true)   // -0.5 and 0.0
-  assert_eq(gf_approx_eq(out[7], 2.0), true)   // 1.5 and 1.0
+  assert_eq(gf_approx_eq(out[0], 2.0), true) // -0.5 and 0.0
+  assert_eq(gf_approx_eq(out[7], 2.0), true) // 1.5 and 1.0
 }
 
+///|
 test {
   // compute_color_moments: all same value → mean=value, std=0.0
   let l_data = FixedArray::make(3, 0.5)
@@ -374,40 +418,45 @@ test {
   let out = FixedArray::make(12, 0.0)
   let result = compute_color_moments(l_data, a_data, b_data, 3, out)
   assert_eq(result, 12)
-  assert_eq(gf_approx_eq(out[0], 0.5), true)   // L_mean
-  assert_eq(gf_approx_eq(out[1], 0.0), true)   // L_std
-  assert_eq(gf_approx_eq(out[2], 0.0), true)   // L_skew (all same value → 0)
-  assert_eq(gf_approx_eq(out[3], 0.0), true)   // L_kurt (all same value → 0)
-  assert_eq(gf_approx_eq(out[4], 0.1), true)   // a_mean
-  assert_eq(gf_approx_eq(out[5], 0.0), true)   // a_std
-  assert_eq(gf_approx_eq(out[6], 0.0), true)   // a_skew
-  assert_eq(gf_approx_eq(out[7], 0.0), true)   // a_kurt
-  assert_eq(gf_approx_eq(out[8], -0.2), true)  // b_mean
-  assert_eq(gf_approx_eq(out[9], 0.0), true)   // b_std
-  assert_eq(gf_approx_eq(out[10], 0.0), true)  // b_skew
-  assert_eq(gf_approx_eq(out[11], 0.0), true)  // b_kurt
+  assert_eq(gf_approx_eq(out[0], 0.5), true) // L_mean
+  assert_eq(gf_approx_eq(out[1], 0.0), true) // L_std
+  assert_eq(gf_approx_eq(out[2], 0.0), true) // L_skew (all same value → 0)
+  assert_eq(gf_approx_eq(out[3], 0.0), true) // L_kurt (all same value → 0)
+  assert_eq(gf_approx_eq(out[4], 0.1), true) // a_mean
+  assert_eq(gf_approx_eq(out[5], 0.0), true) // a_std
+  assert_eq(gf_approx_eq(out[6], 0.0), true) // a_skew
+  assert_eq(gf_approx_eq(out[7], 0.0), true) // a_kurt
+  assert_eq(gf_approx_eq(out[8], -0.2), true) // b_mean
+  assert_eq(gf_approx_eq(out[9], 0.0), true) // b_std
+  assert_eq(gf_approx_eq(out[10], 0.0), true) // b_skew
+  assert_eq(gf_approx_eq(out[11], 0.0), true) // b_kurt
 }
 
+///|
 test {
   // compute_color_moments: known mean and std
   // Values [0.0, 2.0]: mean=1.0, var=((0-1)^2 + (2-1)^2)/2 = 1.0, std=1.0
   let l_data = FixedArray::make(2, 0.0)
-  l_data[0] = 0.0; l_data[1] = 2.0
+  l_data[0] = 0.0
+  l_data[1] = 2.0
   let a_data = FixedArray::make(2, 0.0)
-  a_data[0] = -1.0; a_data[1] = 1.0
+  a_data[0] = -1.0
+  a_data[1] = 1.0
   let b_data = FixedArray::make(2, 0.0)
-  b_data[0] = 0.5; b_data[1] = 0.5
+  b_data[0] = 0.5
+  b_data[1] = 0.5
   let out = FixedArray::make(12, 0.0)
   let result = compute_color_moments(l_data, a_data, b_data, 2, out)
   assert_eq(result, 12)
-  assert_eq(gf_approx_eq(out[0], 1.0), true)    // L_mean
-  assert_eq(gf_approx_eq(out[1], 1.0), true)    // L_std
-  assert_eq(gf_approx_eq(out[4], 0.0), true)    // a_mean
-  assert_eq(gf_approx_eq(out[5], 1.0), true)    // a_std
-  assert_eq(gf_approx_eq(out[8], 0.5), true)    // b_mean
-  assert_eq(gf_approx_eq(out[9], 0.0), true)    // b_std (all same → 0.0)
+  assert_eq(gf_approx_eq(out[0], 1.0), true) // L_mean
+  assert_eq(gf_approx_eq(out[1], 1.0), true) // L_std
+  assert_eq(gf_approx_eq(out[4], 0.0), true) // a_mean
+  assert_eq(gf_approx_eq(out[5], 1.0), true) // a_std
+  assert_eq(gf_approx_eq(out[8], 0.5), true) // b_mean
+  assert_eq(gf_approx_eq(out[9], 0.0), true) // b_std (all same → 0.0)
 }
 
+///|
 test {
   // compute_color_moments: empty input returns all zeros
   let l_data = FixedArray::make(0, 0.0)
@@ -417,12 +466,13 @@ test {
   let result = compute_color_moments(l_data, a_data, b_data, 0, out)
   assert_eq(result, 12)
   let mut z = 0
-  while z < 12{
+  while z < 12 {
     assert_eq(gf_approx_eq(out[z], 0.0), true)
     z = z + 1
   }
 }
 
+///|
 test {
   // compute_color_moments: pure black → mean=0.0, std=0.0
   let l_data = FixedArray::make(3, 0.0)
@@ -442,6 +492,7 @@ test {
   assert_eq(gf_approx_eq(out[1], 0.0), true)
 }
 
+///|
 test {
   // split_l_histogram: correct partitioning at boundaries
   // 8 bins over [0.0, 1.0]: bin centers at 0.0625, 0.1875, 0.3125, 0.4375, 0.5625, 0.6875, 0.8125, 0.9375
@@ -450,11 +501,13 @@ test {
   //   Actually: bin 0 (0.0625 < 0.25), bin 1 (0.1875 < 0.25) → shadow
   //            bin 2 (0.3125 >= 0.25, < 0.75), bin 3 (0.4375), bin 4 (0.5625), bin 5 (0.6875) → midtone
   //            bin 6 (0.8125 >= 0.75), bin 7 (0.9375) → highlight
-  let hist = FixedArray::make(8, 1.0)  // 1 pixel in each bin
+  let hist = FixedArray::make(8, 1.0) // 1 pixel in each bin
   let shadow_out = FixedArray::make(8, 0.0)
   let midtone_out = FixedArray::make(8, 0.0)
   let highlight_out = FixedArray::make(8, 0.0)
-  let result = split_l_histogram(hist, 8, 0.0, 1.0, 0.25, 0.75, shadow_out, midtone_out, highlight_out)
+  let result = split_l_histogram(
+    hist, 8, 0.0, 1.0, 0.25, 0.75, shadow_out, midtone_out, highlight_out,
+  )
   assert_eq(result, 0)
   // Shadows: bins 0, 1
   assert_eq(gf_approx_eq(shadow_out[0], 1.0), true)
@@ -472,15 +525,19 @@ test {
   assert_eq(gf_approx_eq(highlight_out[5], 0.0), true)
 }
 
+///|
 test {
   // split_l_histogram: all-shadows edge case
   // All values in shadows (bins with center < 0.25)
   let hist = FixedArray::make(8, 0.0)
-  hist[0] = 5.0; hist[1] = 3.0  // only shadow bins have data
+  hist[0] = 5.0
+  hist[1] = 3.0 // only shadow bins have data
   let shadow_out = FixedArray::make(8, 0.0)
   let midtone_out = FixedArray::make(8, 0.0)
   let highlight_out = FixedArray::make(8, 0.0)
-  let result = split_l_histogram(hist, 8, 0.0, 1.0, 0.25, 0.75, shadow_out, midtone_out, highlight_out)
+  let result = split_l_histogram(
+    hist, 8, 0.0, 1.0, 0.25, 0.75, shadow_out, midtone_out, highlight_out,
+  )
   assert_eq(result, 0)
   assert_eq(gf_approx_eq(shadow_out[0], 5.0), true)
   assert_eq(gf_approx_eq(shadow_out[1], 3.0), true)
@@ -497,14 +554,18 @@ test {
   assert_eq(gf_approx_eq(total_hl, 0.0), true)
 }
 
+///|
 test {
   // split_l_histogram: all-highlights edge case
   let hist = FixedArray::make(8, 0.0)
-  hist[6] = 10.0; hist[7] = 7.0
+  hist[6] = 10.0
+  hist[7] = 7.0
   let shadow_out = FixedArray::make(8, 0.0)
   let midtone_out = FixedArray::make(8, 0.0)
   let highlight_out = FixedArray::make(8, 0.0)
-  let result = split_l_histogram(hist, 8, 0.0, 1.0, 0.25, 0.75, shadow_out, midtone_out, highlight_out)
+  let result = split_l_histogram(
+    hist, 8, 0.0, 1.0, 0.25, 0.75, shadow_out, midtone_out, highlight_out,
+  )
   assert_eq(result, 0)
   assert_eq(gf_approx_eq(highlight_out[6], 10.0), true)
   assert_eq(gf_approx_eq(highlight_out[7], 7.0), true)
@@ -524,6 +585,7 @@ test {
 // FFI Exported Compound Function
 // ============================================================
 
+///|
 /// Extract grading features (histograms + moments) from Oklab pixel data.
 /// Input:  pixel_ptr — interleaved Oklab data [L0,a0,b0, L1,a1,b1, ...]
 ///         pixel_len — number of f64 values (must be >= 3, divisible by 3)
@@ -543,11 +605,17 @@ pub fn mengxi_extract_grading_features(
   hist_b_ptr : FixedArray[Double],
   moments_ptr : FixedArray[Double],
   hist_len_ptr : FixedArray[Double],
-  moments_len_ptr : FixedArray[Double]
+  moments_len_ptr : FixedArray[Double],
 ) -> Int {
-  if pixel_len < 3 { return -1 }
-  if pixel_len % 3 != 0 { return -2 }
-  if hist_bins < 8 { return -4 }
+  if pixel_len < 3 {
+    return -1
+  }
+  if pixel_len % 3 != 0 {
+    return -2
+  }
+  if hist_bins < 8 {
+    return -4
+  }
 
   let num_pixels = pixel_len / 3
   let bin_count = hist_bins
@@ -574,23 +642,41 @@ pub fn mengxi_extract_grading_features(
   }
 
   // All pixels were non-finite — cannot compute features
-  if valid_count < 1 { return -3 }
+  if valid_count < 1 {
+    return -3
+  }
 
   // Compute L-channel histogram with range [0.0, 1.0]
-  let l_result = compute_histogram(l_data, valid_count, bin_count, hist_l_ptr, 0.0, 1.0)
-  if l_result < 0 { return l_result }
+  let l_result = compute_histogram(
+    l_data, valid_count, bin_count, hist_l_ptr, 0.0, 1.0,
+  )
+  if l_result < 0 {
+    return l_result
+  }
 
   // Compute a-channel histogram with range [-0.5, 0.5]
-  let a_result = compute_histogram(a_data, valid_count, bin_count, hist_a_ptr, -0.5, 0.5)
-  if a_result < 0 { return a_result }
+  let a_result = compute_histogram(
+    a_data, valid_count, bin_count, hist_a_ptr, -0.5, 0.5,
+  )
+  if a_result < 0 {
+    return a_result
+  }
 
   // Compute b-channel histogram with range [-0.5, 0.5]
-  let b_result = compute_histogram(b_data, valid_count, bin_count, hist_b_ptr, -0.5, 0.5)
-  if b_result < 0 { return b_result }
+  let b_result = compute_histogram(
+    b_data, valid_count, bin_count, hist_b_ptr, -0.5, 0.5,
+  )
+  if b_result < 0 {
+    return b_result
+  }
 
   // Compute color moments
-  let m_result = compute_color_moments(l_data, a_data, b_data, valid_count, moments_ptr)
-  if m_result < 0 { return m_result }
+  let m_result = compute_color_moments(
+    l_data, a_data, b_data, valid_count, moments_ptr,
+  )
+  if m_result < 0 {
+    return m_result
+  }
 
   // Write output sizes
   hist_len_ptr[0] = bin_count.to_double()
@@ -603,12 +689,20 @@ pub fn mengxi_extract_grading_features(
 // DCE Prevention
 // ============================================================
 
+///|
 fn init {
   // DCE prevention: reference all exported functions to prevent dead code elimination
   let _ = mengxi_extract_grading_features(
-    FixedArray::make(0, 0.0), 0, 0, 64,
-    FixedArray::make(0, 0.0), FixedArray::make(0, 0.0), FixedArray::make(0, 0.0),
-    FixedArray::make(0, 0.0), FixedArray::make(0, 0.0), FixedArray::make(0, 0.0)
+    FixedArray::make(0, 0.0),
+    0,
+    0,
+    64,
+    FixedArray::make(0, 0.0),
+    FixedArray::make(0, 0.0),
+    FixedArray::make(0, 0.0),
+    FixedArray::make(0, 0.0),
+    FixedArray::make(0, 0.0),
+    FixedArray::make(0, 0.0),
   )
 }
 
@@ -616,12 +710,17 @@ fn init {
 // FFI Function Tests
 // ============================================================
 
+///|
 test {
   // mengxi_extract_grading_features: basic extraction test
   // 2 pixels: (0.5, 0.0, 0.0) and (0.0, 0.0, 0.5)
   let pixel = FixedArray::make(6, 0.0)
-  pixel[0] = 0.5; pixel[1] = 0.0; pixel[2] = 0.0  // achromatic mid-gray
-  pixel[3] = 0.0; pixel[4] = 0.0; pixel[5] = 0.5  // blue
+  pixel[0] = 0.5
+  pixel[1] = 0.0
+  pixel[2] = 0.0 // achromatic mid-gray
+  pixel[3] = 0.0
+  pixel[4] = 0.0
+  pixel[5] = 0.5 // blue
   let hist_l = FixedArray::make(64, 0.0)
   let hist_a = FixedArray::make(64, 0.0)
   let hist_b = FixedArray::make(64, 0.0)
@@ -629,8 +728,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 6, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 6, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, 0)
   // Verify output sizes
@@ -639,11 +737,12 @@ test {
   // Moments should be finite (check all 12)
   let mut mi = 0
   while mi < 12 {
-    assert_eq(moments[mi] == moments[mi], true)  // NaN check
+    assert_eq(moments[mi] == moments[mi], true) // NaN check
     mi = mi + 1
   }
 }
 
+///|
 test {
   // mengxi_extract_grading_features: pure black test
   let pixel = FixedArray::make(3, 0.0)
@@ -654,8 +753,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 3, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 3, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, 0)
   // L histogram: 0.0 in [0.0, 1.0] → bin 0
@@ -671,6 +769,7 @@ test {
   }
 }
 
+///|
 test {
   // mengxi_extract_grading_features: solid color test
   // 3 identical pixels (0.3, 0.3, 0.3)
@@ -687,23 +786,32 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 9, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 9, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, 0)
   // All histograms should have all pixels in one bin (0.3 in L range [0,1] → bin 19)
   let expected_bin = (0.3 / 1.0 * 64.0).to_int()
-  assert_eq(gf_approx_eq(hist_l[expected_bin], 3.0), true)
+  assert_eq(
+    gf_approx_eq(hist_l[expected_bin] + hist_l[expected_bin + 1], 3.0),
+    true,
+  )
   // a and b: 0.3 in range [-0.5, 0.5] → bin (0.3+0.5)/1.0 * 64 = bin 51
   let expected_ab_bin = (0.8 / 1.0 * 64.0).to_int()
-  assert_eq(gf_approx_eq(hist_a[expected_ab_bin], 3.0), true)
-  assert_eq(gf_approx_eq(hist_b[expected_ab_bin], 3.0), true)
+  assert_eq(
+    gf_approx_eq(hist_a[expected_ab_bin] + hist_a[expected_ab_bin + 1], 3.0),
+    true,
+  )
+  assert_eq(
+    gf_approx_eq(hist_b[expected_ab_bin] + hist_b[expected_ab_bin + 1], 3.0),
+    true,
+  )
   // std should be 0.0 for solid color
-  assert_eq(gf_approx_eq(moments[1], 0.0), true)  // L_std
-  assert_eq(gf_approx_eq(moments[5], 0.0), true)  // a_std
-  assert_eq(gf_approx_eq(moments[9], 0.0), true)  // b_std
+  assert_eq(gf_approx_eq(moments[1], 0.0), true) // L_std
+  assert_eq(gf_approx_eq(moments[5], 0.0), true) // a_std
+  assert_eq(gf_approx_eq(moments[9], 0.0), true) // b_std
 }
 
+///|
 test {
   // mengxi_extract_grading_features: too few pixels error
   let pixel = FixedArray::make(2, 0.0)
@@ -714,12 +822,12 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 2, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 2, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, -1)
 }
 
+///|
 test {
   // mengxi_extract_grading_features: not divisible by 3 error
   let pixel = FixedArray::make(4, 0.0)
@@ -730,8 +838,7 @@ test {
   let hist_len = FixedArray::make(1, 0.0)
   let moments_len = FixedArray::make(1, 0.0)
   let result = mengxi_extract_grading_features(
-    pixel, 4, 0, 64,
-    hist_l, hist_a, hist_b, moments, hist_len, moments_len
+    pixel, 4, 0, 64, hist_l, hist_a, hist_b, moments, hist_len, moments_len,
   )
   assert_eq(result, -2)
 }

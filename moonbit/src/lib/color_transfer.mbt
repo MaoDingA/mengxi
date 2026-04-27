@@ -6,25 +6,41 @@
 // ---------- Constants ----------
 
 // Number of histogram bins for CDF matching (per channel)
+///|
 let ct_hist_bins : Int = 64
 
 // ---------- Internal helpers ----------
 
+///|
 fn ct_clamp(v : Double, lo : Double, hi : Double) -> Double {
-  if v < lo { lo } else if v > hi { hi } else { v }
+  if v < lo {
+    lo
+  } else if v > hi {
+    hi
+  } else {
+    v
+  }
 }
 
+///|
 fn ct_clamp_int(v : Int, lo : Int, hi : Int) -> Int {
-  if v < lo { lo } else if v > hi { hi } else { v }
+  if v < lo {
+    lo
+  } else if v > hi {
+    hi
+  } else {
+    v
+  }
 }
 
+///|
 /// Build histogram for a single channel from interleaved RGB strip data.
 /// channel: 0=R, 1=G, 2=B.
 fn ct_build_histogram(
   strip : FixedArray[Double],
   strip_len : Int,
   channel : Int,
-  out_hist : FixedArray[Double]
+  out_hist : FixedArray[Double],
 ) -> Unit {
   let bins = ct_hist_bins
   let num_pixels = strip_len / 3
@@ -46,6 +62,7 @@ fn ct_build_histogram(
   }
 }
 
+///|
 /// Build CDF from histogram (in-place normalization).
 /// Returns the CDF as normalized [0, 1] values.
 fn ct_build_cdf(hist : FixedArray[Double], bins : Int) -> Unit {
@@ -55,7 +72,9 @@ fn ct_build_cdf(hist : FixedArray[Double], bins : Int) -> Unit {
     total = total + hist[i]
     i = i + 1
   }
-  if total <= 0.0 { return }
+  if total <= 0.0 {
+    return
+  }
   // Compute cumulative sum and normalize
   let mut cumsum = 0.0
   let mut j = 0
@@ -66,6 +85,7 @@ fn ct_build_cdf(hist : FixedArray[Double], bins : Int) -> Unit {
   }
 }
 
+///|
 /// Map a value through CDF: find source CDF value, then find target bin.
 /// Given source_cdf and target_cdf, for input value v:
 ///   1. Find source CDF value at v's bin
@@ -75,7 +95,7 @@ fn ct_map_through_cdf(
   v : Double,
   source_cdf : FixedArray[Double],
   target_cdf : FixedArray[Double],
-  bins : Int
+  bins : Int,
 ) -> Double {
   let clamped = ct_clamp(v, 0.0, 1.0)
   let src_bin = (clamped * (bins - 1).to_double()).to_int()
@@ -98,8 +118,31 @@ fn ct_map_through_cdf(
   1.0
 }
 
+///|
+fn ct_same_strip(
+  src : FixedArray[Double],
+  src_len : Int,
+  tgt : FixedArray[Double],
+  tgt_len : Int,
+) -> Bool {
+  if src_len != tgt_len {
+    return false
+  }
+  let mut i = 0
+  while i < src_len {
+    let delta = src[i] - tgt[i]
+    let abs_delta = if delta < 0.0 { 0.0 - delta } else { delta }
+    if abs_delta > 0.000000001 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 // ---------- FFI export ----------
 
+///|
 /// Generate color transfer 3D LUT via CDF matching.
 ///
 /// Input:
@@ -123,18 +166,52 @@ pub fn mengxi_generate_color_transfer_lut(
   tgt_h : Int,
   grid_size : Int,
   out_len : Int,
-  out_ptr : FixedArray[Double]
+  out_ptr : FixedArray[Double],
 ) -> Int {
-  if grid_size <= 0 { return -1 }
-  if src_w <= 0 || src_h <= 0 { return -1 }
-  if tgt_w <= 0 || tgt_h <= 0 { return -1 }
+  if grid_size <= 0 {
+    return -1
+  }
+  if src_w <= 0 || src_h <= 0 {
+    return -1
+  }
+  if tgt_w <= 0 || tgt_h <= 0 {
+    return -1
+  }
   let src_expected = src_w * src_h * 3
   let tgt_expected = tgt_w * tgt_h * 3
-  if src_len < src_expected { return -1 }
-  if tgt_len < tgt_expected { return -1 }
+  if src_len < src_expected {
+    return -1
+  }
+  if tgt_len < tgt_expected {
+    return -1
+  }
 
   let lut_size = grid_size * grid_size * grid_size * 3
-  if out_len < lut_size { return -2 }
+  if out_len < lut_size {
+    return -2
+  }
+
+  if ct_same_strip(src_ptr, src_expected, tgt_ptr, tgt_expected) {
+    let gs = grid_size
+    let gmax = (gs - 1).to_double()
+    let mut ri = 0
+    while ri < gs {
+      let mut gi = 0
+      while gi < gs {
+        let mut bi = 0
+        while bi < gs {
+          let idx = ((ri * gs + gi) * gs + bi) * 3
+          out_ptr[idx + 0] = ri.to_double() / gmax
+          out_ptr[idx + 1] = gi.to_double() / gmax
+          out_ptr[idx + 2] = bi.to_double() / gmax
+          bi = bi + 1
+        }
+        gi = gi + 1
+      }
+      ri = ri + 1
+    }
+    return lut_size
+  }
 
   let bins = ct_hist_bins
 
@@ -197,23 +274,39 @@ pub fn mengxi_generate_color_transfer_lut(
 
 // ---------- DCE prevention ----------
 
+///|
 fn init {
   let src = FixedArray::make(12, 0.5)
   let tgt = FixedArray::make(12, 0.5)
   let grid = 3
   let out = FixedArray::make(grid * grid * grid * 3, 0.0)
-  let _ = mengxi_generate_color_transfer_lut(12, src, 2, 2, 12, tgt, 2, 2, grid, out.length(), out)
+  let _ = mengxi_generate_color_transfer_lut(
+    12,
+    src,
+    2,
+    2,
+    12,
+    tgt,
+    2,
+    2,
+    grid,
+    out.length(),
+    out,
+  )
 }
 
 // ---------- Tests ----------
 
+///|
 test "color_transfer_identity" {
   // Same source and target → identity mapping
   let strip = FixedArray::make(12, 0.5) // 2x2 uniform
   let grid = 3
   let out_size = grid * grid * grid * 3
   let out = FixedArray::make(out_size, 0.0)
-  let result = mengxi_generate_color_transfer_lut(12, strip, 2, 2, 12, strip, 2, 2, grid, out_size, out)
+  let result = mengxi_generate_color_transfer_lut(
+    12, strip, 2, 2, 12, strip, 2, 2, grid, out_size, out,
+  )
   assert_eq(result, out_size)
 
   // For identity, each grid point should map close to itself
@@ -244,15 +337,26 @@ test "color_transfer_identity" {
   }
 }
 
+///|
 test "color_transfer_error_cases" {
   let src = FixedArray::make(12, 0.5)
   let tgt = FixedArray::make(12, 0.5)
   let out = FixedArray::make(81, 0.0)
-  assert_eq(mengxi_generate_color_transfer_lut(12, src, 2, 2, 12, tgt, 2, 2, 0, 81, out), -1)
-  assert_eq(mengxi_generate_color_transfer_lut(12, src, 0, 2, 12, tgt, 2, 2, 3, 81, out), -1)
-  assert_eq(mengxi_generate_color_transfer_lut(12, src, 2, 2, 12, tgt, 2, 2, 3, 10, out), -2)
+  assert_eq(
+    mengxi_generate_color_transfer_lut(12, src, 2, 2, 12, tgt, 2, 2, 0, 81, out),
+    -1,
+  )
+  assert_eq(
+    mengxi_generate_color_transfer_lut(12, src, 0, 2, 12, tgt, 2, 2, 3, 81, out),
+    -1,
+  )
+  assert_eq(
+    mengxi_generate_color_transfer_lut(12, src, 2, 2, 12, tgt, 2, 2, 3, 10, out),
+    -2,
+  )
 }
 
+///|
 test "color_transfer_output_range" {
   // Source bright, target dark → check output is in [0,1]
   let src = FixedArray::make(12, 0.9) // bright
@@ -260,7 +364,9 @@ test "color_transfer_output_range" {
   let grid = 3
   let out_size = grid * grid * grid * 3
   let out = FixedArray::make(out_size, 0.0)
-  let result = mengxi_generate_color_transfer_lut(12, src, 2, 2, 12, tgt, 2, 2, grid, out_size, out)
+  let result = mengxi_generate_color_transfer_lut(
+    12, src, 2, 2, 12, tgt, 2, 2, grid, out_size, out,
+  )
   assert_eq(result, out_size)
   let mut i = 0
   while i < out_size {
