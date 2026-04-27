@@ -1,6 +1,6 @@
 {
   "import": ["moonbitlang/core/builtin", "moonbitlang/core/double", "moonbitlang/core/math"],
-  "supported-targets": ["native"],
+  "supported-targets": "native",
   "is-main": false,
   "native-stub": ["cwrap.c"],
   "link": {

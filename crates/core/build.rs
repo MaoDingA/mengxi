@@ -1,4 +1,6 @@
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(moonbit_ffi)");
+
     // Allow disabling MoonBit FFI for compilation checks without building MoonBit
     if std::env::var("DISABLE_MOONBIT_FFI").is_ok() {
         println!("cargo:warning=DISABLE_MOONBIT_FFI is set — MoonBit FFI linkage skipped");
@@ -7,7 +9,6 @@ fn main() {
 
     // Signal to source code that FFI is available
     println!("cargo:rustc-cfg=moonbit_ffi");
-    println!("cargo:rustc-check-cfg=cfg(moonbit_ffi)");
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_root = std::path::Path::new(&manifest_dir)

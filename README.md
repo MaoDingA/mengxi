@@ -137,17 +137,11 @@ flowchart TD
 ```
 mengxi/
 ├── Cargo.toml              # Rust workspace 根配置
-├── build.rs                # 通过 FFI 链接 libmoonbit_core.a
+├── crates/core/build.rs    # 通过 FFI 链接 libmoonbit_core.a
 ├── migrations/             # SQL 迁移文件（启动时自动执行）
-│   ├── 001_create_projects.sql
-│   ├── 002_create_fingerprints.sql
-│   ├── 003_create_tags.sql
-│   ├── 004_create_luts.sql
-│   ├── 005_create_search_feedback.sql
-│   ├── 006_create_analytics.sql
-│   └── 007_create_calibration.sql
+│   └── 001..025_*.sql
 ├── crates/
-│   ├── cli/                # CLI 入口（10 个子命令）+ TUI 界面
+│   ├── cli/                # CLI 入口（20+ 命令）+ TUI 界面
 │   ├── agent/              # AI 对话代理（LLM 集成、工具系统、子代理、会话管理）
 │   ├── core/               # 领域逻辑、数据库、Python 桥接、分析统计
 │   └── format/             # 格式解码器（DPX, EXR, MOV, LUT, PowerGrade）
@@ -166,7 +160,7 @@ mengxi/
 | 依赖 | 版本 | 说明 | 必须 |
 |------|------|------|------|
 | [Rust](https://rustup.rs/) | nightly | 系统语言、CLI 框架、数据库 | 是 |
-| [MoonBit](https://moonbitlang.com/) | v0.8.x | 核心算法编译工具链 | 是 |
+| [MoonBit](https://moonbitlang.com/) | v0.8+（已验证 v0.9） | 核心算法编译工具链 | 是 |
 | [Python](https://www.python.org/) | 3.11+ | AI 推理运行时 | 否（AI 功能需要） |
 
 ### 构建步骤
@@ -176,10 +170,10 @@ mengxi/
 git clone https://github.com/MaoDingA/mengxi.git
 cd mengxi
 
-# 构建 MoonBit 核心算法库
-cd moonbit && moon build && moon c-ffi && cd ..
+# 构建 MoonBit 核心算法静态库
+./build_moonbit.sh
 
-# 构建 Rust 项目（自动链接 MoonBit 静态库）
+# 构建 Rust 项目（链接 MoonBit 静态库）
 cargo build --release
 
 # 可选：安装 Python AI 依赖
@@ -354,14 +348,11 @@ cargo build
 ### 运行测试
 
 ```bash
-# Rust 单元测试 + 集成测试（280 tests）
+# Rust 单元测试 + 集成测试
 cargo test
 
-# FFI 边界测试
-cargo test --test ffi_tests
-
-# CLI 端到端测试
-cargo test --test cli_tests
+# FFI 合约测试
+cargo test -p mengxi-core --test ffi_contract_test
 
 # Python 协议测试（需要 Python 环境）
 python -m pytest python/tests/
@@ -387,7 +378,7 @@ python -m pytest python/tests/
 
 ```mermaid
 flowchart LR
-    A[MoonBit 源码] -->|moon build + moon c-ffi| B[libmoonbit_core.a]
+    A[MoonBit 源码] -->|./build_moonbit.sh| B[libmoonbit_core.a]
     B -->|build.rs 链接| C[Cargo 构建]
     C --> D[mengxi 二进制]
     E[Python AI 模块] -.->|运行时子进程| D

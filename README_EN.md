@@ -100,19 +100,14 @@ flowchart TD
 ```
 mengxi/
 ├── Cargo.toml              # Rust workspace root
-├── build.rs                # Links libmoonbit_core.a via FFI
+├── crates/core/build.rs    # Links libmoonbit_core.a via FFI
 ├── migrations/             # SQL migrations (auto-executed on startup)
-│   ├── 001_create_projects.sql
-│   ├── 002_create_fingerprints.sql
-│   ├── 003_create_tags.sql
-│   ├── 004_create_luts.sql
-│   ├── 005_create_search_feedback.sql
-│   ├── 006_create_analytics.sql
-│   └── 007_create_calibration.sql
+│   └── 001..025_*.sql
 ├── crates/
-│   ├── cli/                # CLI entry point (9 subcommands)
+│   ├── cli/                # CLI entry point (20+ commands)
 │   ├── core/               # Domain logic, DB, Python bridge, analytics
-│   └── format/             # Format decoders (DPX, EXR, MOV, LUT, PowerGrade)
+│   ├── format/             # Format decoders (DPX, EXR, MOV, LUT, PowerGrade)
+│   └── agent/              # LLM providers, tools, sessions, subagents
 ├── moonbit/                # MoonBit core algorithms
 │   └── src/                # color_science, fingerprint, similarity, lut_engine, types
 ├── python/                 # AI inference subprocess (optional)
@@ -128,7 +123,7 @@ mengxi/
 | Dependency | Version | Description | Required |
 |------------|---------|-------------|----------|
 | [Rust](https://rustup.rs/) | nightly | System language, CLI framework, database | Yes |
-| [MoonBit](https://moonbitlang.com/) | v0.8.x | Core algorithm toolchain | Yes |
+| [MoonBit](https://moonbitlang.com/) | v0.8+ (v0.9 verified) | Core algorithm toolchain | Yes |
 | [Python](https://www.python.org/) | 3.11+ | AI inference runtime | No (AI features only) |
 
 ### Build Steps
@@ -138,10 +133,10 @@ mengxi/
 git clone https://github.com/MaoDingA/mengxi.git
 cd mengxi
 
-# Build MoonBit core algorithm library
-cd moonbit && moon build && moon c-ffi && cd ..
+# Build MoonBit core algorithm static library
+./build_moonbit.sh
 
-# Build Rust project (automatically links MoonBit static library)
+# Build Rust project (links MoonBit static library)
 cargo build --release
 
 # Optional: install Python AI dependencies
@@ -269,11 +264,8 @@ cargo build
 # Rust unit tests + integration tests
 cargo test
 
-# FFI boundary tests
-cargo test --test ffi_tests
-
-# CLI end-to-end tests
-cargo test --test cli_tests
+# FFI contract tests
+cargo test -p mengxi-core --test ffi_contract_test
 
 # Python protocol tests (requires Python environment)
 python -m pytest python/tests/
@@ -299,7 +291,7 @@ python -m pytest python/tests/
 
 ```mermaid
 flowchart LR
-    A[MoonBit source] -->|moon build + moon c-ffi| B[libmoonbit_core.a]
+    A[MoonBit source] -->|./build_moonbit.sh| B[libmoonbit_core.a]
     B -->|build.rs links| C[Cargo build]
     C --> D[mengxi binary]
     E[Python AI module] -.->|runtime subprocess| D
